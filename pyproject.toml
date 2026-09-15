@@ -26,6 +26,7 @@ dependencies = [
     "pydantic-settings>=2.5",
     "redis>=5.0",
     "pyjwt>=2.9",
+    "pgvector>=0.3",
 ]
 
 [build-system]

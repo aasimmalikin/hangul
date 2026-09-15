@@ -1,11 +1,15 @@
+import asyncio
+
 from harness.db.memory import remember
 from harness.tools.base import Tool
+
 
 def make_remember_tool(user_id: str) -> Tool:
     """Create a remember tool for a specific user."""
     async def remember_tool(content: str, kind: str = "preference") -> str:
         """Store a new memory for the user."""
-        remember(user_id, content, kind)
+        # Sync DB write against a remote Postgres: keep it off the event loop.
+        await asyncio.to_thread(remember, user_id, content, kind)
         return f"Noted: {content}"
     
     return Tool(

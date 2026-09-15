@@ -1,10 +1,11 @@
 import asyncio
 import json
 
-from fastapi import Request, APIRouter, Depends
+from fastapi import Request, APIRouter, Depends, HTTPException
 from sse_starlette.sse import EventSourceResponse
 
 from harness.api.auth import get_current_user
+from harness.api.concurrency import run_slot
 from harness.api.routes.ask import AskRequest, _build_and_run
 
 router = APIRouter()
@@ -32,8 +33,11 @@ async def ask_stream(req: AskRequest, request: Request,
         """Run the agent in the background; put the final outcome (or error)
         on the queue when done so the generator knows to stop."""
         try:
-            outcome = await _build_and_run(req, user_id, on_event=on_event)
+            async with run_slot(user_id):
+                outcome = await _build_and_run(req, user_id, on_event=on_event)
             await queue.put(("outcome", outcome))
+        except HTTPException as e:
+            await queue.put(("error", e.detail))
         except Exception as e:  # noqa: BLE001
             await queue.put(("error", str(e)))
 
@@ -44,10 +48,18 @@ async def ask_stream(req: AskRequest, request: Request,
         try:
             while True:
                 if await request.is_disconnected():
+                    # Tab closed / navigated away / network gone: stop paying
+                    # for tokens nobody will read. The checkpoint keeps what
+                    # was done so far.
                     task.cancel()
                     return
 
-                kind, payload = await queue.get()
+                # Wake up periodically even when the agent is quiet so the
+                # disconnect check above runs during a long model call.
+                try:
+                    kind, payload = await asyncio.wait_for(queue.get(), timeout=1.0)
+                except asyncio.TimeoutError:
+                    continue
 
                 if kind == "agent":
                     etype = payload["type"]

@@ -39,7 +39,15 @@ python ci_gate.py       # exit 1 if below floors or regressed vs data/eval_basel
 
 Container / deploy: `docker build .` then `./start.sh` runs API (8000) + Streamlit (8501) together. `scripts/smoke_test.sh <url>` hits `/healthz` and `/ask`.
 
-Tests: `pyproject.toml` configures pytest with `pythonpath=["src"]`, but `tests/` currently holds only empty `__init__.py` files — there is no test suite yet. New tests go under `tests/unit` or `tests/integration`; run one with `pytest tests/unit/test_x.py::test_name`. `.github/workflows/ci.yml` only lints (non-blocking) and does an import check.
+Tests:
+
+```bash
+.venv/bin/pytest tests/unit                      # backend unit tests (no DB/model needed; fakes)
+cd web && npm run test:e2e                       # builds, then Playwright e2e against a fake FastAPI
+cd web && npm run test:e2e:only                  # skip the build if .next is current
+```
+
+`tests/unit/test_resilience_backend.py` covers approve ownership / double-approve, the per-user in-flight cap, request bounds, history seeding and cache keys. `web/tests/e2e/` runs the production build with a real NextAuth JWT cookie against `tests/e2e/fake-backend.mjs`, a stand-in FastAPI that can be told to fail (question prefixes `APPROVAL`, `ASK`, `DROP`, `ERROR`, `SLOW`, `E500`…; `POST /__control {down:true}`). Needs Playwright's Chromium (`npx playwright install chromium`). `.github/workflows/ci.yml` only lints (non-blocking) and does an import check.
 
 ## Architecture
 
@@ -95,4 +103,7 @@ Servers are started in the FastAPI lifespan (`api/app.py`), currently only `@mod
 - Config is pydantic-settings reading root `.env`; field names are lowercase (`openai_api_key`, `database_url`). `get_settings()` is *not* cached, but `get_provider()` and `get_embedder()` are — changing `.env` at runtime won't reach them.
 - `SessionVectorStore` is in-process memory with a TTL/LRU, so uploaded documents die with the worker and do not survive multiple replicas.
 - `web/` is Next.js 16: middleware is `web/proxy.ts`, not `middleware.ts`. Follow `web/AGENTS.md` and read `node_modules/next/dist/docs/` before writing Next-specific code.
+- Frontend theme: every page uses `components/hangul/AppHeader` (+ `SignInModal` if it needs a session) and the `.h-*` classes / `var(--fg|--muted|--surface|--solid-bg…)` tokens from `globals.css`. Tailwind's shadcn tokens are mapped to the same palette. Never hard-code colours. See `docs/notes/2026-09-15-frontend-theme-unification.md`.
+- BFF routes (`web/app/api/*`) all go through `web/lib/bff.ts`: same-origin check → session → per-user rate limit → `upstream()` with a timeout; errors are `{detail, code}`. Add new routes the same way. The backend caps runs per user (`api/concurrency.py`) and `threads.user_id` is checked on `/approve` (`CheckpointStore.claim_pending`).
+- The chat thread is persisted per **tab** in `sessionStorage` (`hangul:chat:<user id>`): refresh/back/forward restore it, a new tab is a new conversation, tabs never share state. Every completed run ends with a hidden `data-run` part (used by tests as the end-of-run marker; not shown to the user).
 - `streamlit_app.py` still authenticates with an `X-Session-ID` header, which the JWT-guarded routes no longer accept; treat it as legacy unless you are updating it.

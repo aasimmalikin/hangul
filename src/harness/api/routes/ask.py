@@ -1,5 +1,7 @@
+import asyncio
 import json
 from fastapi import APIRouter, Depends
+from typing import Literal
 from pydantic import BaseModel, Field
 from pathlib import Path
 import structlog
@@ -17,6 +19,7 @@ from harness.tools.builtin.search_docs_session import make_search_docs_tool
 from harness.tools.builtin.filesystem_session import wrap_filesystem_tool
 from harness.tools.builtin.recall import make_recall_tool
 from harness.tools.builtin.remember import make_remember_tool
+from harness.tools.builtin.recall_episodes import make_recall_episodes_tool
 from harness.cache.keys import answer_key
 from harness.cache.redis_cache import RedisCache
 from harness.policy.policy import ToolPolicy
@@ -27,12 +30,14 @@ from harness.obs.tracing import Trace, cost_usd
 from harness.obs.trace_store import TraceStore
 
 from harness.api.auth import get_current_user
+from harness.api.concurrency import run_slot
 from harness.db.ledger import record_transaction
 from decimal import Decimal
 
 from dataclasses import dataclass
 
 from harness.db.memory import profile_text
+from harness.db.episodes import store_episode
 
 _audit = AuditLog()
 _store = CheckpointStore()
@@ -58,6 +63,7 @@ _policy = ToolPolicy(tiers={
     "filesystem__move_file": Tier.DESTRUCTIVE,
     "recall": Tier.SAFE,
     "remember": Tier.SAFE,
+    "recall_episodes": Tier.SAFE,
 })
 
 
@@ -79,10 +85,26 @@ DOCS_ONLY_INSTRUCTION = ("\n\nYou are in DOCUMENTS-ONLY mode. You have exactly o
     "'I couldn't find that in your document.' Never answer from your own knowledge.")
 
 
+# Bounds on what a single request may carry. Anything past these is a bug or
+# abuse, and either way must not reach the model's context window unchecked.
+MAX_QUESTION_CHARS = 8_000
+MAX_HISTORY_TURNS = 20
+MAX_HISTORY_CHARS = 4_000
+
+
+class HistoryMessage(BaseModel):
+    role: Literal["user", "assistant"]
+    content: str = Field(min_length=1, max_length=MAX_HISTORY_CHARS)
+
+
 class AskRequest(BaseModel):
-    question: str = Field(min_length=1, description="The user's question.")
+    question: str = Field(min_length=1, max_length=MAX_QUESTION_CHARS,
+                          description="The user's question.")
     thread_id: str | None = None
     docs_only: bool = False
+    # Earlier turns of this conversation, oldest first. The UI owns the
+    # transcript; the server treats it as untrusted context and caps it.
+    history: list[HistoryMessage] = Field(default_factory=list, max_length=MAX_HISTORY_TURNS)
 
 
 class AskResponse(BaseModel):
@@ -110,6 +132,53 @@ class RunOutcome:
     run_cost: float
     cache_key: str
 
+async def _summarize_thread(result: object, question: str) -> str:
+    """Summarize the thread for episodic memory storage."""
+    return f"User asked {question}. Assistant answered: {result.answer[:400]}"
+
+
+# Background bookkeeping tasks. asyncio only keeps a weak reference to a
+# task, so hold strong refs until they finish or they can be GC'd mid-flight.
+_background: set[asyncio.Task] = set()
+
+def _spawn_bookkeeping(coro) -> None:
+    task = asyncio.create_task(coro)
+    _background.add(task)
+    task.add_done_callback(_background.discard)
+
+
+async def _finish_run(req: AskRequest, user_id: str, run: RunRecord,
+                      result: object, key: str, run_cost: float) -> None:
+    """Post-answer bookkeeping: ledger, answer cache, episodic memory."""
+    cost = Decimal(str(run_cost))
+    if cost > 0:
+        try:
+            await asyncio.to_thread(
+                record_transaction,
+                user_id=user_id, amount=-cost, kind="run_cost", thread_id=run.run_id,
+            )
+        except Exception as e:  # noqa: BLE001
+            log.warning("ledger write failed", error=str(e))
+
+    try:
+        await _cache.set(key, json.dumps({
+            "answer": result.answer,
+            "steps": result.steps,
+            "stopped_reason": result.stopped_reason,
+            "tools_used": result.tools_used,
+            "safety_blocked": result.safety_blocked,
+            "budget_used": result.budget_used,
+        }))
+    except Exception as e:  # noqa: BLE001
+        log.warning("answer cache write failed", error=str(e))
+
+    if result.pending_tool is None and result.answer:
+        try:
+            thread_summary = await _summarize_thread(result, req.question)
+            await store_episode(user_id, run.run_id, thread_summary)
+        except Exception as e:  # noqa: BLE001
+            log.warning("episode store failed", error=str(e))
+
 async def _build_and_run(req: AskRequest, user_id: str, on_event=None) -> RunOutcome:
     prompt_version = get_prompt("system_agent")
     model = get_provider().model
@@ -127,6 +196,7 @@ async def _build_and_run(req: AskRequest, user_id: str, on_event=None) -> RunOut
     session_registry.registry(make_search_docs_tool(user_id))
     session_registry.registry(make_recall_tool(user_id))
     session_registry.registry(make_remember_tool(user_id))
+    session_registry.registry(make_recall_episodes_tool(user_id))
 
     # the other tools are only added when NOT in docs-only mode
     if not req.docs_only:
@@ -154,23 +224,34 @@ async def _build_and_run(req: AskRequest, user_id: str, on_event=None) -> RunOut
     )
     prompt_text = prompt_version.text + session_folder_note
 
-    profile = profile_text(user_id)
+    # Sync SQLAlchemy call against a remote DB: run it off the event loop so
+    # it cannot stall other requests or the SSE flush while it waits.
+    try:
+        profile = await asyncio.to_thread(profile_text, user_id)
+    except Exception as e:  # noqa: BLE001
+        # The profile is a nicety; a DB blip must not fail the whole question.
+        log.warning("profile load failed", error=str(e))
+        profile = ""
 
     if profile:
-        prompt_text = profile + "\n\n=== USER PROFILE ===\n" + profile
+        prompt_text = prompt_text + "\n\n=== USER PROFILE ===\n" + profile
 
     if req.docs_only:
         prompt_text = prompt_text + DOCS_ONLY_INSTRUCTION
 
+    history = [m.model_dump() for m in req.history]
     key = answer_key(
         question=req.question,
         prompt_version=prompt_version.version,
         model=model,
         tool_names=[t.name for t in session_registry.list()],
         session_id = user_id,
+        history=history,
+        docs_only=req.docs_only,
     )
 
     trace = Trace(trace_id=run.run_id)
+
 
     result = await run_agent(
         question=req.question,
@@ -184,6 +265,8 @@ async def _build_and_run(req: AskRequest, user_id: str, on_event=None) -> RunOut
         trace=trace,
         force_tool_use=req.docs_only,
         on_event=on_event,
+        user_id=user_id,
+        history=history,
     )
 
 
@@ -192,23 +275,13 @@ async def _build_and_run(req: AskRequest, user_id: str, on_event=None) -> RunOut
     summary = trace.summary()
     run_cost = cost_usd(model, summary["input_tokens"], summary["output_tokens"])
 
-    cost = Decimal(str(run_cost))
-    if cost>0:
-        record_transaction(
-        user_id = user_id, 
-        amount = -cost,
-        kind = "run_cost",
-        thread_id = run.run_id,
-        )
-
-    await _cache.set(key, json.dumps({
-        "answer": result.answer,
-        "steps": result.steps,
-        "stopped_reason": result.stopped_reason,
-        "tools_used": result.tools_used,
-        "safety_blocked": result.safety_blocked,
-        "budget_used": result.budget_used,
-    }))
+    # Ledger, answer cache and episodic memory are bookkeeping: nothing the
+    # caller receives depends on them, but together they are ~7 serial DB
+    # round-trips plus an embedding call. Against a remote Postgres that is
+    # several seconds the user would otherwise wait for after the answer has
+    # already been produced -- so they run as a background task and the
+    # response (or the SSE `done` event) goes out immediately.
+    _spawn_bookkeeping(_finish_run(req, user_id, run, result, key, run_cost))
 
     return RunOutcome(
         result = result,
@@ -241,6 +314,7 @@ async def ask(req: AskRequest, user: dict = Depends(get_current_user)) -> AskRes
     key = answer_key(
         question=req.question, prompt_version=prompt_version.version, model=model,
         tool_names=[t.name for t in session_registry.list()], session_id=user_id,
+        history=[m.model_dump() for m in req.history], docs_only=req.docs_only,
     )
     cached_raw = await _cache.get(key)
     if cached_raw is not None:
@@ -255,7 +329,8 @@ async def ask(req: AskRequest, user: dict = Depends(get_current_user)) -> AskRes
             budget_used=data.get("budget_used", {}), cost_usd=0.0, resumed_from_step=0,
         )
 
-    outcome = await _build_and_run(req, user_id)
+    async with run_slot(user_id):
+        outcome = await _build_and_run(req, user_id)
     r = outcome.result
     return AskResponse(
         answer=r.answer, run_id=outcome.run.run_id,

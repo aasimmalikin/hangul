@@ -1,8 +1,8 @@
-"""create threads table
+"""add server default for role
 
-Revision ID: 9c5719c04244
-Revises: 3b9593c85a81
-Create Date: 2026-08-26 18:37:28.705829
+Revision ID: 591efb74e035
+Revises: 19ab5ed5598c
+Create Date: 2026-09-15 13:59:39.671124
 
 """
 from typing import Sequence, Union
@@ -12,8 +12,8 @@ import sqlalchemy as sa
 
 
 # revision identifiers, used by Alembic.
-revision: str = '9c5719c04244'
-down_revision: Union[str, Sequence[str], None] = '3b9593c85a81'
+revision: str = '591efb74e035'
+down_revision: Union[str, Sequence[str], None] = '19ab5ed5598c'
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
 

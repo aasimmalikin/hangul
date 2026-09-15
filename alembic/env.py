@@ -1,5 +1,6 @@
 import asyncio
 from logging.config import fileConfig
+import pgvector.sqlalchemy
 
 from sqlalchemy import pool
 from sqlalchemy.engine import Connection

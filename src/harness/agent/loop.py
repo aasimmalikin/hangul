@@ -1,3 +1,4 @@
+import asyncio
 import json
 import time
 from pydantic import BaseModel, Field
@@ -18,6 +19,9 @@ from harness.checkpoint.store import CheckpointStore
 from harness.checkpoint.idempotency import call_key
 
 from harness.obs.tracing import Trace
+
+# Strong refs to in-flight checkpoint writes (asyncio holds tasks weakly).
+_pending_saves: set[asyncio.Task] = set()
 
 
 RETRIEVAL_TOOLS = {"search_docs", "filesystem__read_text_file", "filesystem__read_file"}
@@ -62,6 +66,8 @@ async def run_agent(
     max_steps: int = 20,
     max_tokens: int = 50_000,
     on_event=None,
+    user_id: str | None = None,
+    history: list[dict] | None = None,
 ) -> AgentResult:
     """Run the tool-calling loop.
 
@@ -74,15 +80,51 @@ async def run_agent(
       text_end    {block}
       tool_call   {id, name, arguments, step}    model decided to call a tool
       tool_result {id, name, ok, preview, ms, cached}
+
+    user_id is stamped on the checkpoint so /approve can verify ownership.
+    history is prior conversation turns ({role, content}, user/assistant only)
+    placed between the system prompt and the new question on a *fresh* run,
+    so follow-up questions have context. It is ignored when resuming.
     """
-    cp = store.load(thread_id) or Checkpoint(
+    # CheckpointStore is sync SQLAlchemy against a (possibly remote) Postgres,
+    # so every call goes through a worker thread rather than blocking the loop.
+    cp = await asyncio.to_thread(store.load, thread_id) or Checkpoint(
         thread_id=thread_id,
+        user_id=user_id,
         message=[
             {"role": "system", "content": prompt_text},
+            *[{"role": m["role"], "content": m["content"]} for m in (history or [])],
             {"role": "user", "content": question},
         ],
     )
+    if cp.user_id is None:
+        cp.user_id = user_id
     messages = cp.message
+
+    # Checkpoint writes are chained so they land in order, but only the
+    # pending_approval write is awaited -- /approve has to find it. Mid-run and
+    # final writes exist for resume/forensics, nothing on the response path
+    # reads them, so the answer is not held behind a DB round-trip.
+    last_save: asyncio.Task | None = None
+
+    async def persist(wait: bool = False) -> None:
+        nonlocal last_save
+        snapshot = cp.model_copy(deep=True)
+        prev = last_save
+
+        async def _write() -> None:
+            if prev is not None:
+                await prev
+            try:
+                await asyncio.to_thread(store.save, snapshot)
+            except Exception as e:  # noqa: BLE001
+                log.warning("checkpoint save failed", thread_id=thread_id, error=str(e))
+
+        last_save = asyncio.create_task(_write())
+        _pending_saves.add(last_save)
+        last_save.add_done_callback(_pending_saves.discard)
+        if wait:
+            await last_save
 
     def emit(kind: str, **payload) -> None:
         if on_event is not None:
@@ -142,7 +184,7 @@ async def run_agent(
             reason = budget.exceeded()
             if reason:
                 cp.status = "done"
-                store.save(cp)
+                await persist()
                 return AgentResult(
                     answer=f"Stopped: {reason}.", steps=step - 1,
                     stopped_reason="budget_exceeded",
@@ -189,7 +231,7 @@ async def run_agent(
             if not turn.tool_calls:
                 cp.status = "done"
                 cp.step = step
-                store.save(cp)
+                await persist()
                 return AgentResult(
                     answer=turn.text or "", steps=step, stopped_reason="answered",
                     input_tokens=total_in, output_tokens=total_out,
@@ -249,7 +291,7 @@ async def run_agent(
                 cp.message = messages
                 cp.step = step
                 cp.status = "pending_approval"
-                store.save(cp)
+                await persist(wait=True)
                 log.info("paused for approval", tool=p.name, args=p.arguments)
                 return AgentResult(
                     answer=f"The agent wants to run '{p.name}'. Your approval is needed.",
@@ -279,10 +321,10 @@ async def run_agent(
             cp.message = messages
             cp.step = step
             cp.pending_tool = None
-            store.save(cp)
+            await persist()
 
     cp.status = "done"
-    store.save(cp)
+    await persist()
     return AgentResult(
         answer="Stopped before finishing: reached the step limit.",
         steps=max_steps, stopped_reason="max_steps",

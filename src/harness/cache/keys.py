@@ -5,10 +5,15 @@ hash, and nothing that can't (like the per-request run_id) may."""
 import json
 import hashlib
 
-def answer_key(*, question: str, prompt_version: str, model: str, tool_names: list[str], session_id:str) -> str:
+def answer_key(*, question: str, prompt_version: str, model: str, tool_names: list[str],
+               session_id: str, history: list[dict] | None = None, docs_only: bool = False) -> str:
+    """Everything that can change the answer must be in the key: the same
+    question with different prior turns, or in docs-only mode, is a different
+    answer."""
     payload = json.dumps(
         {
-            "q": question, "pv": prompt_version, "m": model, "t": sorted(tool_names), "s": session_id
+            "q": question, "pv": prompt_version, "m": model, "t": sorted(tool_names), "s": session_id,
+            "h": history or [], "d": docs_only,
         }, sort_keys = True,
     )
     return "answer" + hashlib.sha256(payload.encode()).hexdigest()[:16]

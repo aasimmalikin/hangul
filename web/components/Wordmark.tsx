@@ -19,7 +19,7 @@ export function Wordmark({
 }) {
   const inner = (
     <>
-      <HangulSigil size={size} className="text-accent" />
+      <HangulSigil size={size} />
       <span
         className="font-[family-name:var(--font-fraunces)] font-medium leading-none tracking-[-0.02em] text-foreground"
         style={{ fontSize: size * 0.95 }}

@@ -1,15 +1,17 @@
+
+@import "@tabler/icons-webfont/dist/tabler-icons.min.css";
 @import "tailwindcss";
 @import "tw-animate-css";
 @import "shadcn/tailwind.css";
 
-@custom-variant dark (&:is(.dark *));
+@custom-variant dark (&:is(html[data-theme="dark"] *));
 
 @theme inline {
   --color-background: var(--background);
   --color-foreground: var(--foreground);
-  --font-sans: var(--font-sans);
+  --font-sans: var(--font-geist-sans);
   --font-mono: var(--font-geist-mono);
-  --font-heading: var(--font-sans);
+  --font-heading: var(--font-fraunces);
   --color-sidebar-ring: var(--sidebar-ring);
   --color-sidebar-border: var(--sidebar-border);
   --color-sidebar-accent-foreground: var(--sidebar-accent-foreground);
@@ -30,7 +32,7 @@
   --color-accent-foreground: var(--accent-foreground);
   --color-accent: var(--accent);
   --color-muted-foreground: var(--muted-foreground);
-  --color-muted: var(--muted);
+  --color-muted: var(--bubble);
   --color-secondary-foreground: var(--secondary-foreground);
   --color-secondary: var(--secondary);
   --color-primary-foreground: var(--primary-foreground);
@@ -128,3 +130,194 @@
     @apply font-sans;
   }
 }
+
+/* ------------------------------------------------------------------ */
+/* Hangul theme                                                         */
+/*                                                                      */
+/* One palette, two modes, switched by <html data-theme="light|dark">   */
+/* (see components/ThemeProvider.tsx). Every page and component reads   */
+/* these variables — either directly (`var(--surface)`) or through the  */
+/* Tailwind/shadcn tokens mapped below — so new UI picks up the theme   */
+/* by construction. Do not hard-code colours in components.             */
+/* ------------------------------------------------------------------ */
+html[data-theme="light"] {
+  --bg: #FEFDFB;
+  --fg: #2A2620;
+  --sigil: #2A2620;
+  --surface: rgba(255,255,255,0.7);
+  --surface-solid: #FFFFFF;
+  --surface-border: rgba(42,38,32,0.14);
+  --surface-hover: rgba(42,38,32,0.05);
+  --solid-bg: #2A2620;
+  --solid-fg: #FEFDFB;
+  --muted: #6E6A62;
+  --faint: #A8A49C;
+  --chip-border: rgba(42,38,32,0.18);
+  --bubble: rgba(42,38,32,0.06);
+  --ok: #3F7A4E;
+  --warn: #9A6B1E;
+  --warn-bg: rgba(154,107,30,0.08);
+  --err: #A83A2E;
+  --link: #2A2620;
+  --scrim: rgba(0,0,0,0.4);
+}
+html[data-theme="dark"] {
+  --bg: #0F0F10;
+  --fg: #F2F3F5;
+  --sigil: #F2F3F5;
+  --surface: #1E1F22;
+  --surface-solid: #1E1F22;
+  --surface-border: #2A2C30;
+  --surface-hover: rgba(255,255,255,0.06);
+  --solid-bg: #F2F3F5;
+  --solid-fg: #0F0F10;
+  --muted: #7E818A;
+  --faint: #55585F;
+  --chip-border: #3C3F45;
+  --bubble: #1E1F22;
+  --ok: #7FBF8E;
+  --warn: #D9A84E;
+  --warn-bg: rgba(217,168,78,0.10);
+  --err: #E0776A;
+  --link: #F2F3F5;
+  --scrim: rgba(0,0,0,0.6);
+}
+
+/* Map the shadcn/Tailwind tokens onto the Hangul palette so `bg-secondary`,
+   `text-muted-foreground`, `border-border`, etc. in the ai-elements and ui/
+   components render in the same colours as the hand-styled pages. */
+html[data-theme="light"],
+html[data-theme="dark"] {
+  --background: var(--bg);
+  --foreground: var(--fg);
+  --card: var(--surface-solid);
+  --card-foreground: var(--fg);
+  --popover: var(--surface-solid);
+  --popover-foreground: var(--fg);
+  --primary: var(--solid-bg);
+  --primary-foreground: var(--solid-fg);
+  --secondary: var(--bubble);
+  --secondary-foreground: var(--fg);
+  --muted-foreground: var(--muted);
+  --accent: var(--surface-hover);
+  --accent-foreground: var(--fg);
+  --border: var(--surface-border);
+  --input: var(--surface-border);
+  --ring: var(--muted);
+  --sidebar: var(--surface-solid);
+  --sidebar-foreground: var(--fg);
+  --sidebar-border: var(--surface-border);
+}
+
+body {
+  background: var(--bg);
+  color: var(--fg);
+}
+
+/* ------------------------------------------------------------------ */
+/* Reusable primitives. Use these on any new page/button so it matches. */
+/* ------------------------------------------------------------------ */
+@layer components {
+  /* Filled pill button — the primary action (Sign up, Continue with Google). */
+  .h-btn-solid {
+    display: inline-flex; align-items: center; justify-content: center; gap: 8px;
+    padding: 8px 16px; border-radius: 10px; border: none; cursor: pointer;
+    background: var(--solid-bg); color: var(--solid-fg);
+    font-size: 13px; font-weight: 500; line-height: 1;
+    transition: opacity 120ms ease;
+  }
+  .h-btn-solid:hover { opacity: 0.9; }
+  .h-btn-solid:disabled { opacity: 0.5; cursor: default; }
+
+  /* Outlined button — secondary actions. */
+  .h-btn-outline {
+    display: inline-flex; align-items: center; justify-content: center; gap: 8px;
+    padding: 8px 16px; border-radius: 10px; cursor: pointer;
+    background: transparent; color: var(--fg);
+    border: 0.5px solid var(--surface-border);
+    font-size: 13px; line-height: 1;
+    transition: background 120ms ease;
+  }
+  .h-btn-outline:hover { background: var(--surface-hover); }
+  .h-btn-outline:disabled { opacity: 0.5; cursor: default; }
+
+  /* Text-only button — tertiary (Sign in, Cancel). */
+  .h-btn-ghost {
+    display: inline-flex; align-items: center; gap: 6px;
+    padding: 6px 14px; border-radius: 10px; border: none; cursor: pointer;
+    background: none; color: var(--fg); font-size: 13px; line-height: 1;
+    transition: background 120ms ease;
+  }
+  .h-btn-ghost:hover { background: var(--surface-hover); }
+
+  /* Square icon button — settings, +, etc. */
+  .h-icon-btn {
+    width: 32px; height: 32px; border-radius: 10px; cursor: pointer;
+    background: var(--surface); border: 0.5px solid var(--surface-border);
+    color: var(--fg); display: inline-flex; align-items: center; justify-content: center;
+    transition: background 120ms ease;
+  }
+  .h-icon-btn:hover { background: var(--surface-hover); }
+  .h-icon-btn:disabled { opacity: 0.5; cursor: default; }
+
+  /* Round filled icon button — the send arrow. */
+  .h-icon-solid {
+    width: 30px; height: 30px; border-radius: 50%; border: none; cursor: pointer;
+    background: var(--solid-bg); color: var(--solid-fg);
+    display: inline-flex; align-items: center; justify-content: center;
+  }
+  .h-icon-solid:disabled { opacity: 0.4; cursor: default; }
+
+  /* Translucent surface — the input box, popovers, cards. */
+  .h-surface {
+    background: var(--surface); border: 0.5px solid var(--surface-border);
+    border-radius: 20px;
+  }
+  .h-popover {
+    background: var(--surface-solid); border: 0.5px solid var(--surface-border);
+    border-radius: 12px; padding: 8px;
+    box-shadow: 0 8px 24px rgba(0,0,0,0.12);
+  }
+  .h-chip {
+    font-size: 12px; color: var(--fg); border: 0.5px solid var(--chip-border);
+    border-radius: 20px; padding: 6px 14px; background: none; cursor: pointer;
+  }
+  .h-chip:hover { background: var(--surface-hover); }
+
+  .h-display { font-family: var(--font-fraunces); }
+  .h-muted { color: var(--muted); }
+
+  /* Full-screen scrim + centred dialog. */
+  .h-scrim {
+    position: fixed; inset: 0; background: var(--scrim); z-index: 20;
+    display: flex; align-items: center; justify-content: center; padding: 16px;
+  }
+  .h-dialog {
+    width: 100%; max-width: 340px; background: var(--bg);
+    border: 0.5px solid var(--surface-border); border-radius: 18px;
+    padding: 28px 26px; text-align: center;
+  }
+  .h-input {
+    width: 100%; padding: 10px; border-radius: 10px; box-sizing: border-box;
+    border: 0.5px solid var(--surface-border); background: var(--surface);
+    color: var(--fg); font-size: 14px; outline: none;
+  }
+  .h-input::placeholder { color: var(--faint); }
+}
+
+/* Markdown inside assistant messages. */
+.h-prose { font-size: 14px; line-height: 1.65; }
+.h-prose > :first-child { margin-top: 0; }
+.h-prose > :last-child { margin-bottom: 0; }
+.h-prose p { margin: 0 0 10px; }
+.h-prose a { color: var(--link); text-decoration: underline; text-underline-offset: 2px; }
+.h-prose code { font-family: var(--font-geist-mono); font-size: 12.5px; background: var(--bubble); padding: 1px 5px; border-radius: 5px; }
+.h-prose pre { background: var(--bubble); border: 0.5px solid var(--surface-border); border-radius: 10px; padding: 12px; overflow-x: auto; }
+.h-prose pre code { background: none; padding: 0; }
+.h-prose ul, .h-prose ol { padding-left: 20px; margin: 0 0 10px; }
+.h-prose ul { list-style: disc; }
+.h-prose ol { list-style: decimal; }
+.h-prose h1, .h-prose h2, .h-prose h3 { font-family: var(--font-fraunces); font-weight: 500; margin: 14px 0 6px; }
+.h-prose table { border-collapse: collapse; margin: 8px 0; }
+.h-prose th, .h-prose td { border: 0.5px solid var(--surface-border); padding: 4px 8px; }
+.h-prose blockquote { border-left: 2px solid var(--surface-border); margin: 0 0 10px; padding-left: 12px; color: var(--muted); }

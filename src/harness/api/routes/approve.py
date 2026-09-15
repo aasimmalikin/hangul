@@ -1,5 +1,7 @@
 """POST /approve — resume a paused run after a human decision."""
 
+import asyncio
+
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 
@@ -55,8 +57,14 @@ def _replace_placeholder(messages: list[dict], tool_call_id: str, content: str) 
 
 @router.post("/approve", response_model=AskResponse)
 async def approve(req: ApproveRequest, user: dict = Depends(get_current_user)) -> AskResponse:
-    cp = _store.load(req.approval_id)
-    if cp is None or cp.pending_tool is None:
+    if req.decision not in ("approve", "reject"):
+        raise HTTPException(status_code=422, detail="decision must be 'approve' or 'reject'.")
+
+    # One conditional UPDATE both checks that the caller owns this run and
+    # takes the pending action off it, so a retried or double-clicked approve
+    # cannot execute the tool twice, and a foreign run id reads as not found.
+    cp = await asyncio.to_thread(_store.claim_pending, req.approval_id, user["user_id"])
+    if cp is None:
         raise HTTPException(status_code=404, detail="No pending action for that approval id.")
 
     pending = cp.pending_tool
@@ -98,11 +106,12 @@ async def approve(req: ApproveRequest, user: dict = Depends(get_current_user)) -
             content = f"Error executing approved action: {e}"
             log.warning("approved action failed", error=str(e))
 
-    # replace the placeholder response with the real outcome, clear pending
+    # replace the placeholder response with the real outcome (claim_pending
+    # already cleared pending_tool and set status back to running)
     _replace_placeholder(cp.message, pending["tool_call_id"], content)
     cp.pending_tool = None
     cp.status = "running"
-    _store.save(cp)
+    await asyncio.to_thread(_store.save, cp)
 
     trace = Trace(trace_id=req.approval_id)
     result = await run_agent(
@@ -115,6 +124,7 @@ async def approve(req: ApproveRequest, user: dict = Depends(get_current_user)) -
         store=_store,
         thread_id=req.approval_id,
         trace=trace,
+        user_id=user["user_id"],
     )
 
     _trace_store.add(trace, model)
