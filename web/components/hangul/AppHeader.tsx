@@ -6,9 +6,10 @@ import { ProfileMenu } from "@/components/hangul/ProfileMenu"
 import { ThemeMenu } from "@/components/hangul/ThemeMenu"
 
 /**
- * The top bar every page shares: wordmark on the left (optional — the landing
- * page shows the sigil in its hero instead), and on the right either the
- * signed-in user's avatar menu or Sign in / Sign up, then the theme gear.
+ * The top bar every page shares: wordmark on the left, and on the right
+ * either the signed-in user's avatar menu or Sign in / Sign up, then the
+ * theme gear. `wordmarkHref={null}` renders the mark without a link, for the
+ * page it would link to (the landing page).
  *
  * `onSignIn` / `onSignUp` open the page's SignInModal in the matching mode;
  * pages own the modal so they can word the reason ("sign in to upload", …).
@@ -16,11 +17,13 @@ import { ThemeMenu } from "@/components/hangul/ThemeMenu"
  */
 export function AppHeader({
   showWordmark = true,
+  wordmarkHref = "/",
   onSignIn,
   onSignUp,
   children,
 }: {
   showWordmark?: boolean
+  wordmarkHref?: string | null
   onSignIn: () => void
   onSignUp?: () => void
   children?: React.ReactNode
@@ -35,7 +38,7 @@ export function AppHeader({
       }}
     >
       <div style={{ display: "flex", alignItems: "center", gap: 12, flex: 1, minWidth: 0 }}>
-        {showWordmark && <Wordmark />}
+        {showWordmark && <Wordmark href={wordmarkHref} />}
         {children}
       </div>
 

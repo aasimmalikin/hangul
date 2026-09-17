@@ -37,11 +37,16 @@ class OpenAIProvider:
 
     async def chat_stream(self, messages: list[dict], tools: list[dict],
                           tool_choice: str | None = None):
-        """Like chat(), but yields text tokens as they arrive.
+        """Like chat(), but yields progress as it arrives.
 
-        Yields ("token", str) for each text delta, then ("final", AssistantTurn)
-        once complete. The caller streams the tokens live and uses the final
-        AssistantTurn for tool calls and token accounting.
+        Yields, in order of arrival:
+          ("token", str)                       a text delta
+          ("tool_start", {"id", "name"})       the model began a tool call
+          ("tool_args", {"id", "delta"})       a fragment of that call's JSON arguments
+          ("final", AssistantTurn)             once complete
+        The caller streams tokens and tool progress live (so the user can
+        watch, say, a file's content being drafted) and uses the final
+        AssistantTurn for the parsed tool calls and token accounting.
         """
         kwargs = {
             "model": self.model,
@@ -74,13 +79,18 @@ class OpenAIProvider:
 
             for tc in (delta.tool_calls or []):
                 slot = tool_fragments.setdefault(
-                    tc.index, {"id": "", "name": "", "args": ""})
+                    tc.index, {"id": "", "name": "", "args": "", "announced": False})
                 if tc.id:
                     slot["id"] = tc.id
                 if tc.function and tc.function.name:
                     slot["name"] = tc.function.name
+                if slot["id"] and slot["name"] and not slot["announced"]:
+                    slot["announced"] = True
+                    yield ("tool_start", {"id": slot["id"], "name": slot["name"]})
                 if tc.function and tc.function.arguments:
                     slot["args"] += tc.function.arguments
+                    if slot["announced"]:
+                        yield ("tool_args", {"id": slot["id"], "delta": tc.function.arguments})
 
         calls = [
             ToolCall(id=f["id"], name=f["name"],

@@ -7,6 +7,7 @@ from harness.config import get_settings
 from harness.api.routes import ask, health, observability, upload, quality, approve, ask_stream
 from harness.mcp.manager import MCPManager
 from harness.api.routes.ask import _registry
+from harness.api.routes import memory, episodes
 
 settings = get_settings()
 configure_logging(settings.log_level)
@@ -49,6 +50,8 @@ def create_app() -> FastAPI:
     app.include_router(quality.router)
     app.include_router(approve.router)
     app.include_router(ask_stream.router)
+    app.include_router(memory.router)
+    app.include_router(episodes.router)
     return app
 
 app = create_app()

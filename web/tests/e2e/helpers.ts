@@ -40,10 +40,15 @@ export async function backend(path: string, body?: unknown) {
   return res.json()
 }
 export const resetBackend = () => backend("/__reset")
+/** Plant a conversation for `user` in the fake backend, optionally dated (ISO). */
+export const seedChat = (user: TestUser, title: string, opts: { updated_at?: string; summary?: string } = {}) =>
+  backend("/__episode", { user: user.id, title, ...opts })
 export const backendState = () => backend("/__state") as Promise<{
   asks: { user: string; question: string; history: number; docs_only: boolean }[]
   executed: Record<string, number>
   uploads: { user: string; filename: string }[]
+  memory: Record<string, { id: number; content: string; active: boolean }[]>
+  episodes: Record<string, { id: number; thread_id: string; title: string; summary: string; active: boolean }[]>
 }>
 
 export async function ask(page: Page, text: string) {

@@ -24,7 +24,7 @@ import crypto from "node:crypto"
 const PORT = Number(process.env.FAKE_BACKEND_PORT ?? 8765)
 const SECRET = process.env.FASTAPI_JWT_SECRET ?? "e2e-service-secret"
 
-const state = { down: false, approves: {}, executed: {}, uploads: [], asks: [], inFlight: {} }
+const state = { down: false, approves: {}, executed: {}, uploads: [], asks: [], inFlight: {}, memory: {}, episodes: {} }
 
 function verify(req) {
   const h = req.headers.authorization ?? ""
@@ -70,8 +70,8 @@ async function askStream(req, res, user) {
   req.on("close", finish)
 
   try {
-    if (q.startsWith("SLOW")) await sleep(3000)
     send("step", { step: 1 })
+    if (q.startsWith("SLOW")) await sleep(3000)
 
     if (q.startsWith("ERROR")) { send("error", { message: "injected agent failure" }); return res.end() }
 
@@ -87,9 +87,17 @@ async function askStream(req, res, user) {
     if (q.startsWith("APPROVAL") || q.startsWith("ASK")) {
       const isAsk = q.startsWith("ASK")
       state.approves[runId] = { user: user.sub, pending: true }
-      send("tool_call", { id: "c1", name: isAsk ? "ask_user" : "filesystem__write_file", arguments: isAsk ? { question: "Which format?", options: [{ label: "Markdown", description: "" }, { label: "Plain text", description: "" }] } : { path: "notes.txt" }, step: 1 })
+      const fileArgs = { path: "/sessions/notes.txt", content: "Line one of the notes.\nLine two, with a bit more detail.\nLine three closes it." }
+      if (!isAsk) {
+        // Stream the call the way the real provider does: name first, then
+        // the JSON arguments in fragments, so the UI can show the draft.
+        send("tool_pending", { id: "c1", name: "filesystem__write_file", step: 1 })
+        const json = JSON.stringify(fileArgs)
+        for (let i = 0; i < json.length; i += 9) { send("tool_args_delta", { id: "c1", text: json.slice(i, i + 9) }); await sleep(12) }
+      }
+      send("tool_call", { id: "c1", name: isAsk ? "ask_user" : "filesystem__write_file", arguments: isAsk ? { question: "Which format?", options: [{ label: "Markdown", description: "" }, { label: "Plain text", description: "" }] } : fileArgs, step: 1 })
       send("tool_result", { id: "c1", name: isAsk ? "ask_user" : "filesystem__write_file", ok: true, preview: "Waiting for your approval.", ms: 0, cached: false })
-      send("approval_required", { run_id: runId, name: isAsk ? "ask_user" : "filesystem__write_file", arguments: isAsk ? { question: "Which format?", options: [{ label: "Markdown", description: "" }, { label: "Plain text", description: "" }] } : { path: "notes.txt" }, tool_call_id: "c1" })
+      send("approval_required", { run_id: runId, name: isAsk ? "ask_user" : "filesystem__write_file", arguments: isAsk ? { question: "Which format?", options: [{ label: "Markdown", description: "" }, { label: "Plain text", description: "" }] } : fileArgs, tool_call_id: "c1" })
       send("done", { steps: 1, run_id: runId, cost_usd: 0.001, tools_used: [isAsk ? "ask_user" : "filesystem__write_file"] })
       return res.end()
     }
@@ -126,6 +134,39 @@ async function upload(req, res, user) {
   json(res, 200, { session_id: user.sub, filename, chunks_indexed: 7, mcp_path: `${user.sub}/${filename}`, message: "ok" })
 }
 
+/**
+ * Memory rows per user, seeded on first read so every fresh user starts with
+ * the same three. DELETE deactivates (like the real backend) — the row stays
+ * in state with active:false so a test can assert it was not erased.
+ */
+function memoryFor(user) {
+  if (!state.memory[user.sub]) {
+    state.memory[user.sub] = [
+      { id: 3, kind: "correction", content: "Call me Sam, not Samuel", active: true, created_at: "2026-09-17T09:00:00Z" },
+      { id: 2, kind: "fact", content: "Works on the billing service", active: true, created_at: "2026-09-16T09:00:00Z" },
+      { id: 1, kind: "preference", content: "Prefers short answers with code samples", active: true, created_at: "2026-09-10T09:00:00Z" },
+    ]
+  }
+  return state.memory[user.sub]
+}
+
+/**
+ * Chat history (episodes) per user, empty until the app saves one. POST is
+ * an upsert by thread_id, DELETE deactivates — same contract as
+ * harness.api.routes.episodes, minus the embedding.
+ */
+let episodeSeq = 0
+function episodesFor(user) {
+  return (state.episodes[user.sub] ??= [])
+}
+// Same one-line description the real route derives: first answer, else first question.
+function preview(summary) {
+  const lines = summary.split("\n").map((l) => l.trim()).filter(Boolean)
+  const pick = lines.find((l) => l.startsWith("A:")) ?? lines.find((l) => l.startsWith("Q:")) ?? ""
+  const text = pick.slice(2).split(/\s+/).join(" ").trim()
+  return text.length <= 160 ? text : text.slice(0, 159).trimEnd() + "…"
+}
+
 const server = http.createServer(async (req, res) => {
   const url = new URL(req.url, "http://x")
   if (url.pathname === "/__control" && req.method === "POST") {
@@ -133,7 +174,15 @@ const server = http.createServer(async (req, res) => {
     return json(res, 200, { ok: true })
   }
   if (url.pathname === "/__state") return json(res, 200, state)
-  if (url.pathname === "/__reset") { Object.assign(state, { down: false, approves: {}, executed: {}, uploads: [], asks: [], inFlight: {} }); return json(res, 200, { ok: true }) }
+  // Test hook: plant a conversation for a user with a chosen timestamp.
+  if (url.pathname === "/__episode" && req.method === "POST") {
+    const b = JSON.parse((await readBody(req)).toString() || "{}")
+    const rows = episodesFor({ sub: String(b.user) })
+    const at = b.updated_at ?? new Date().toISOString()
+    rows.push({ id: ++episodeSeq, thread_id: b.thread_id ?? `seed-${episodeSeq}`, title: b.title, summary: b.summary ?? `Q: ${b.title}\nA: Reply to: ${b.title}`, created_at: at, updated_at: at, active: true })
+    return json(res, 200, { ok: true })
+  }
+  if (url.pathname === "/__reset") { Object.assign(state, { down: false, approves: {}, executed: {}, uploads: [], asks: [], inFlight: {}, memory: {}, episodes: {} }); return json(res, 200, { ok: true }) }
   if (url.pathname === "/healthz") return state.down ? json(res, 503, { status: "down" }) : json(res, 200, { status: "ok" })
   if (url.pathname === "/quality") return json(res, 200, { available: true, avg_correctness: 0.91, avg_faithfulness: 0.88, pass_rate: 0.9, cases: 20, gate_passed: true, blocking_failures: [], advisory_notes: [] })
 
@@ -144,6 +193,37 @@ const server = http.createServer(async (req, res) => {
   if (url.pathname === "/ask/stream" && req.method === "POST") return askStream(req, res, user)
   if (url.pathname === "/approve" && req.method === "POST") return approve(req, res, user)
   if (url.pathname === "/upload" && req.method === "POST") return upload(req, res, user)
+  if (url.pathname === "/memory" && req.method === "GET") {
+    return json(res, 200, memoryFor(user).filter((m) => m.active).map(({ id, kind, content, created_at }) => ({ id, kind, content, created_at })))
+  }
+  if (url.pathname === "/episodes" && req.method === "GET") {
+    const rows = episodesFor(user).filter((e) => e.active).sort((a, b) => b.updated_at.localeCompare(a.updated_at))
+    return json(res, 200, rows.map(({ id, thread_id, title, summary, created_at, updated_at }) => ({ id, thread_id, title, preview: preview(summary), summary, created_at, updated_at })))
+  }
+  if (url.pathname === "/episodes" && req.method === "POST") {
+    const body = JSON.parse((await readBody(req)).toString() || "{}")
+    if (!body.thread_id || !body.title || !body.summary) return json(res, 422, { detail: "invalid" })
+    const rows = episodesFor(user)
+    const now = new Date().toISOString()
+    let row = rows.find((e) => e.thread_id === body.thread_id)
+    if (!row) { row = { id: ++episodeSeq, thread_id: body.thread_id, created_at: now, active: true }; rows.push(row) }
+    Object.assign(row, { title: body.title, summary: body.summary, updated_at: now, active: true })
+    return json(res, 201, { id: row.id, thread_id: row.thread_id })
+  }
+  const edel = url.pathname.match(/^\/episodes\/(\d+)$/)
+  if (edel && req.method === "DELETE") {
+    const row = episodesFor(user).find((e) => e.id === Number(edel[1]) && e.active)
+    if (!row) return json(res, 404, { detail: "conversation not found" })
+    row.active = false
+    return json(res, 200, { deleted: row.id })
+  }
+  const del = url.pathname.match(/^\/memory\/(\d+)$/)
+  if (del && req.method === "DELETE") {
+    const row = memoryFor(user).find((m) => m.id === Number(del[1]) && m.active)
+    if (!row) return json(res, 404, { detail: "memory not found" })
+    row.active = false
+    return json(res, 200, { deleted: row.id })
+  }
   json(res, 404, { detail: "not found" })
 })
 

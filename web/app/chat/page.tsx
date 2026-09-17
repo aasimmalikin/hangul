@@ -9,13 +9,14 @@ import ReactMarkdown from "react-markdown"
 import remarkGfm from "remark-gfm"
 import { Conversation, ConversationContent } from "@/components/ai-elements/conversation"
 import { Message, MessageContent } from "@/components/ai-elements/message"
-import { ToolRow, type ToolActivity } from "@/components/agent-activity"
+import { ActivityGroup, toolName, type ActivityItem, type ToolActivity } from "@/components/agent-activity"
 import { HangulSigil } from "@/components/HangulSigil"
 import { AppHeader } from "@/components/hangul/AppHeader"
 import { SignInModal, type AuthMode } from "@/components/hangul/SignInModal"
 import { AttachMenu, type Attachment } from "@/components/hangul/AttachMenu"
 import { AttachmentChips } from "@/components/hangul/AttachmentChips"
 import { StatusBanner } from "@/components/hangul/StatusBanner"
+import { ChatsPanel } from "@/components/hangul/ChatsPanel"
 import { useConnectivity } from "@/components/hangul/useConnectivity"
 import { parseApiFailure, failureFromResponse, type ApiFailure } from "@/lib/apiError"
 
@@ -42,9 +43,36 @@ type SavedThread = {
   attachments: Attachment[]
   docsOnly?: boolean
   savedAt?: number
+  /** Conversation id: what the "Chats" rail entry is keyed by (episodes.thread_id). */
+  threadId?: string
 }
 const STORAGE_PREFIX = "hangul:chat:"
 const MAX_QUESTION_CHARS = 8_000
+// How tall the composer grows before it scrolls: ~8 lines at 22px.
+const MAX_COMPOSER_PX = 200
+const newThreadId = () => crypto.randomUUID()
+
+/**
+ * What the "Chats" rail stores about a conversation: its title (the first
+ * question) and a compact transcript the backend embeds for
+ * `recall_episodes`. Built here from the UI messages — no model call.
+ */
+function summariseThread(messages: UIMessage[]): { title: string; summary: string } | null {
+  const lines: string[] = []
+  let title = ""
+  for (const m of messages) {
+    const text = (m.parts as Part[]).filter((p) => p.type === "text" && p.text).map((p) => p.text!.trim()).join(" ").trim()
+    if (!text) continue
+    if (m.role === "user") {
+      if (!title) title = text
+      lines.push(`Q: ${text.slice(0, 300)}`)
+    } else if (m.role === "assistant") {
+      lines.push(`A: ${text.slice(0, 300)}`)
+    }
+  }
+  if (!title) return null
+  return { title: title.slice(0, 200), summary: lines.join("\n").slice(0, 2048) }
+}
 
 function loadThread(key: string): SavedThread | null {
   try {
@@ -54,7 +82,7 @@ function loadThread(key: string): SavedThread | null {
     if (!raw) return null
     const t = JSON.parse(raw) as Partial<SavedThread>
     if (!Array.isArray(t.messages)) return null
-    return { messages: t.messages, resolved: t.resolved ?? {}, attachments: t.attachments ?? [], docsOnly: t.docsOnly ?? false, savedAt: t.savedAt }
+    return { messages: t.messages, resolved: t.resolved ?? {}, attachments: t.attachments ?? [], docsOnly: t.docsOnly ?? false, savedAt: t.savedAt, threadId: t.threadId }
   } catch {
     return null
   }
@@ -64,6 +92,11 @@ function saveThread(key: string, t: SavedThread) {
 }
 function clearThread(key: string) {
   try { sessionStorage.removeItem(key) } catch { /* ignore */ }
+}
+
+/** Completed runs in a thread — every run ends with a hidden data-run part. */
+function countRuns(messages: UIMessage[]) {
+  return messages.reduce((n, m) => n + (m.parts as Part[]).filter((p) => p.type === "data-run").length, 0)
 }
 
 function LinkRenderer(props: { href?: string; children?: React.ReactNode }) {
@@ -84,15 +117,62 @@ function AnswerText({ text }: { text: string }) {
   )
 }
 
-function Thinking() {
+/**
+ * Exactly what the agent is asking permission to do, laid out so the user can
+ * read it before deciding: the file and its full content for writes, the
+ * edits for edits, a plain key/value list for anything else.
+ */
+function ActionDetails({ tool, args }: { tool: string; args: Record<string, unknown> }) {
+  const path = typeof args.path === "string" ? args.path : null
+  const content = typeof args.content === "string" ? args.content : null
+  const edits = Array.isArray(args.edits) ? (args.edits as Record<string, unknown>[]) : null
+  const rest = Object.entries(args).filter(([k]) => !["path", "content", "edits"].includes(k))
+  const mono = { fontFamily: "var(--font-geist-mono)", fontSize: 12 } as const
+
   return (
-    <div className="flex items-center gap-2 py-2 text-sm" data-testid="thinking" style={{ color: "var(--muted)" }}>
-      <span className="inline-flex gap-1">
-        <span className="h-1.5 w-1.5 animate-pulse rounded-full" style={{ background: "var(--muted)" }} />
-        <span className="h-1.5 w-1.5 animate-pulse rounded-full [animation-delay:150ms]" style={{ background: "var(--muted)" }} />
-        <span className="h-1.5 w-1.5 animate-pulse rounded-full [animation-delay:300ms]" style={{ background: "var(--muted)" }} />
-      </span>
-      <span>Thinking…</span>
+    <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+      {path && (
+        <div style={{ fontSize: 13 }}>
+          <span className="h-muted">File </span>
+          <span style={{ ...mono, fontWeight: 500 }}>{path.split("/").slice(-1)[0]}</span>
+          <div className="h-muted" style={{ ...mono, fontSize: 11, wordBreak: "break-all" }}>{path}</div>
+        </div>
+      )}
+      {content !== null && (
+        <div>
+          <div className="h-muted" style={{ fontSize: 12, marginBottom: 4 }}>
+            Content to write · {content.length.toLocaleString()} characters
+          </div>
+          <pre
+            data-testid="approval-content"
+            className="max-h-72 overflow-auto whitespace-pre-wrap rounded-lg p-3"
+            style={{ ...mono, background: "var(--bubble)", border: "0.5px solid var(--surface-border)", color: "var(--fg)", margin: 0 }}
+          >
+            {content}
+          </pre>
+        </div>
+      )}
+      {edits && (
+        <div>
+          <div className="h-muted" style={{ fontSize: 12, marginBottom: 4 }}>{edits.length} {edits.length === 1 ? "edit" : "edits"}</div>
+          {edits.map((e, i) => (
+            <pre key={i} className="mb-1 max-h-40 overflow-auto whitespace-pre-wrap rounded-lg p-3" style={{ ...mono, background: "var(--bubble)", border: "0.5px solid var(--surface-border)", color: "var(--fg)", margin: "0 0 6px" }}>
+              <span style={{ color: "var(--err)" }}>- {String(e.oldText ?? "")}</span>{"\n"}
+              <span style={{ color: "var(--ok)" }}>+ {String(e.newText ?? "")}</span>
+            </pre>
+          ))}
+        </div>
+      )}
+      {rest.length > 0 && (
+        <dl style={{ display: "grid", gridTemplateColumns: "auto 1fr", gap: "2px 10px", fontSize: 12, margin: 0 }}>
+          {rest.map(([k, v]) => (
+            <div key={k} style={{ display: "contents" }}>
+              <dt className="h-muted">{k}</dt>
+              <dd style={{ ...mono, margin: 0, wordBreak: "break-word" }}>{typeof v === "string" ? v : JSON.stringify(v)}</dd>
+            </div>
+          ))}
+        </dl>
+      )}
     </div>
   )
 }
@@ -154,6 +234,7 @@ function ChatInner() {
   const [resolved, setResolved] = useState<Record<string, string>>({})
   const [busy, setBusy] = useState<string | null>(null)
   const [docsOnly, setDocsOnly] = useState(false)
+  const [threadId, setThreadId] = useState<string>(newThreadId)
 
   // A question handed over from the landing page (`/chat?q=`), plus any
   // documents attached there (`&doc=`, already indexed server-side). Signed-in
@@ -173,9 +254,19 @@ function ChatInner() {
   // is nothing server-side to reload from.)
   const storageKey = session?.user?.id ? `${STORAGE_PREFIX}${session.user.id}` : null
   const restoredRef = useRef(false)
+  // Arriving with `?q=` is a hand-off from the landing page ("Draft a note",
+  // "Check the web", a typed question): that is a *new* conversation, so the
+  // tab's previous thread is dropped instead of the question being appended
+  // to it. Captured once at mount — the URL loses `q` right after sending,
+  // and a plain refresh (no `q`) must still restore. Nothing server-side is
+  // lost: every run stays checkpointed and `remember` facts persist.
+  const handoffRef = useRef(Boolean(q))
+  // Runs already saved to the Chats rail (so a restored thread is not re-saved).
+  const savedRunsRef = useRef(0)
   useEffect(() => {
     if (!storageKey || restoredRef.current) return
     restoredRef.current = true
+    if (handoffRef.current) { clearThread(storageKey); return }
     const saved = loadThread(storageKey)
     if (!saved) return
     setMessages(saved.messages)
@@ -185,6 +276,8 @@ function ChatInner() {
     setResolved(saved.resolved)
     setAttachments((a) => (a.length ? a : saved.attachments))
     setDocsOnly(Boolean(saved.docsOnly))
+    if (saved.threadId) setThreadId(saved.threadId)
+    savedRunsRef.current = countRuns(saved.messages)
   }, [storageKey, setMessages])
 
   const streaming = status === "submitted" || status === "streaming"
@@ -193,8 +286,31 @@ function ChatInner() {
   // far) is there when they come back, flagged as cut short with a Retry.
   useEffect(() => {
     if (!storageKey || !restoredRef.current) return
-    saveThread(storageKey, { messages, resolved, attachments, docsOnly })
-  }, [storageKey, messages, resolved, attachments, docsOnly])
+    saveThread(storageKey, { messages, resolved, attachments, docsOnly, threadId })
+  }, [storageKey, messages, resolved, attachments, docsOnly, threadId])
+
+  // Every completed run saves the conversation to the Chats rail (upsert by
+  // threadId), so it is already listed when the user goes back to the
+  // landing page. `chatsVersion` bumps after a save so the rail on this
+  // page refetches.
+  const runsDone = countRuns(messages)
+  const [chatsVersion, setChatsVersion] = useState(0)
+  useEffect(() => {
+    if (runsDone === 0 || runsDone <= savedRunsRef.current) return
+    savedRunsRef.current = runsDone
+    const s = summariseThread(messages)
+    if (!s) return
+    let alive = true
+    fetch("/api/chats", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ thread_id: threadId, ...s }),
+      signal: AbortSignal.timeout(20_000),
+    })
+      .then((r) => { if (alive && r.ok) setChatsVersion((v) => v + 1) })
+      .catch(() => { /* the rail just won't show this chat until the next run */ })
+    return () => { alive = false }
+  }, [runsDone, messages, threadId])
 
   // Send the handed-over question once, then drop it from the URL so a
   // refresh (or back/forward) does not send it again.
@@ -248,6 +364,8 @@ function ChatInner() {
   const newChat = () => {
     if (streaming) stop()
     setMessages([])
+    setThreadId(newThreadId())
+    savedRunsRef.current = 0
     setResolved({})
     setAttachments([])
     setUploadError(null)
@@ -294,24 +412,61 @@ function ChatInner() {
   // dead end. A reply that *did* arrive is taken at face value — partial or
   // not, it is what the user saw, and only an explicit error says otherwise.
   const lastUserUnanswered = !streaming && last?.role === "user"
-  const interrupted = Boolean(error) || lastUserUnanswered
+  // An assistant turn with nothing readable in it (only status/tool rows —
+  // e.g. stopped before the first token) counts as no answer too.
+  const lastAssistantEmpty = !streaming && last?.role === "assistant" &&
+    !(last.parts as Part[]).some((p) => (p.type === "text" && p.text?.trim()) || p.type === "data-approval" || p.type === "data-choice")
+  const interrupted = Boolean(error) || lastUserUnanswered || lastAssistantEmpty
+
+  /**
+   * Parts arrive in the order the agent produced them. Text is rendered as
+   * is; every unbroken run of activity (tool calls, "thinking" gaps) between
+   * texts is folded into one ActivityGroup, so the thread reads as
+   * narration → one compact block of work → answer, instead of a list that
+   * grows a line per step. The block is live only while it is the last
+   * thing in the last message of a run that is still streaming.
+   */
+  const renderParts = (parts: Part[], msgId: string, isLast: boolean) => {
+    const out: React.ReactNode[] = []
+    let group: ActivityItem[] = []
+    const flush = (live: boolean) => {
+      if (group.length === 0) return
+      out.push(<ActivityGroup key={`${msgId}-g${out.length}`} items={group} live={live} />)
+      group = []
+    }
+    parts.forEach((part, i) => {
+      const key = `${msgId}-${i}`
+      if (part.type === "data-tool") {
+        const activity = part.data as ToolActivity
+        // ask_user has no result worth showing — the choice card below says it.
+        if (activity.tool !== "ask_user") group.push({ kind: "tool", key, activity })
+        return
+      }
+      if (part.type === "data-status") {
+        // The model is between outputs (deciding, or generating a tool call
+        // it has not named yet). Only meaningful while the run is live.
+        const st = part.data as { phase: "thinking" | "idle"; step?: number }
+        if (st.phase === "thinking" && streaming && isLast) group.push({ kind: "thinking", key, step: st.step })
+        return
+      }
+      if (part.type === "data-run") {
+        // Run bookkeeping (steps, cost, tools) travels with the message for
+        // the record but is not shown — an invisible marker that the run ended.
+        flush(false)
+        out.push(<span key={key} data-testid="run-done" hidden />)
+        return
+      }
+      flush(false)
+      out.push(renderPart(part, key))
+    })
+    // Whatever is still open at the end is the current work, if the run is live.
+    flush(streaming && isLast)
+    return out
+  }
 
   const renderPart = (part: Part, key: string) => {
     if (part.type === "text") {
       return part.text ? <AnswerText key={key} text={part.text} /> : null
-    }
-
-    if (part.type === "data-tool") {
-      const activity = part.data as ToolActivity
-      // ask_user has no result worth showing — the choice card below says it.
-      if (activity.tool === "ask_user") return null
-      return <ToolRow key={key} activity={activity} />
-    }
-
-    if (part.type === "data-run") {
-      // Run bookkeeping (steps, cost, tools) travels with the message for
-      // the record but is not shown — an invisible marker that the run ended.
-      return <span key={key} data-testid="run-done" hidden />
     }
 
     if (part.type === "data-choice") {
@@ -347,14 +502,22 @@ function ChatInner() {
       }
       return (
         <Card key={key} tone="warn" testId="approval-card">
-          <p className="mb-2 text-sm">
-            The assistant wants to run <code style={{ fontFamily: "var(--font-geist-mono)", fontSize: 12 }}>{approval.tool}</code>. Allow it?
+          <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 10 }}>
+            <i className="ti ti-hand-stop" style={{ color: "var(--warn)", fontSize: 16 }} />
+            <span className="h-display" style={{ fontSize: 16 }}>Approve this action?</span>
+            <span className="h-muted" style={{ fontSize: 12, marginLeft: "auto", fontFamily: "var(--font-geist-mono)" }}>{toolName(approval.tool)}</span>
+          </div>
+          <ActionDetails tool={approval.tool} args={approval.arguments ?? {}} />
+          <p className="h-muted" style={{ fontSize: 12, margin: "10px 0 8px" }}>
+            Nothing has been changed yet. The agent will only continue once you decide.
           </p>
           <div className="flex gap-2">
             <button className="h-btn-solid" onClick={() => decide(approval.runId, "approve")} disabled={busy === approval.runId}>
-              {busy === approval.runId ? "…" : "Approve"}
+              <i className="ti ti-check" style={{ fontSize: 14 }} />
+              {busy === approval.runId ? "Working…" : "Approve"}
             </button>
             <button className="h-btn-outline" onClick={() => decide(approval.runId, "reject")} disabled={busy === approval.runId}>
+              <i className="ti ti-x" style={{ fontSize: 14 }} />
               Reject
             </button>
           </div>
@@ -366,6 +529,8 @@ function ChatInner() {
   }
 
   const canSend = !streaming && input.trim().length > 0 && connectivity.online
+
+  const onChatsUnauthorized = useCallback(() => handleFailure({ code: "unauthorized", detail: "Sign in to continue." }), [handleFailure])
 
   return (
     <main style={{ height: "100vh", display: "flex", flexDirection: "column" }}>
@@ -382,8 +547,11 @@ function ChatInner() {
       </AppHeader>
       <StatusBanner c={connectivity} />
 
+      <div style={{ flex: 1, display: "flex", minHeight: 0 }}>
+      {authStatus === "authenticated" && <ChatsPanel refreshKey={chatsVersion} onUnauthorized={onChatsUnauthorized} />}
+      <div style={{ flex: 1, display: "flex", flexDirection: "column", minWidth: 0 }}>
       <Conversation className="flex-1">
-        <ConversationContent className="mx-auto min-h-full w-full max-w-3xl px-5 py-6">
+        <ConversationContent className="mx-auto min-h-full w-full max-w-3xl px-5 py-6" data-testid="thread">
           {messages.length === 0 ? (
             <div className="flex flex-1 flex-col items-center justify-center gap-3 p-8 text-center">
               <HangulSigil size={40} />
@@ -399,12 +567,14 @@ function ChatInner() {
                     narration, the tool it ran, and the answer read as one
                     running commentary. */}
                 <MessageContent className="group-[.is-user]:rounded-2xl">
-                  {(m.parts as Part[]).map((p, i) => renderPart(p, `${m.id}-${i}`))}
+                  {m.role === "assistant"
+                    ? renderParts(m.parts as Part[], m.id, m === last)
+                    : (m.parts as Part[]).map((p, i) => renderPart(p, `${m.id}-${i}`))}
                 </MessageContent>
               </Message>
             ))
           )}
-          {showThinking && <Thinking />}
+          {showThinking && <ActivityGroup items={[{ kind: "thinking", key: "pre" }]} live />}
 
           {(notice || (interrupted && messages.length > 0)) && (
             <Card tone="error" testId="notice-card">
@@ -466,21 +636,22 @@ function ChatInner() {
               }}
               placeholder={attachments.length ? "Ask about your document…" : "Ask anything…"}
               rows={1}
+              data-testid="chat-composer"
               maxLength={MAX_QUESTION_CHARS}
               style={{
                 flex: 1, resize: "none", background: "none", border: "none", outline: "none",
                 fontSize: 14, color: "var(--fg)", lineHeight: "22px", padding: "5px 0",
-                maxHeight: 160, overflowY: "auto", fontFamily: "inherit",
+                maxHeight: MAX_COMPOSER_PX, overflowY: "auto", overflowX: "hidden", fontFamily: "inherit",
               }}
               onInput={(e) => {
                 const el = e.currentTarget
                 el.style.height = "auto"
-                el.style.height = `${Math.min(el.scrollHeight, 160)}px`
+                el.style.height = `${Math.min(el.scrollHeight, MAX_COMPOSER_PX)}px`
               }}
             />
             {streaming ? (
               <button type="button" className="h-icon-solid" style={{ flexShrink: 0 }} onClick={() => stop()} aria-label="Stop" title="Stop generating">
-                <i className="ti ti-player-stop-filled" style={{ fontSize: 14 }} />
+                <i className="ti ti-player-stop" style={{ fontSize: 15 }} />
               </button>
             ) : (
               <button type="submit" className="h-icon-solid" style={{ flexShrink: 0 }} disabled={!canSend} aria-label="Send">
@@ -489,6 +660,8 @@ function ChatInner() {
             )}
           </form>
         </div>
+      </div>
+      </div>
       </div>
 
       <SignInModal

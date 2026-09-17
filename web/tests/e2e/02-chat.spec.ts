@@ -50,6 +50,39 @@ test.describe("conversation", () => {
     expect((await backendState()).asks).toHaveLength(2)
   })
 
+  test("each landing-page prompt starts a fresh conversation, never continuing the last one", async ({ page }) => {
+    // Draft a note → chat
+    await page.goto("/")
+    await page.getByRole("button", { name: "Draft a note" }).click()
+    await expect(page).toHaveURL(/\/chat/)
+    await expectReply(page, "Reply to: Draft a note")
+    await ask(page, "and add a title")
+    await expectReply(page, "Reply to: and add a title")
+    await expect(page.locator(".h-prose")).toHaveCount(4)
+
+    // back to the landing page, pick another prompt → only the new exchange is shown
+    await page.goto("/")
+    await page.getByRole("button", { name: "Check the web" }).click()
+    await expectReply(page, "Reply to: Check the web")
+    await expect(page.locator(".h-prose")).toHaveCount(2)
+    await expect(page.locator("body")).not.toContainText("Draft a note")
+    // and the backend got it with no history from the earlier thread
+    const asks = (await backendState()).asks
+    expect(asks.at(-1)).toMatchObject({ question: "Check the web", history: 0 })
+
+    // third prompt, same rule
+    await page.goto("/")
+    await page.getByRole("button", { name: "Search my documents" }).click()
+    await expectReply(page, "Reply to: Search my documents")
+    await expect(page.locator(".h-prose")).toHaveCount(2)
+    await expect(page.locator("body")).not.toContainText("Check the web")
+
+    // a plain refresh (no ?q=) still restores the current thread
+    await page.reload()
+    await expect(page.locator(".h-prose")).toHaveCount(2)
+    await expect(page.locator("body")).toContainText("Search my documents")
+  })
+
   test("back then forward restores the thread", async ({ page }) => {
     await page.goto("/chat")
     await ask(page, "before navigating")
@@ -82,8 +115,10 @@ test.describe("conversation", () => {
     await expect(tab2.locator(".h-prose")).toHaveCount(0)
     await ask(tab2, "from tab two")
     await expectReply(tab2, "from tab two")
-    await expect(tab2.locator("body")).not.toContainText("from tab one")
-    await expect(page.locator("body")).not.toContainText("from tab two")
+    // (the Chats rail lists both conversations in both tabs — that is per
+    // user, not per tab; the *thread* is what must stay separate)
+    await expect(tab2.getByTestId("thread")).not.toContainText("from tab one")
+    await expect(page.getByTestId("thread")).not.toContainText("from tab two")
     await expect(page.locator(".h-prose")).toHaveCount(2)
     // each tab keeps its own thread across a refresh
     await tab2.reload()

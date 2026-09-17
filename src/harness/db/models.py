@@ -1,5 +1,5 @@
 from datetime import datetime
-from sqlalchemy import DateTime, Integer, String, func
+from sqlalchemy import UniqueConstraint, DateTime, Integer, String, func
 from sqlalchemy import Numeric
 from decimal import Decimal
 from sqlalchemy.dialects.postgresql import JSONB
@@ -90,10 +90,14 @@ class Episode(Base):
     __tablename__ = "episodes"
     id: Mapped[int] = mapped_column(primary_key = True, autoincrement = True)
     user_id: Mapped[int] = mapped_column(Integer, nullable = False, index = True)
-    thread_id: Mapped[str] = mapped_column(String(64), nullable = False)
+    thread_id: Mapped[str] = mapped_column(String(64), nullable = False)     # conversation id (unique per user)
+    title: Mapped[str] = mapped_column(String(200), nullable = False, default = "")  # first question, for the Chats rail
     summary: Mapped[str] = mapped_column(String(2048), nullable = False)
     embedding: Mapped[list[float]] = mapped_column(Vector(1536), nullable = False)
     embed_model: Mapped[str] = mapped_column(String(64), nullable = False)   # versioning guard
+    active: Mapped[bool] = mapped_column(nullable = False, default = True)   # hide-don't-delete
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone = True), server_default = func.now(), nullable = False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone = True), server_default = func.now(), onupdate = func.now(), nullable = False)
+    __table_args__ = (UniqueConstraint("user_id", "thread_id", name = "uq_episodes_user_thread"),)
     
 

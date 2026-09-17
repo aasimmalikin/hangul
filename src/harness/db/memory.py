@@ -33,13 +33,14 @@ def profile_text(user_id: str, limit: int = 12) -> str:
     lines = [f"-{r.content}"for r in rows]
     return "What you know about this user:\n" + "\n".join(lines)
 
-def deactivate_memory(user_id: str, memory_id: int)->None:
-    """Deactivate a specific memory for a user."""
+def deactivate_memory(user_id: str, memory_id: int) -> bool:
+    """Deactivate a specific memory for a user. Returns False when the row
+    does not exist, is already inactive, or belongs to another user, so the
+    caller can answer 404 instead of a false success."""
     with SessionLocal() as session:
-        rows = session.get(UserMemory, memory_id)
-        if rows and rows.user_id == int(user_id):
-            rows.active = False
-            session.commit()
-
-    
-
+        row = session.get(UserMemory, memory_id)
+        if row is None or row.user_id != int(user_id) or not row.active:
+            return False
+        row.active = False
+        session.commit()
+        return True

@@ -13,7 +13,7 @@ router = APIRouter()
 # Progress events the agent emits mid-run. Each is forwarded verbatim as a
 # named SSE event, so the browser sees what the agent is doing as it happens.
 AGENT_EVENTS = {"step", "text_start", "text_delta", "text_end",
-                "tool_call", "tool_result"}
+                "tool_pending", "tool_args_delta", "tool_call", "tool_result"}
 
 
 @router.post("/ask/stream")

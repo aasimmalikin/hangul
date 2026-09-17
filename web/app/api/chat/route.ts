@@ -1,3 +1,4 @@
+import { parsePartialJson } from "ai"
 import { assertSameOrigin, jsonError, rateLimit, relayUpstreamError, requireUser, upstream, UpstreamError } from "@/lib/bff"
 
 export const runtime = "nodejs"
@@ -26,9 +27,14 @@ const textOf = (m: IncomingMessage) =>
  * tokens, each tool call, each tool result — and they are forwarded in order so
  * the user watches the run unfold instead of waiting on a final answer:
  *
+ *   step                  ->  data-status part (id "status"): the model is thinking
  *   text_start/delta/end  ->  text parts (one block per agent turn)
- *   tool_call             ->  data-tool part, status "running"
- *   tool_result           ->  same data-tool part id, status "done" | "error"
+ *   tool_pending          ->  data-tool part, status "pending" (model named the tool)
+ *   tool_args_delta       ->  same part, arguments parsed from the partial JSON so
+ *                             far — the user watches e.g. a file's content appear
+ *   tool_call             ->  same part, status "running" with the final arguments
+ *   tool_result           ->  same part, status "done" | "error" | "awaiting"
+ *                             (awaiting = parked for human approval)
  *   approval_required     ->  data-approval | data-choice part
  *   done                  ->  data-run part (steps, cost, tools) + finish
  *
@@ -88,7 +94,15 @@ export async function POST(req: Request) {
       // Arguments arrive on tool_call and are needed again on tool_result, so
       // the finished card can still say what was searched for.
       const callArgs = new Map<string, unknown>()
+      // Raw JSON fragments of a tool call still being generated, by call id.
+      const argBuffers = new Map<string, { name: string; step: number; text: string }>()
       const openBlocks = new Set<string>()
+      let statusShown = false
+      const setStatus = (phase: "thinking" | "idle", step?: number) => {
+        if (phase === "idle" && !statusShown) return
+        statusShown = phase === "thinking"
+        send({ type: "data-status", id: "status", data: { phase, step } })
+      }
       const startedAt = Date.now()
       let finished = false
 
@@ -132,10 +146,42 @@ export async function POST(req: Request) {
             try { data = JSON.parse(dataStr) } catch { continue }
 
             switch (eventType) {
+              case "step":
+                setStatus("thinking", data.step)
+                break
+
               case "text_start":
+                setStatus("idle")
                 openBlocks.add(data.block)
                 send({ type: "text-start", id: data.block })
                 break
+
+              case "tool_pending":
+                setStatus("idle")
+                argBuffers.set(data.id, { name: data.name, step: data.step, text: "" })
+                send({
+                  type: "data-tool",
+                  id: data.id,
+                  data: { tool: data.name, arguments: {}, status: "pending", step: data.step },
+                })
+                break
+
+              case "tool_args_delta": {
+                const buf = argBuffers.get(data.id)
+                if (!buf) break
+                buf.text += data.text
+                // Best-effort parse of the incomplete JSON so the card can show
+                // the path / query / content as they are written.
+                const { value } = await parsePartialJson(buf.text)
+                if (value && typeof value === "object") {
+                  send({
+                    type: "data-tool",
+                    id: data.id,
+                    data: { tool: buf.name, arguments: value, status: "pending", step: buf.step, drafting: true },
+                  })
+                }
+                break
+              }
 
               case "text_delta":
                 send({ type: "text-delta", id: data.block, delta: data.text })
@@ -147,6 +193,8 @@ export async function POST(req: Request) {
                 break
 
               case "tool_call":
+                setStatus("idle")
+                argBuffers.delete(data.id)
                 callArgs.set(data.id, data.arguments)
                 send({
                   type: "data-tool",
@@ -155,24 +203,29 @@ export async function POST(req: Request) {
                 })
                 break
 
-              case "tool_result":
+              case "tool_result": {
                 // Same id as the tool_call above, so this replaces that part
-                // rather than appending a second one.
+                // rather than appending a second one. A call parked for human
+                // approval has not run yet and must not read as "done".
+                const awaiting = data.ok && typeof data.preview === "string" && /awaiting|waiting for your approval/i.test(data.preview)
+                const notRun = !data.ok && typeof data.preview === "string" && /not run/i.test(data.preview)
                 send({
                   type: "data-tool",
                   id: data.id,
                   data: {
                     tool: data.name,
                     arguments: callArgs.get(data.id) ?? {},
-                    status: data.ok ? "done" : "error",
-                    preview: data.preview,
+                    status: awaiting ? "awaiting" : notRun ? "skipped" : data.ok ? "done" : "error",
+                    preview: awaiting || notRun ? undefined : data.preview,
                     ms: data.ms,
                     cached: data.cached,
                   },
                 })
                 break
+              }
 
               case "approval_required":
+                setStatus("idle")
                 if (data.name === "ask_user") {
                   send({
                     type: "data-choice",
@@ -187,6 +240,7 @@ export async function POST(req: Request) {
                 break
 
               case "done":
+                setStatus("idle")
                 closeOpenBlocks()
                 send({
                   type: "data-run",
@@ -203,6 +257,7 @@ export async function POST(req: Request) {
                 break
 
               case "error":
+                setStatus("idle")
                 closeOpenBlocks()
                 send({ type: "error", errorText: data.message })
                 finished = true

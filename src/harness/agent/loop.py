@@ -78,7 +78,9 @@ async def run_agent(
       text_start  {block}                        a turn began producing text
       text_delta  {block, text}                  one token of that text
       text_end    {block}
-      tool_call   {id, name, arguments, step}    model decided to call a tool
+      tool_pending    {id, name, step}          model started writing a tool call
+      tool_args_delta {id, text}                a fragment of its arguments, as generated
+      tool_call   {id, name, arguments, step}    model decided to call a tool (complete)
       tool_result {id, name, ok, preview, ms, cached}
 
     user_id is stamped on the checkpoint so /approve can verify ownership.
@@ -215,6 +217,13 @@ async def run_agent(
                                 emit("text_start", block=block)
                                 opened = True
                             emit("text_delta", block=block, text=payload)
+                        elif kind == "tool_start":
+                            # Announce the call as soon as the model names it, so
+                            # the UI can show "preparing to write a file" while
+                            # the arguments are still being generated.
+                            emit("tool_pending", id=payload["id"], name=payload["name"], step=step)
+                        elif kind == "tool_args":
+                            emit("tool_args_delta", id=payload["id"], text=payload["delta"])
                         else:
                             turn = payload
                     if opened:

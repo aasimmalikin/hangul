@@ -709,3 +709,83 @@ E2E specs 02 and 03 re-run green (16 tests).
   refused": the backend's atomic claim still guarantees one execution.
 - `expectReply` waits for the hidden `run-done` marker instead of the footer.
 - Full suite: 37 passed.
+
+## Revision 10: see what the agent is doing, and what it wants to write, before approving
+
+### Symptom
+
+Asking the agent to save a file gave a blank "Thinking…" for the whole
+model call, then everything at once: a tool row reading **"✓ Wrote a file"**
+(nothing had been written) and a bare card "The assistant wants to run
+`filesystem__write_file`. Allow it?" with no sign of *what* it would write.
+
+### Root causes
+
+1. **The backend only announced a tool call after the model had finished
+   generating it.** `OpenAIProvider.chat_stream` collected the tool-call
+   fragments silently and yielded them only in the final `AssistantTurn`, so
+   for a write-file turn — which has no narration text — the stream carried
+   nothing until `tool_call` arrived complete. The UI had nothing to show.
+2. The loop emits a placeholder `tool_result` (`ok: true`, preview
+   "Waiting for your approval.") for the parked call so the message history
+   stays valid. The BFF turned any `ok` result into status `done`, hence the
+   tick and "Wrote a file".
+3. The approval card printed the tool id only; the arguments (path, content)
+   were in the event but never rendered.
+
+### Changes
+
+**Backend**
+
+- `providers/openai_provider.py` — `chat_stream` now also yields
+  `("tool_start", {id, name})` the moment a tool call's name appears in the
+  delta stream, and `("tool_args", {id, delta})` for every fragment of its
+  JSON arguments.
+- `agent/loop.py` — forwards those as `tool_pending {id, name, step}` and
+  `tool_args_delta {id, text}` events (documented in the `run_agent`
+  docstring next to the others).
+- `api/routes/ask_stream.py` — both added to `AGENT_EVENTS`.
+
+**BFF (`web/app/api/chat/route.ts`)**
+
+- `step` → `data-status` part (fixed id `status`, `{phase:"thinking", step}`);
+  cleared to `idle` at the first text, tool, approval, done or error. So the
+  page can say "Thinking… step 2" instead of nothing.
+- `tool_pending` → `data-tool` part with status `pending`.
+- `tool_args_delta` → the raw JSON so far is run through the AI SDK's
+  `parsePartialJson` and the partial object is pushed into the same part —
+  the user watches `content` grow.
+- `tool_result` whose preview says *awaiting approval* → status `awaiting`;
+  "not run — earlier call needs approval" → `skipped`. Neither is `done`.
+
+**Frontend**
+
+- `components/agent-activity.tsx` — statuses `pending | running | done |
+  error | awaiting | skipped` with per-tool wording ("Drafting a file" →
+  "Wants to write a file · needs your approval" → "Wrote a file"). While
+  pending, the long argument (a file's `content`, or `edits`) streams in a
+  monospace block under the row with a cursor.
+- `app/chat/page.tsx` — `data-status` renders the thinking indicator inline
+  (with the step number) only while the run is live. The approval card is
+  now **"Approve this action?"** with the file name, its full path, the
+  complete content in a scrollable block ("Content to write · N
+  characters"), edits as −/+ pairs, any other arguments as a key/value list,
+  and the line "Nothing has been changed yet. The agent will only continue
+  once you decide." above Approve / Reject. Same warm-tone card, same tokens.
+- Stop button icon fixed (`ti-player-stop`; the "-filled" glyph does not
+  exist in this Tabler build, which is why the button was a blank circle).
+- A stopped run that produced nothing readable offers Retry again (an
+  assistant turn with no text/approval/question is treated as unanswered —
+  distinct from the footer heuristic removed in Revision 8).
+
+### Verified
+
+- Raw SSE from the real backend for "create a file": `step → tool_pending →
+  tool_args_delta… → tool_call → tool_result(awaiting) → approval_required →
+  done`.
+- Real UI, real model: "Drafting a file · autumn.txt" with the poem appearing
+  line by line, then the card with path, full content and the buttons.
+  (The card lands a couple of seconds after the row turns to "needs your
+  approval": the loop awaits the checkpoint write to the remote Postgres
+  before it can hand out the approval id.)
+- Fake backend now streams the call the same way; e2e suite 39 passed.

@@ -303,6 +303,117 @@ body {
     color: var(--fg); font-size: 14px; outline: none;
   }
   .h-input::placeholder { color: var(--faint); }
+
+  /* Left rail on /chat (memory). Its own scroll region so a long history
+     never pushes the composer off-screen; hidden on narrow viewports. */
+  .h-sidebar {
+    width: 264px; flex-shrink: 0; min-height: 0; position: relative;
+    display: flex; flex-direction: column;
+    background: var(--surface); border-right: 0.5px solid var(--surface-border);
+  }
+  /* Resize grip on the right edge: invisible until hovered/dragged. */
+  .h-sidebar-handle {
+    position: absolute; top: 0; bottom: 0; right: -4px; width: 8px;
+    cursor: col-resize; touch-action: none; z-index: 5;
+    background: transparent; transition: background 120ms ease;
+  }
+  .h-sidebar-handle:hover, .h-sidebar-handle.is-dragging, .h-sidebar-handle:focus-visible {
+    background: var(--surface-border); outline: none;
+  }
+  @media (max-width: 860px) { .h-sidebar { display: none; } }
+  /* Header + scrolling list + footer fill the whole column. */
+  .h-sidebar-panel { flex: 1; min-height: 0; display: flex; flex-direction: column; }
+  .h-sidebar-scroll {
+    flex: 1; min-height: 0; overflow-y: auto; overscroll-behavior: contain;
+    scrollbar-width: thin; scrollbar-color: var(--faint) transparent;
+  }
+  .h-sidebar-scroll::-webkit-scrollbar { width: 6px; }
+  .h-sidebar-scroll::-webkit-scrollbar-thumb { background: var(--faint); border-radius: 3px; }
+  .h-sidebar-scroll::-webkit-scrollbar-track { background: transparent; }
+
+  /* A remembered item: the ⋯ button is invisible until hover / focus / menu open. */
+  .h-memory-item { position: relative; padding: 8px 8px 8px 10px; border-radius: 10px; transition: background 120ms ease; }
+  .h-memory-item:hover, .h-memory-item.is-open { background: var(--surface-hover); }
+  .h-memory-dots {
+    width: 24px; height: 24px; flex-shrink: 0; border-radius: 7px; border: none; cursor: pointer;
+    background: none; color: var(--muted); display: inline-flex; align-items: center; justify-content: center;
+    opacity: 0; transition: opacity 120ms ease, background 120ms ease;
+  }
+  .h-memory-item:hover .h-memory-dots, .h-memory-item.is-open .h-memory-dots, .h-memory-dots:focus-visible { opacity: 1; }
+  .h-memory-dots:hover { background: var(--bubble); color: var(--fg); }
+  .h-memory-dots:disabled { cursor: default; }
+
+  /* Header actions on the rail: revealed when the header is hovered or one is focused/open. */
+  .h-sidebar-actions { opacity: 0; transition: opacity 120ms ease; }
+  .h-sidebar-head:hover .h-sidebar-actions,
+  .h-sidebar-actions:focus-within,
+  .h-sidebar-actions:has([aria-expanded="true"]) { opacity: 1; }
+
+  /* Tiny themed tooltip from data-tip, shown below the control on hover/focus. */
+  .h-tip { position: relative; }
+  .h-tip::after {
+    content: attr(data-tip); position: absolute; top: calc(100% + 4px); left: 50%; transform: translateX(-50%);
+    background: var(--solid-bg); color: var(--solid-fg); font-size: 11px; line-height: 1; padding: 5px 7px;
+    border-radius: 6px; white-space: nowrap; pointer-events: none; opacity: 0; transition: opacity 120ms ease; z-index: 30;
+  }
+  .h-tip:hover::after, .h-tip:focus-visible::after { opacity: 1; }
+
+  /* Plain menu entry (settings menu); the active one is marked. */
+  .h-menu-item {
+    display: flex; align-items: center; gap: 8px; width: 100%;
+    padding: 7px 10px; border-radius: 8px; border: none; cursor: pointer;
+    background: none; color: var(--fg); font-size: 13px; line-height: 1; text-align: left;
+    transition: background 120ms ease;
+  }
+  .h-menu-item:hover, .h-menu-item:focus-visible { background: var(--surface-hover); outline: none; }
+  .h-menu-item.is-active { background: var(--bubble); }
+
+  /* Wider, left-aligned dialog for lists (chat history). */
+  .h-dialog-wide { max-width: 640px; text-align: left; padding: 20px 22px; }
+
+  /* The agent's activity for one run, folded into a single line. */
+  .h-activity {
+    margin: 6px 0; border-radius: 12px; background: var(--surface);
+    border: 0.5px solid var(--surface-border);
+  }
+  .h-activity-head {
+    display: flex; align-items: center; gap: 8px; width: 100%; min-width: 0;
+    padding: 7px 10px; border: none; border-radius: 12px; cursor: pointer; text-align: left;
+    background: none; color: var(--muted); font-size: 13px; line-height: 1.3;
+    transition: background 120ms ease;
+  }
+  .h-activity-head:hover { background: var(--surface-hover); }
+  .h-activity-sigil { display: inline-flex; flex-shrink: 0; opacity: 0.7; }
+  .h-activity-body { padding: 0 6px 4px; border-top: 0.5px solid var(--surface-border); }
+  .h-activity-chev { transition: transform 150ms ease; color: var(--faint); }
+  .h-activity-chev.is-open { transform: rotate(180deg); }
+
+  /* The sigil breathes while the agent works… */
+  .h-sigil-live { opacity: 1; animation: h-breathe 1.5s ease-in-out infinite; transform-origin: center; }
+  @keyframes h-breathe {
+    0%, 100% { opacity: 0.55; transform: scale(0.92); filter: none; }
+    50%      { opacity: 1;    transform: scale(1.08); filter: drop-shadow(0 0 4px var(--sigil)); }
+  }
+  /* …and the current step shimmers, the way a status line does. */
+  .h-shimmer {
+    background: linear-gradient(90deg, var(--muted) 0%, var(--fg) 45%, var(--muted) 90%);
+    background-size: 200% 100%; -webkit-background-clip: text; background-clip: text; color: transparent;
+    animation: h-shimmer 1.8s linear infinite;
+  }
+  @keyframes h-shimmer { from { background-position: 200% 0; } to { background-position: -200% 0; } }
+  @media (prefers-reduced-motion: reduce) {
+    .h-sigil-live, .h-shimmer { animation: none; }
+    .h-shimmer { color: var(--fg); background: none; }
+  }
+
+  /* Destructive menu entry — neutral at rest, red on hover so it is a deliberate reach. */
+  .h-menu-danger {
+    display: flex; align-items: center; gap: 8px; width: 100%;
+    padding: 7px 10px; border-radius: 8px; border: none; cursor: pointer;
+    background: none; color: var(--fg); font-size: 13px; line-height: 1; text-align: left;
+    transition: color 120ms ease, background 120ms ease;
+  }
+  .h-menu-danger:hover, .h-menu-danger:focus-visible { color: var(--err); background: var(--surface-hover); }
 }
 
 /* Markdown inside assistant messages. */

@@ -1,5 +1,5 @@
 import { test, expect } from "@playwright/test"
-import { freshUser, ask, backendState, resetBackend, signInAs } from "./helpers"
+import { freshUser, ask, backendState, expectReply, resetBackend, signInAs } from "./helpers"
 
 test.describe("human in the loop", () => {
   const me = freshUser("human")
@@ -8,11 +8,41 @@ test.describe("human in the loop", () => {
     await signInAs(context, me, baseURL!)
   })
 
+  test("the file content is shown as it is drafted, then in full on the approval card", async ({ page }) => {
+    await page.goto("/chat")
+    await ask(page, "APPROVAL show me first")
+    // while the model writes the call: row says it is drafting, content streams in
+    const row = page.getByTestId("tool-row")
+    await expect(row).toHaveAttribute("data-status", "pending")
+    await expect(row).toContainText("Drafting a file")
+    await expect(page.getByTestId("tool-draft")).toContainText("Line one")
+    // once parked for approval: row is explicit that nothing ran yet
+    await expect(row).toHaveAttribute("data-status", "awaiting")
+    await expect(row).toContainText("Wants to write a file")
+    await expect(row).toContainText("needs your approval")
+    await expect(page.locator("body")).not.toContainText("Wrote a file")
+    // the card lays out exactly what will happen
+    const card = page.getByTestId("approval-card")
+    await expect(card).toContainText("Approve this action?")
+    await expect(card).toContainText("notes.txt")
+    await expect(card.getByTestId("approval-content")).toContainText("Line three closes it.")
+    await expect(card).toContainText("Nothing has been changed yet")
+  })
+
+  test("thinking indicator shows the step while the model is deciding", async ({ page }) => {
+    await page.goto("/chat")
+    await ask(page, "SLOW deciding")
+    await expect(page.getByTestId("thinking")).toContainText("Thinking")
+    await expect(page.getByTestId("thinking")).toContainText("step 1")
+    await expectReply(page, "Reply to: SLOW deciding")
+    await expect(page.getByTestId("thinking")).toHaveCount(0)
+  })
+
   test("approve a destructive tool; a double-click executes it once", async ({ page }) => {
     await page.goto("/chat")
     await ask(page, "APPROVAL write my notes")
     const card = page.getByTestId("approval-card")
-    await expect(card).toContainText("filesystem__write_file")
+    await expect(card).toContainText("write file")
     // two clicks in quick succession — the second must not fire a second approve
     await card.getByRole("button", { name: "Approve" }).dblclick()
     await expect(page.locator(".h-prose").last()).toContainText("Wrote notes.txt.")
