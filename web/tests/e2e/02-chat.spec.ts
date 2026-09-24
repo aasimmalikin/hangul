@@ -16,14 +16,21 @@ test.describe("conversation", () => {
     await expect(page.locator("body")).not.toContainText(/\$0\.00|steps/)
   })
 
-  test("follow-ups carry the conversation as history", async ({ page }) => {
+  test("follow-ups continue the same conversation instead of re-uploading history", async ({ page }) => {
+    // The server owns the transcript now, so a follow-up names the conversation
+    // rather than shipping the earlier turns back up (which only ever carried
+    // user/assistant text, never the tool results).
     await page.goto("/chat")
     await ask(page, "first")
     await expectReply(page, "Reply to: first")
     await ask(page, "HISTORY how many?")
-    await expectReply(page, "history=2")
+    await expectReply(page, "history=0")
     const s = await backendState()
-    expect(s.asks[1].history).toBe(2)
+    const convs = s.conversations[me.id]
+    expect(convs).toHaveLength(1)                         // one conversation, two turns
+    expect(s.asks[0].conversation_id).toBeNull()          // first turn creates it
+    expect(s.asks[1].conversation_id).toBe(convs[0].id)   // the follow-up continues it
+    expect(s.asks[1].history).toBe(0)
   })
 
   test("documents-only toggle is sent with the question", async ({ page }) => {
@@ -34,6 +41,33 @@ test.describe("conversation", () => {
     await expectReply(page, "docs_only=true")
     const s = await backendState()
     expect(s.asks[0].docs_only).toBe(true)
+  })
+
+  test("model and effort picked in the composer are sent, and survive a refresh", async ({ page }) => {
+    await page.goto("/chat")
+    // Nothing chosen: the chips show the server default and nothing is sent.
+    await expect(page.getByTestId("model-picker")).toContainText("Fake Reasoner")
+    await expect(page.getByTestId("effort-picker")).toContainText("medium")
+
+    await page.getByTestId("effort-picker").click()
+    await page.getByTestId("effort-option-high").click()
+    await ask(page, "think hard")
+    await expectReply(page, "model=fake-reasoner effort=high")
+    let s = await backendState()
+    expect(s.asks[0]).toMatchObject({ model: "fake-reasoner", effort: "high" })
+
+    await page.reload()
+    await expect(page.getByTestId("effort-picker")).toContainText("high")
+
+    // A model without reasoning drops the effort chip and sends no effort.
+    await page.getByTestId("model-picker").click()
+    await page.getByTestId("model-option-fake-plain").click()
+    await expect(page.getByTestId("model-picker")).toContainText("Fake Plain")
+    await expect(page.getByTestId("effort-picker")).toHaveCount(0)
+    await ask(page, "plain please")
+    await expectReply(page, "model=fake-plain")
+    s = await backendState()
+    expect(s.asks[1]).toMatchObject({ model: "fake-plain", effort: null })
   })
 
   test("refresh keeps the thread and does not re-send; ?q= is consumed once", async ({ page }) => {
@@ -65,7 +99,9 @@ test.describe("conversation", () => {
     await page.getByRole("button", { name: "Check the web" }).click()
     await expectReply(page, "Reply to: Check the web")
     await expect(page.locator(".h-prose")).toHaveCount(2)
-    await expect(page.locator("body")).not.toContainText("Draft a note")
+    // Scoped to the thread: the Chats rail lists "Draft a note" as past history,
+    // which is correct — what must not happen is it being in THIS conversation.
+    await expect(page.getByTestId("thread")).not.toContainText("Draft a note")
     // and the backend got it with no history from the earlier thread
     const asks = (await backendState()).asks
     expect(asks.at(-1)).toMatchObject({ question: "Check the web", history: 0 })
@@ -75,7 +111,7 @@ test.describe("conversation", () => {
     await page.getByRole("button", { name: "Search my documents" }).click()
     await expectReply(page, "Reply to: Search my documents")
     await expect(page.locator(".h-prose")).toHaveCount(2)
-    await expect(page.locator("body")).not.toContainText("Check the web")
+    await expect(page.getByTestId("thread")).not.toContainText("Check the web")
 
     // a plain refresh (no ?q=) still restores the current thread
     await page.reload()

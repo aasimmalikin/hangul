@@ -2,6 +2,7 @@
 
 import { useEffect, useRef, useState } from "react"
 import { signOut, useSession } from "next-auth/react"
+import Link from "next/link"
 
 type Quality = {
   available: boolean
@@ -103,6 +104,24 @@ export function ProfileMenu() {
               <div className="h-muted" style={{ fontSize: 12, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{user.email}</div>
             )}
           </div>
+          <Link
+            href="/settings"
+            className="h-btn-ghost"
+            style={{ width: "100%", justifyContent: "flex-start", padding: "8px 10px", textDecoration: "none" }}
+            onClick={() => setOpen(false)}
+          >
+            <i className="ti ti-adjustments" style={{ fontSize: 15 }} />
+            Personalisation & tasks
+          </Link>
+          <Link
+            href="/vault"
+            className="h-btn-ghost"
+            style={{ width: "100%", justifyContent: "flex-start", padding: "8px 10px", textDecoration: "none" }}
+            onClick={() => setOpen(false)}
+          >
+            <i className="ti ti-key" style={{ fontSize: 15 }} />
+            Connected services
+          </Link>
           <button
             className="h-btn-ghost"
             style={{ width: "100%", justifyContent: "flex-start", padding: "8px 10px" }}

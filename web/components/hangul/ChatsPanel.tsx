@@ -3,14 +3,17 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import { failureFromResponse, type ApiFailure } from "@/lib/apiError"
 
+/**
+ * One conversation, from GET /api/conversations. These are the real,
+ * server-owned conversations now (not the client-written `episodes` summaries),
+ * so a row can be reopened — `onOpen` below.
+ */
 export type ChatItem = {
-  id: number
-  thread_id: string
+  id: string
   title: string
-  /** First answer, one line — returned by the API; shown nowhere in the rail. */
+  /** Rolling summary of the older turns; "" until a chat outgrows its window. */
   preview: string
-  /** The Q:/A: transcript, shown in the "view all" history. */
-  summary: string
+  message_count: number
   created_at: string
   updated_at: string
 }
@@ -68,21 +71,36 @@ function applyFilter(items: ChatItem[], f: DateFilter) {
  * The ⋯ button only shows on hover (or while its menu is open) so the list
  * reads as plain text until the user reaches for it.
  */
-function ChatRow({ item, open, onToggle, onDelete, deleting }: {
+function ChatRow({ item, open, onToggle, onDelete, onOpen, active, deleting }: {
   item: ChatItem
   open: boolean
   onToggle: () => void
   onDelete: () => void
+  /** Reopen this conversation. Absent on pages that cannot navigate to a chat. */
+  onOpen?: () => void
+  active?: boolean
   deleting: boolean
 }) {
   return (
-    <li className={`h-memory-item${open ? " is-open" : ""}`} data-testid="chats-item" style={{ opacity: deleting ? 0.5 : 1 }}>
+    <li className={`h-memory-item${open ? " is-open" : ""}${active ? " is-active" : ""}`} data-testid="chats-item" style={{ opacity: deleting ? 0.5 : 1 }}>
       <div style={{ display: "flex", alignItems: "flex-start", gap: 8 }}>
         <i className="ti ti-message" style={{ fontSize: 13, color: "var(--muted)", marginTop: 2, flexShrink: 0 }} />
-        <div style={{ flex: 1, minWidth: 0 }}>
-          <div data-testid="chats-title" style={{ fontSize: 13, lineHeight: 1.4, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }} title={item.title}>{item.title}</div>
+        {/* The title is the button: the whole row would swallow the ⋯ menu. */}
+        <button
+          type="button"
+          onClick={onOpen}
+          disabled={!onOpen || deleting}
+          aria-current={active ? "true" : undefined}
+          data-testid="chats-open"
+          aria-label={onOpen ? `Open "${item.title}"` : undefined}
+          style={{ flex: 1, minWidth: 0, textAlign: "left", background: "none", border: 0, padding: 0,
+                   cursor: onOpen ? "pointer" : "default", color: "inherit", font: "inherit" }}
+        >
+          {/* The tooltip stays on the title itself: it is the element that gets
+              cut with an ellipsis, so it is what the full text belongs to. */}
+          <div data-testid="chats-title" title={item.title} style={{ fontSize: 13, lineHeight: 1.4, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{item.title}</div>
           <div style={{ fontSize: 11, marginTop: 2, color: "var(--faint)" }}>{when(item.updated_at)}</div>
-        </div>
+        </button>
         <button
           type="button"
           className="h-memory-dots"
@@ -109,20 +127,12 @@ function ChatRow({ item, open, onToggle, onDelete, deleting }: {
 
 // ----------------------------------------------------------------- history
 
-/** Turn the stored "Q: …\nA: …" transcript into rows the dialog can lay out. */
-function transcript(summary: string): { who: "Q" | "A"; text: string }[] {
-  return summary.split("\n").flatMap((ln) => {
-    const m = ln.match(/^([QA]):\s?(.*)$/)
-    return m ? [{ who: m[1] as "Q" | "A", text: m[2] }] : []
-  })
-}
-
 /**
  * "View all": every conversation, with its transcript, in a dialog over the
  * page. Same scrim/dialog surfaces as the sign-in modal, just wider and
  * left-aligned because it is a list, not a prompt.
  */
-function HistoryDialog({ items, filter, onClose }: { items: ChatItem[]; filter: DateFilter; onClose: () => void }) {
+function HistoryDialog({ items, filter, onClose, onOpen }: { items: ChatItem[]; filter: DateFilter; onClose: () => void; onOpen?: (id: string) => void }) {
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => { if (e.key === "Escape") onClose() }
     document.addEventListener("keydown", onKey)
@@ -149,13 +159,22 @@ function HistoryDialog({ items, filter, onClose }: { items: ChatItem[]; filter: 
                 <span style={{ fontSize: 13, fontWeight: 500, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{m.title}</span>
                 <span style={{ fontSize: 11, color: "var(--faint)", marginLeft: "auto", flexShrink: 0 }}>{when(m.updated_at)}</span>
               </div>
+              {/* The full transcript lives on the server now; the dialog shows
+                  what the rail knows and opens the chat to read the rest. */}
               <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
-                {transcript(m.summary).map((t, i) => (
-                  <div key={i} style={{ display: "flex", gap: 8, fontSize: 12.5, lineHeight: 1.45 }}>
-                    <span style={{ fontFamily: "var(--font-geist-mono)", fontSize: 11, color: t.who === "Q" ? "var(--fg)" : "var(--muted)", flexShrink: 0, width: 26, marginTop: 1 }}>{t.who === "Q" ? "you" : "ai"}</span>
-                    <span style={{ color: t.who === "Q" ? "var(--fg)" : "var(--muted)", wordBreak: "break-word" }}>{t.text}</span>
-                  </div>
-                ))}
+                {m.preview && (
+                  <span className="h-muted" style={{ fontSize: 12.5, lineHeight: 1.45, wordBreak: "break-word" }}>{m.preview}</span>
+                )}
+                <span style={{ fontSize: 11, color: "var(--faint)" }}>
+                  {m.message_count} {m.message_count === 1 ? "message" : "messages"}
+                </span>
+                {onOpen && (
+                  <button type="button" className="h-btn-ghost" data-testid="chats-history-open"
+                          onClick={() => { onOpen(m.id); onClose() }}
+                          style={{ alignSelf: "flex-start", padding: "2px 6px", fontSize: 12, marginTop: 2 }}>
+                    Open chat
+                  </button>
+                )}
               </div>
             </article>
           ))}
@@ -191,11 +210,18 @@ function HistoryDialog({ items, filter, onClose }: { items: ChatItem[]; filter: 
  * `refreshKey` is bumped by the page whenever a conversation was saved, so
  * the rail on /chat updates without a reload.
  */
-export function ChatsPanel({ refreshKey = 0, onUnauthorized }: { refreshKey?: number; onUnauthorized?: () => void }) {
+export function ChatsPanel({ refreshKey = 0, onUnauthorized, onOpen, activeId }: {
+  refreshKey?: number
+  onUnauthorized?: () => void
+  /** Reopen a conversation. Omitted on pages with no chat to open into. */
+  onOpen?: (id: string) => void
+  /** The conversation currently on screen, highlighted in the list. */
+  activeId?: string | null
+}) {
   const [items, setItems] = useState<ChatItem[] | null>(null)
   const [error, setError] = useState<ApiFailure | null>(null)
-  const [openId, setOpenId] = useState<number | null>(null)
-  const [deleting, setDeleting] = useState<number | null>(null)
+  const [openId, setOpenId] = useState<string | null>(null)
+  const [deleting, setDeleting] = useState<string | null>(null)
   const listRef = useRef<HTMLUListElement>(null)
 
   // --- header: view all + date filter -----------------------------------
@@ -263,7 +289,7 @@ export function ChatsPanel({ refreshKey = 0, onUnauthorized }: { refreshKey?: nu
   // --- data -----------------------------------------------------------
   const load = useCallback(async (signal?: AbortSignal) => {
     try {
-      const res = await fetch("/api/chats", { signal: signal ?? AbortSignal.timeout(10_000), cache: "no-store" })
+      const res = await fetch("/api/conversations", { signal: signal ?? AbortSignal.timeout(10_000), cache: "no-store" })
       if (!res.ok) {
         const f = await failureFromResponse(res)
         if (f.code === "unauthorized") onUnauthorized?.()
@@ -297,13 +323,13 @@ export function ChatsPanel({ refreshKey = 0, onUnauthorized }: { refreshKey?: nu
     return () => document.removeEventListener("mousedown", onDoc)
   }, [openId])
 
-  const remove = async (id: number) => {
+  const remove = async (id: string) => {
     setOpenId(null)
     const before = items ?? []
     setItems(before.filter((m) => m.id !== id))
     setDeleting(id)
     try {
-      const res = await fetch(`/api/chats/${id}`, { method: "DELETE", signal: AbortSignal.timeout(10_000) })
+      const res = await fetch(`/api/conversations/${id}`, { method: "DELETE", signal: AbortSignal.timeout(10_000) })
       // 404 = already gone (another tab): the optimistic removal was right.
       if (!res.ok && res.status !== 404) {
         const f = await failureFromResponse(res)
@@ -429,6 +455,8 @@ export function ChatsPanel({ refreshKey = 0, onUnauthorized }: { refreshKey?: nu
                 open={openId === m.id}
                 onToggle={() => setOpenId((o) => (o === m.id ? null : m.id))}
                 onDelete={() => void remove(m.id)}
+                onOpen={onOpen ? () => onOpen(m.id) : undefined}
+                active={activeId === m.id}
                 deleting={deleting === m.id}
               />
             ))}
@@ -470,7 +498,7 @@ export function ChatsPanel({ refreshKey = 0, onUnauthorized }: { refreshKey?: nu
         }}
       />
 
-      {history && <HistoryDialog items={visible} filter={filter} onClose={closeHistory} />}
+      {history && <HistoryDialog items={visible} filter={filter} onClose={closeHistory} onOpen={onOpen} />}
     </aside>
   )
 }

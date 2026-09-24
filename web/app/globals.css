@@ -432,3 +432,75 @@ body {
 .h-prose table { border-collapse: collapse; margin: 8px 0; }
 .h-prose th, .h-prose td { border: 0.5px solid var(--surface-border); padding: 4px 8px; }
 .h-prose blockquote { border-left: 2px solid var(--surface-border); margin: 0 0 10px; padding-left: 12px; color: var(--muted); }
+
+/* ------------------------------------------------------------------------- */
+/* Google Workspace result cards (components/hangul/GoogleCards.tsx).          */
+/* A deliberately Google-looking surface: their product palette, Roboto-ish   */
+/* type, Gmail's row grammar. Tokens are scoped to .g-card so the rest of the */
+/* app keeps its own palette; dark values follow Google's dark themes.        */
+html[data-theme="light"] {
+  --g-bg: #ffffff; --g-fg: #202124; --g-muted: #5f6368; --g-line: #e0e0e0; --g-hover: #f2f2f2;
+  --g-unread: #f2f6fc; --g-chip: #e8eaed; --g-blue: #1a73e8; --g-red: #d93025; --g-green: #188038; --g-yellow: #f9ab00;
+  --g-doc-page: #ffffff; --g-doc-bg: #f8f9fa;
+}
+html[data-theme="dark"] {
+  --g-bg: #202124; --g-fg: #e8eaed; --g-muted: #9aa0a6; --g-line: #3c4043; --g-hover: #303134;
+  --g-unread: #2a2d31; --g-chip: #3c4043; --g-blue: #8ab4f8; --g-red: #f28b82; --g-green: #81c995; --g-yellow: #fdd663;
+  --g-doc-page: #202124; --g-doc-bg: #1a1a1b;
+}
+.g-card {
+  font-family: "Google Sans", Roboto, "Helvetica Neue", Arial, var(--font-geist-sans), sans-serif;
+  background: var(--g-bg); color: var(--g-fg); border: 1px solid var(--g-line); border-radius: 12px;
+  overflow: hidden; margin: 8px 0; font-size: 13px; box-shadow: 0 1px 2px rgba(60,64,67,.15);
+}
+.g-head { display: flex; align-items: center; gap: 8px; padding: 10px 14px; border-bottom: 1px solid var(--g-line); }
+.g-app { width: 22px; height: 22px; border-radius: 6px; display: inline-flex; align-items: center; justify-content: center; color: #fff; font-size: 13px; }
+.g-app-gmail { background: var(--g-red); } .g-app-calendar { background: var(--g-blue); } .g-app-drive { background: var(--g-green); } .g-app-docs { background: var(--g-blue); }
+.g-app-name { font-weight: 500; }
+.g-title { color: var(--g-muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.g-list { list-style: none; margin: 0; padding: 0; }
+.g-row { display: flex; align-items: center; gap: 12px; padding: 8px 14px; border-bottom: 1px solid var(--g-line); min-width: 0; }
+.g-row:last-child { border-bottom: none; }
+.g-row:hover { background: var(--g-hover); }
+.g-row.is-unread { background: var(--g-unread); }
+.g-row.is-unread .g-from, .g-row.is-unread .g-subject-text, .g-row.is-unread .g-date { font-weight: 700; color: var(--g-fg); }
+.g-avatar { width: 32px; height: 32px; border-radius: 50%; flex-shrink: 0; color: #fff; display: inline-flex; align-items: center; justify-content: center; font-size: 14px; font-weight: 500; }
+.g-from { width: 140px; flex-shrink: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.g-subject { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.g-snippet { color: var(--g-muted); }
+.g-labels { display: inline-flex; gap: 4px; flex-shrink: 0; }
+.g-label { background: var(--g-chip); color: var(--g-muted); border-radius: 4px; padding: 1px 6px; font-size: 11px; }
+.g-date { color: var(--g-muted); font-size: 12px; flex-shrink: 0; white-space: nowrap; margin-left: auto; }
+.g-thread { display: flex; flex-direction: column; }
+.g-msg { border-bottom: 1px solid var(--g-line); }
+.g-msg:last-child { border-bottom: none; }
+.g-msg-head { display: flex; align-items: center; gap: 12px; width: 100%; padding: 10px 14px; background: none; border: none; color: inherit; font: inherit; text-align: left; cursor: pointer; }
+.g-msg-head:hover { background: var(--g-hover); }
+.g-msg-from { font-weight: 500; white-space: nowrap; }
+.g-msg-addr { color: var(--g-muted); font-weight: 400; font-size: 12px; }
+.g-msg-snip { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.g-msg-body { padding: 0 14px 14px 58px; }
+.g-msg-to { color: var(--g-muted); font-size: 12px; margin-bottom: 8px; }
+.g-body-text { white-space: pre-wrap; line-height: 1.5; max-height: 360px; overflow: auto; }
+.g-compose .g-compose-bar { background: var(--g-fg); color: var(--g-bg); padding: 8px 14px; font-weight: 500; display: flex; justify-content: space-between; align-items: center; border-radius: 12px 12px 0 0; }
+html[data-theme="dark"] .g-compose .g-compose-bar { background: #3c4043; color: var(--g-fg); }
+.g-compose-field { display: flex; gap: 10px; padding: 8px 14px; border-bottom: 1px solid var(--g-line); }
+.g-compose-key { color: var(--g-muted); width: 24px; }
+.g-compose-subject { font-weight: 500; }
+.g-compose-body { padding: 12px 14px; white-space: pre-wrap; line-height: 1.5; max-height: 320px; overflow: auto; }
+.g-agenda { padding: 6px 0; }
+.g-day-label { padding: 8px 14px 4px; color: var(--g-muted); font-size: 12px; font-weight: 500; text-transform: uppercase; letter-spacing: .3px; }
+.g-event { display: flex; align-items: flex-start; gap: 10px; padding: 6px 14px; color: inherit; text-decoration: none; }
+.g-event:hover { background: var(--g-hover); }
+.g-event-bar { width: 4px; align-self: stretch; border-radius: 2px; background: var(--g-blue); flex-shrink: 0; }
+.g-event-time { width: 130px; flex-shrink: 0; color: var(--g-muted); font-size: 12px; padding-top: 2px; }
+.g-event-main { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.g-event-title { font-weight: 500; }
+.g-event-sub { color: var(--g-muted); font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.g-file-icon { width: 24px; text-align: center; font-size: 16px; }
+.g-mime-doc { color: var(--g-blue); } .g-mime-sheet { color: var(--g-green); } .g-mime-slides { color: var(--g-yellow); } .g-mime-other { color: var(--g-muted); }
+.g-file-name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: inherit; text-decoration: none; }
+.g-file-name:hover { text-decoration: underline; }
+.g-doc-page { background: var(--g-doc-bg); padding: 16px; }
+.g-doc-text { background: var(--g-doc-page); border: 1px solid var(--g-line); border-radius: 4px; padding: 28px 40px; max-width: 640px; margin: 0 auto; white-space: pre-wrap; line-height: 1.6; font-family: Arial, "Helvetica Neue", sans-serif; font-size: 13.5px; max-height: 420px; overflow: auto; }
+@media (max-width: 640px) { .g-from { width: 90px; } .g-event-time { width: 90px; } .g-msg-body { padding-left: 14px; } .g-doc-text { padding: 16px; } }

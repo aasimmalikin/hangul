@@ -1,9 +1,15 @@
 "use client"
 
 import { useEffect, useRef, useState } from "react"
+import Link from "next/link"
 import { useTheme } from "@/components/ThemeProvider"
 
-/** The gear button and its light/dark toggle, shared by every page header. */
+/**
+ * The gear button: light/dark toggle plus the way into the admin console.
+ * The link is visible to everyone -- the console itself does the gating
+ * (Google sign-in, backend allowlist) -- so there is nothing to discover by
+ * hiding it. Shared by every page header.
+ */
 export function ThemeMenu() {
   const { theme, setTheme } = useTheme()
   const [open, setOpen] = useState(false)
@@ -41,9 +47,21 @@ export function ThemeMenu() {
         <i className="ti ti-settings" style={{ fontSize: 15 }} />
       </button>
       {open && (
-        <div className="h-popover" style={{ position: "absolute", top: 40, right: 0, display: "flex", gap: 6, zIndex: 30 }}>
-          {swatch("light", "sun")}
-          {swatch("dark", "moon")}
+        <div className="h-popover" style={{ position: "absolute", top: 40, right: 0, display: "flex", flexDirection: "column", gap: 6, zIndex: 30, minWidth: 168 }}>
+          <div style={{ display: "flex", gap: 6 }}>
+            {swatch("light", "sun")}
+            {swatch("dark", "moon")}
+          </div>
+          <Link
+            href="/admin"
+            className="h-menu-item"
+            style={{ textDecoration: "none" }}
+            onClick={() => setOpen(false)}
+            data-testid="settings-admin"
+          >
+            <i className="ti ti-shield-lock" style={{ fontSize: 15 }} />
+            Admin console
+          </Link>
         </div>
       )}
     </div>

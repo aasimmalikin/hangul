@@ -93,7 +93,10 @@ def approve_app(monkeypatch):
             content = "written"
         return R()
 
+    runs: list[dict] = []   # kwargs each resumed run_agent was called with
+
     async def fake_run_agent(**kw):
+        runs.append(kw)
         return AgentResult(answer="done", steps=2, stopped_reason="answered",
                            input_tokens=1, output_tokens=1)
 
@@ -102,7 +105,9 @@ def approve_app(monkeypatch):
             return name
 
     class FakeProvider:
-        model = "fake-model"
+        def __init__(self, model, effort):
+            self.model = model
+            self.reasoning_effort = effort
 
     class FakePrompt:
         text = "sys"
@@ -111,8 +116,11 @@ def approve_app(monkeypatch):
     monkeypatch.setattr(approve_route, "_store", store)
     monkeypatch.setattr(approve_route, "guarded_dispatch", fake_dispatch)
     monkeypatch.setattr(approve_route, "run_agent", fake_run_agent)
-    monkeypatch.setattr(approve_route, "_build_session_registry", lambda uid: FakeRegistry())
-    monkeypatch.setattr(approve_route, "get_provider", lambda: FakeProvider())
+    async def fake_registry(uid, thread_id, connectors=()):
+        return FakeRegistry()
+    monkeypatch.setattr(approve_route, "_build_session_registry", fake_registry)
+    monkeypatch.setattr(approve_route, "provider_for",
+                        lambda spec, effort: FakeProvider(spec.id, effort))
     monkeypatch.setattr(approve_route, "get_prompt", lambda name: FakePrompt())
     monkeypatch.setattr(approve_route, "_trace_store", type("T", (), {"add": lambda *a: None})())
     monkeypatch.setattr(approve_route, "cost_usd", lambda *a: 0.0)
@@ -121,13 +129,13 @@ def approve_app(monkeypatch):
     app.include_router(approve_route.router)
     current = {"user_id": "alice", "role": "user"}
     app.dependency_overrides[get_current_user] = lambda: current
-    return app, store, executed, current
+    return app, store, executed, current, runs
 
 
 # ------------------------------------------------------------ approve
 
 def test_approve_by_owner_executes_once(approve_app):
-    app, store, executed, _ = approve_app
+    app, store, executed, _, _ = approve_app
     store.save(pending_checkpoint("run-1", "alice"))
     c = TestClient(app)
 
@@ -141,8 +149,36 @@ def test_approve_by_owner_executes_once(approve_app):
     assert executed == ["filesystem__write_file"]
 
 
+def test_approve_resumes_with_the_runs_own_model(approve_app):
+    """A run started on a cheaper model at low effort must not silently be
+    resumed on the server default; the checkpoint's choice wins."""
+    app, store, _, _, runs = approve_app
+    cp = pending_checkpoint("run-1", "alice")
+    cp.model, cp.effort = "gpt-5.4-mini", "low"
+    store.save(cp)
+
+    r = TestClient(app).post("/approve", json={"approval_id": "run-1", "decision": "approve"})
+    assert r.status_code == 200, r.text
+    assert r.json()["model"] == "gpt-5.4-mini"
+    assert r.json()["effort"] == "low"
+    provider = runs[0]["provider"]
+    assert (provider.model, provider.reasoning_effort) == ("gpt-5.4-mini", "low")
+    assert runs[0]["max_steps"] == 8       # the low-effort budget
+
+
+def test_approve_falls_back_when_model_left_registry(approve_app):
+    app, store, _, _, runs = approve_app
+    cp = pending_checkpoint("run-1", "alice")
+    cp.model = "gpt-retired"
+    store.save(cp)
+
+    r = TestClient(app).post("/approve", json={"approval_id": "run-1", "decision": "approve"})
+    assert r.status_code == 200, r.text
+    assert runs[0]["provider"].model == r.json()["model"] != "gpt-retired"
+
+
 def test_approve_by_other_user_is_not_found(approve_app):
-    app, store, executed, current = approve_app
+    app, store, executed, current, _ = approve_app
     store.save(pending_checkpoint("run-1", "alice"))
     current["user_id"] = "mallory"
     c = TestClient(app)
@@ -155,7 +191,7 @@ def test_approve_by_other_user_is_not_found(approve_app):
 
 
 def test_approve_rejects_bad_decision(approve_app):
-    app, store, _, _ = approve_app
+    app, store, _, _, _ = approve_app
     store.save(pending_checkpoint("run-1", "alice"))
     r = TestClient(app).post("/approve", json={"approval_id": "run-1", "decision": "maybe"})
     assert r.status_code == 422
@@ -247,3 +283,197 @@ def test_cache_key_covers_history_and_mode():
     assert answer_key(**base, history=[{"role": "user", "content": "earlier"}]) != k0
     assert answer_key(**base, docs_only=True) != k0
     assert answer_key(**{**base, "session_id": "other"}) != k0
+    assert answer_key(**base, effort="high") != k0
+    assert answer_key(**{**base, "model": "other-model"}) != k0
+
+
+# ------------------------------------------- one run at a time per conversation
+
+def test_conversation_claim_admits_one_and_409s_the_rest(monkeypatch):
+    """A second run in the same conversation must not interleave into the
+    message list -- it gets 409 rather than corrupting the next turn."""
+    from harness.api import conversation_lock as lock
+
+    held: dict[str, str] = {}
+
+    def fake_claim(cid, rid):
+        if cid in held:
+            return False
+        held[cid] = rid
+        return True
+
+    def fake_release(cid, rid):
+        if held.get(cid) == rid:
+            del held[cid]
+
+    monkeypatch.setattr(lock, "_claim", fake_claim)
+    monkeypatch.setattr(lock, "_release", fake_release)
+
+    async def scenario():
+        async with lock.conversation_slot("c1", "run-1"):
+            # same conversation, different run: refused
+            with pytest.raises(HTTPException) as e:
+                async with lock.conversation_slot("c1", "run-2"):
+                    pass
+            assert e.value.status_code == 409
+            assert e.value.headers["X-Reason"] == "conversation_busy"
+            # a DIFFERENT conversation is unaffected -- that is the whole point
+            async with lock.conversation_slot("c2", "run-3"):
+                pass
+        # released on exit, so the next turn can run
+        async with lock.conversation_slot("c1", "run-4"):
+            pass
+
+    asyncio.run(scenario())
+    assert held == {}
+
+
+def test_conversation_claim_is_released_when_the_run_raises(monkeypatch):
+    from harness.api import conversation_lock as lock
+
+    held: dict[str, str] = {}
+    monkeypatch.setattr(lock, "_claim", lambda cid, rid: held.setdefault(cid, rid) == rid)
+    monkeypatch.setattr(lock, "_release", lambda cid, rid: held.pop(cid, None))
+
+    async def scenario():
+        with pytest.raises(RuntimeError):
+            async with lock.conversation_slot("c1", "run-1"):
+                raise RuntimeError("model blew up")
+
+    asyncio.run(scenario())
+    assert held == {}, "a failed run must not wedge the conversation"
+
+
+def test_a_failed_release_does_not_fail_the_run(monkeypatch):
+    """The TTL is the backstop; a release that errors is logged, not raised."""
+    from harness.api import conversation_lock as lock
+
+    monkeypatch.setattr(lock, "_claim", lambda cid, rid: True)
+
+    def boom(cid, rid):
+        raise RuntimeError("db gone")
+
+    monkeypatch.setattr(lock, "_release", boom)
+
+    async def scenario():
+        async with lock.conversation_slot("c1", "run-1"):
+            pass
+
+    asyncio.run(scenario())      # must not raise
+
+
+def test_claim_sql_allows_taking_over_a_stale_claim():
+    """A replica killed mid-run leaves a claim behind. Without the TTL clause
+    the conversation would be locked forever, so assert it is still there."""
+    import inspect
+    from harness.api import conversation_lock as lock
+
+    sql = inspect.getsource(lock._claim)
+    assert "active_run_id IS NULL" in sql
+    assert "active_run_started_at <" in sql, "stale-claim takeover was removed"
+    assert lock.CLAIM_TTL_S > 0
+
+
+def test_release_is_scoped_to_our_own_run():
+    """A run whose claim was taken over must not clear the new owner's."""
+    import inspect
+    from harness.api import conversation_lock as lock
+
+    assert "active_run_id = :rid" in inspect.getsource(lock._release)
+
+
+# --------------------------------------------- server-owned context reaches the model
+
+def test_initial_messages_replace_the_client_history():
+    """With a conversation, the seed comes from the transcript -- including the
+    tool messages that client-side `history` never carried."""
+    store, provider = FakeStore(), EchoProvider()
+
+    seed = [
+        {"role": "system", "content": "SYS"},
+        {"role": "user", "content": "summarise report.txt"},
+        {"role": "assistant", "content": "", "tool_calls": [
+            {"id": "t1", "type": "function",
+             "function": {"name": "read_file", "arguments": "{}"}}]},
+        {"role": "tool", "tool_call_id": "t1", "content": "REVENUE: 4.2M"},
+        {"role": "assistant", "content": "It covers Q3."},
+        {"role": "user", "content": "what was the revenue figure?"},
+    ]
+
+    async def go():
+        r = await run_agent(
+            question="what was the revenue figure?",
+            prompt_text="SYS",
+            registry=ToolRegistry(),
+            provider=provider,
+            policy=ToolPolicy(tiers={}),
+            audit=AuditLog(),
+            store=store,
+            thread_id="run-1",
+            trace=Trace(trace_id="run-1"),
+            user_id="alice",
+            # deliberately BOTH: initial_messages must win
+            history=[{"role": "user", "content": "IGNORED"}],
+            initial_messages=seed,
+            conversation_id="conv-1",
+            persisted_upto=len(seed) - 1,
+        )
+        await asyncio.gather(*list(loop_module._pending_saves))
+        return r
+
+    asyncio.run(go())
+    seen = provider.seen[0]
+    assert [m["role"] for m in seen] == ["system", "user", "assistant", "tool", "assistant", "user"]
+    # the earlier tool result is in context -- the whole point of the change
+    assert any("REVENUE: 4.2M" in (m.get("content") or "") for m in seen)
+    assert not any("IGNORED" in (m.get("content") or "") for m in seen)
+
+    cp = store.rows["run-1"]
+    assert cp.conversation_id == "conv-1"
+    # everything from the new question onward is what the caller must persist
+    assert cp.persisted_upto == len(seed) - 1
+    assert cp.message[cp.persisted_upto]["content"] == "what was the revenue figure?"
+
+
+def test_conversation_taint_seeds_the_fresh_checkpoint():
+    """A chat that already ingested poisoned content stays tainted next turn."""
+    store, provider = FakeStore(), EchoProvider()
+
+    async def go():
+        await run_agent(
+            question="carry on",
+            prompt_text="SYS",
+            registry=ToolRegistry(),
+            provider=provider,
+            policy=ToolPolicy(tiers={}),
+            audit=AuditLog(),
+            store=store,
+            thread_id="run-2",
+            trace=Trace(trace_id="run-2"),
+            user_id="alice",
+            conversation_id="conv-1",
+            security_state={"tainted": True, "taint_sources": ["web_search"]},
+        )
+        await asyncio.gather(*list(loop_module._pending_saves))
+
+    asyncio.run(go())
+    assert store.rows["run-2"].security.get("tainted") is True
+
+
+def test_stateless_run_records_no_conversation():
+    """No conversation_id: behave exactly as before, nothing to persist."""
+    store, provider = FakeStore(), EchoProvider()
+
+    async def go():
+        await run_agent(
+            question="hi", prompt_text="SYS", registry=ToolRegistry(),
+            provider=provider, policy=ToolPolicy(tiers={}), audit=AuditLog(),
+            store=store, thread_id="run-3", trace=Trace(trace_id="run-3"),
+            user_id="alice",
+        )
+        await asyncio.gather(*list(loop_module._pending_saves))
+
+    asyncio.run(go())
+    cp = store.rows["run-3"]
+    assert cp.conversation_id is None
+    assert cp.persisted_upto == 0

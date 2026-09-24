@@ -1,0 +1,88 @@
+# MCP servers the harness connects to at startup. Loaded by
+# harness.mcp.config.load_server_configs(); every tool a server exposes is
+# registered as "<name>__<tool>". ${VAR} in string values is expanded from
+# the environment.
+#
+# transport: stdio            -> command, args, env, cwd
+#            streamable_http  -> url, headers
+#            sse              -> url, headers
+# common:    enabled (default true), connect_timeout_s (30), call_timeout_s (60)
+#
+# Secrets: never put a raw token here. "vault:<provider>" becomes a fresh
+# short-lived grant token at every connect, and "vault-proxy:<provider>" the
+# API's /vault/proxy/<provider>/ base URL -- so the server process only ever
+# holds a revocable grant and talks to the third party through the vault.
+
+servers:
+  - name: filesystem
+    transport: stdio
+    command: npx
+    args: ["-y", "@modelcontextprotocol/server-filesystem", "docs", "data/sessions"]
+
+  # - name: git
+  #   transport: stdio
+  #   command: uvx
+  #   args: ["mcp-server-git", "--repository", "."]
+
+  # - name: github
+  #   transport: stdio
+  #   command: npx
+  #   args: ["-y", "@modelcontextprotocol/server-github"]
+  #   env:
+  #     GITHUB_PERSONAL_ACCESS_TOKEN: "vault:github"        # grant, not the PAT
+  #     GITHUB_API_URL: "vault-proxy:github"                # -> http://127.0.0.1:8000/vault/proxy/github/
+
+  # ---- Google Workspace bundle: Google's official MCP servers (streamable
+  # HTTP, OAuth bearer). DISABLED: calling their tools requires a Google
+  # Workspace organisation enrolled in the Developer Preview Program; personal
+  # accounts get "requires ... Developer Preview". The "google" connector is the
+  # builtin REST implementation instead (connectors/google_rest.py) -- same
+  # switch, same tool names. Flip these to enabled: true (and remove "google"
+  # from connectors.registry.BUILTIN) to use the official servers once enrolled.
+  # They are per-user: the header carries the signed-in user's own Google
+  # access token, so nothing is shared between users.
+  - name: gmail
+    enabled: false
+    transport: streamable_http
+    url: https://gmailmcp.googleapis.com/mcp/v1
+    headers: { Authorization: "Bearer user-token:google:gmail" }
+    tags: ["connector", "per-user", "bundle:google", "label:Google Workspace", "auth:google",
+           "description:Gmail, Calendar, Drive and Docs on your own Google account", "icon:brand-google"]
+    connect_timeout_s: 20
+  - name: calendar
+    enabled: false
+    transport: streamable_http
+    url: https://calendarmcp.googleapis.com/mcp/v1
+    headers: { Authorization: "Bearer user-token:google:calendar" }
+    tags: ["connector", "per-user", "bundle:google"]
+    connect_timeout_s: 20
+  - name: drive
+    enabled: false
+    transport: streamable_http
+    url: https://drivemcp.googleapis.com/mcp/v1
+    headers: { Authorization: "Bearer user-token:google:drive" }
+    tags: ["connector", "per-user", "bundle:google"]
+    connect_timeout_s: 20
+  - name: docs
+    enabled: false
+    transport: streamable_http
+    url: https://docsmcp.googleapis.com/mcp/v1
+    headers: { Authorization: "Bearer user-token:google:docs" }
+    tags: ["connector", "per-user", "bundle:google"]
+    connect_timeout_s: 20
+
+  # An MCP server tagged "connector" is NOT given to every run: it appears in
+  # the "+ → Connectors" menu (label from "label:<text>") and its tools are only
+  # exposed when the user switches it on. This is how to swap the built-in
+  # arXiv connector for a community server later, if wanted:
+  # - name: arxiv-mcp
+  #   transport: stdio
+  #   command: uvx
+  #   args: ["arxiv-mcp-server", "--storage-path", "data/arxiv"]
+  #   tags: ["connector", "label:Research (MCP)"]
+
+  # - name: remote
+  #   transport: streamable_http
+  #   url: https://mcp.example.com/mcp
+  #   headers:
+  #     Authorization: "Bearer vault:remote-mcp"

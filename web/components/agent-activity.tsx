@@ -17,7 +17,11 @@ export type ToolActivity = {
   preview?: string
   ms?: number
   cached?: boolean
+  /** Structured result for a rich card (Google Workspace tools). */
+  ui?: GoogleUi
 }
+
+import type { GoogleUi } from "@/components/hangul/GoogleCards"
 
 type Labels = { pending: string; running: string; done: string; awaiting: string }
 
@@ -37,11 +41,23 @@ const TOOL_LABELS: Record<string, Labels> = {
   remember: { pending: "Preparing a memory", running: "Saving to memory", done: "Saved to memory", awaiting: "Wants to save to memory" },
   recall: { pending: "Preparing to check memory", running: "Checking memory", done: "Checked memory", awaiting: "Wants to check memory" },
   recall_episodes: { pending: "Preparing to look back", running: "Looking at past conversations", done: "Looked at past conversations", awaiting: "Wants to look at past conversations" },
+  gmail__search_messages: { pending: "Preparing a Gmail search", running: "Searching Gmail", done: "Searched Gmail", awaiting: "Wants to search Gmail" },
+  gmail__get_thread: { pending: "Preparing to open a thread", running: "Reading a Gmail thread", done: "Read a Gmail thread", awaiting: "Wants to read a Gmail thread" },
+  gmail__get_message: { pending: "Preparing to open an email", running: "Reading an email", done: "Read an email", awaiting: "Wants to read an email" },
+  gmail__create_draft: { pending: "Drafting an email", running: "Saving a draft", done: "Saved a draft", awaiting: "Wants to save a draft" },
+  gmail__send_message: { pending: "Drafting an email", running: "Sending an email", done: "Sent an email", awaiting: "Wants to send an email" },
+  gmail__send_draft: { pending: "Preparing to send a draft", running: "Sending a draft", done: "Sent a draft", awaiting: "Wants to send a draft" },
+  calendar__list_events: { pending: "Preparing to check the calendar", running: "Checking Google Calendar", done: "Checked Google Calendar", awaiting: "Wants to check the calendar" },
+  calendar__create_event: { pending: "Drafting an event", running: "Creating an event", done: "Created an event", awaiting: "Wants to create an event" },
+  drive__search_files: { pending: "Preparing a Drive search", running: "Searching Google Drive", done: "Searched Google Drive", awaiting: "Wants to search Drive" },
+  drive__get_file: { pending: "Preparing to open a file", running: "Reading a Drive file", done: "Read a Drive file", awaiting: "Wants to read a Drive file" },
+  docs__get_document: { pending: "Preparing to open a doc", running: "Reading a Google Doc", done: "Read a Google Doc", awaiting: "Wants to read a Google Doc" },
+  docs__append_text: { pending: "Drafting text for a doc", running: "Editing a Google Doc", done: "Edited a Google Doc", awaiting: "Wants to edit a Google Doc" },
 }
 
 /** Human name for a tool id: "filesystem__write_file" → "write file". */
 export function toolName(tool: string): string {
-  return tool.replace(/^filesystem__/, "").replace(/_/g, " ")
+  return tool.replace(/^filesystem__/, "").replace(/^(gmail|calendar|drive|docs)__/, "$1 ").replace(/_/g, " ")
 }
 
 export function label(a: ToolActivity): string {
@@ -62,7 +78,7 @@ export function label(a: ToolActivity): string {
 /** The one argument worth showing inline — the query, the path, the expression. */
 function detail(a: ToolActivity): string | null {
   const args = a.arguments ?? {}
-  for (const k of ["query", "expression", "question", "path", "pattern", "source"]) {
+  for (const k of ["query", "expression", "question", "path", "pattern", "source", "subject", "summary", "thread_id", "file_id", "document_id"]) {
     const v = args[k]
     if (typeof v === "string" && v.trim()) {
       return k === "path" || k === "source" ? v.split("/").slice(-1)[0] : v

@@ -9,6 +9,8 @@ import { AppHeader } from "@/components/hangul/AppHeader"
 import { SignInModal, type AuthMode } from "@/components/hangul/SignInModal"
 import { AttachMenu, type Attachment } from "@/components/hangul/AttachMenu"
 import { AttachmentChips } from "@/components/hangul/AttachmentChips"
+import { ConnectorChips } from "@/components/hangul/ConnectorChips"
+import { useConnectorSelection, useResearchMode } from "@/lib/connectors"
 import { ChatsPanel } from "@/components/hangul/ChatsPanel"
 
 const PROMPTS = ["Search my documents", "Check the web", "Draft a note"]
@@ -25,6 +27,9 @@ export default function Landing() {
   // Documents added here are already indexed server-side for this user; their
   // names ride along to /chat so the chips carry over.
   const [attachments, setAttachments] = useState<Attachment[]>([])
+  // Carried to /chat through this tab's sessionStorage, like the attachments go through the URL.
+  const [connectors, setConnectors] = useConnectorSelection()
+  const [research, setResearch] = useResearchMode()
   const [uploading, setUploading] = useState<string | null>(null)
   const [uploadError, setUploadError] = useState<string | null>(null)
 
@@ -49,7 +54,7 @@ export default function Landing() {
 
       <div style={{ flex: 1, display: "flex", minHeight: 0 }}>
       {/* Same rail as /chat: the user's conversations, visible right after sign-in. */}
-      {status === "authenticated" && <ChatsPanel onUnauthorized={() => askToSignIn("Your session has expired. Sign in again.")} />}
+      {status === "authenticated" && <ChatsPanel onUnauthorized={() => askToSignIn("Your session has expired. Sign in again.")} onOpen={(id) => router.push(`/chat?c=${id}`)} />}
       <div style={{ flex: 1, minWidth: 0, overflowY: "auto", display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", padding: "0 20px 80px" }}>
         <div style={{ filter: theme === "dark" ? "drop-shadow(0 0 10px rgba(242,243,245,0.18))" : "none" }}>
           <HangulSigil size={52} />
@@ -66,6 +71,8 @@ export default function Landing() {
               onError={setUploadError}
               onRequireSignIn={askToSignIn}
               placement="below"
+              connectors={connectors}
+              onConnectorsChange={setConnectors}
             />
             {/* Same composer as /chat: wraps and grows a line at a time (up to
                 MAX_COMPOSER_PX, then scrolls). Enter sends, Shift+Enter is a newline. */}
@@ -96,6 +103,19 @@ export default function Landing() {
         </div>
 
         <div style={{ display: "flex", gap: 8, marginTop: 16, flexWrap: "wrap", justifyContent: "center" }}>
+          <button
+            type="button"
+            className="h-chip"
+            data-testid="research-mode"
+            aria-pressed={research}
+            onClick={() => setResearch(!research)}
+            title="Deep research: plan, several searches (documents, web, arXiv), numbered citations and a sources list"
+            style={research ? { background: "var(--solid-bg)", color: "var(--solid-fg)", borderColor: "var(--solid-bg)" } : undefined}
+          >
+            <i className="ti ti-telescope" style={{ fontSize: 12, marginRight: 5 }} />
+            Deep research
+          </button>
+          <ConnectorChips keys={connectors} onChange={setConnectors} />
           {PROMPTS.map((p) => (
             <button key={p} className="h-chip" onClick={() => onSubmit(p)}>{p}</button>
           ))}

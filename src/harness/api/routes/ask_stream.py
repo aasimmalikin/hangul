@@ -6,7 +6,7 @@ from sse_starlette.sse import EventSourceResponse
 
 from harness.api.auth import get_current_user
 from harness.api.concurrency import run_slot
-from harness.api.routes.ask import AskRequest, _build_and_run
+from harness.api.routes.ask import AskRequest, _build_and_run, resolve_or_422
 
 router = APIRouter()
 
@@ -20,6 +20,8 @@ AGENT_EVENTS = {"step", "text_start", "text_delta", "text_end",
 async def ask_stream(req: AskRequest, request: Request,
                      user: dict = Depends(get_current_user)):
     user_id = user["user_id"]
+    # A bad model/effort must be a real 422, not an `error` event on a 200 stream.
+    resolve_or_422(req.model, req.effort)
 
     # Bridge between the agent (producing events) and the SSE generator
     # (sending them). The agent runs as a background task and pushes events
@@ -91,6 +93,7 @@ async def ask_stream(req: AskRequest, request: Request,
                         yield {"event": "approval_required", "data": json.dumps({
                             **r.pending_tool,
                             "run_id": outcome.run.run_id,
+                            "conversation_id": outcome.conversation_id,
                         })}
                     elif not streamed_text and r.answer:
                         # Non-streaming path (provider without chat_stream, or a
@@ -105,8 +108,13 @@ async def ask_stream(req: AskRequest, request: Request,
                     yield {"event": "done", "data": json.dumps({
                         "steps": r.steps,
                         "run_id": outcome.run.run_id,
+                        # A client that sent no conversation_id learns here
+                        # which conversation the server started for it.
+                        "conversation_id": outcome.conversation_id,
                         "cost_usd": outcome.run_cost,
                         "tools_used": r.tools_used,
+                        "model": outcome.model,
+                        "effort": outcome.effort,
                     })}
                     return
         finally:

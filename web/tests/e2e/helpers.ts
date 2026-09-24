@@ -19,10 +19,22 @@ export function freshUser(label: string): TestUser {
  * Mint a real Auth.js JWT session cookie, exactly as the app would after a
  * Google sign-in, so the BFF's `auth()` sees a genuine session.
  */
-export async function signInAs(context: BrowserContext, user: TestUser, baseURL: string) {
+/** The email the fake backend's admin allowlist contains. */
+export const operator: TestUser = { id: "303", name: "Operator", email: "operator@example.com" }
+
+export type SignInOptions = {
+  /** Which provider the session records ("google" is what the admin console needs). */
+  provider?: "google" | "resend"
+  /** When the sign-in happened (ms); defaults to now. */
+  authAt?: number
+}
+
+export async function signInAs(context: BrowserContext, user: TestUser, baseURL: string, opts: SignInOptions = {}) {
   const name = "authjs.session-token"
   const value = await encode({
-    token: { sub: user.id, name: user.name, email: user.email },
+    // `provider`/`authAt` are what the jwt callback records on the sign-in
+    // request; the admin console needs a recent Google-backed session.
+    token: { sub: user.id, name: user.name, email: user.email, provider: opts.provider ?? "google", authAt: opts.authAt ?? Date.now() },
     secret: AUTH_SECRET,
     salt: name,
     maxAge: 3600,
@@ -40,15 +52,21 @@ export async function backend(path: string, body?: unknown) {
   return res.json()
 }
 export const resetBackend = () => backend("/__reset")
-/** Plant a conversation for `user` in the fake backend, optionally dated (ISO). */
-export const seedChat = (user: TestUser, title: string, opts: { updated_at?: string; summary?: string } = {}) =>
-  backend("/__episode", { user: user.id, title, ...opts })
+/**
+ * Plant a conversation for `user` in the fake backend, optionally dated (ISO).
+ * Seeds the server-owned `conversations` row (and a transcript when `messages`
+ * is given), which is what the rail reads now.
+ */
+export const seedChat = (user: TestUser, title: string,
+                         opts: { updated_at?: string; messages?: { role: string; content: string }[] } = {}) =>
+  backend("/__conversation", { user: user.id, title, ...opts }) as Promise<{ ok: boolean; id: string }>
 export const backendState = () => backend("/__state") as Promise<{
-  asks: { user: string; question: string; history: number; docs_only: boolean }[]
+  asks: { user: string; question: string; history: number; conversation_id: string | null; docs_only: boolean; model: string | null; effort: string | null }[]
   executed: Record<string, number>
   uploads: { user: string; filename: string }[]
   memory: Record<string, { id: number; content: string; active: boolean }[]>
-  episodes: Record<string, { id: number; thread_id: string; title: string; summary: string; active: boolean }[]>
+  conversations: Record<string, { id: string; title: string; active: boolean }[]>
+  convMessages: Record<string, { seq: number; role: string; content: string }[]>
 }>
 
 export async function ask(page: Page, text: string) {

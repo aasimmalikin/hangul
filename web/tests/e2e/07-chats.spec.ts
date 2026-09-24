@@ -39,16 +39,21 @@ test.describe("chats rail", () => {
     await expect(items).toHaveCount(1)
     await expect(items.first()).toContainText("Draft a note")
 
-    // a follow-up updates the same entry, it does not add a second one
-    const savedAgain = page.waitForResponse((r) => r.url().endsWith("/api/chats") && r.request().method() === "POST")
+    // a follow-up continues the SAME conversation: one entry, and the second
+    // ask carries the conversation id the first run created.
     await ask(page, "and add a title")
     await expectReply(page, "Reply to: and add a title")
-    expect((await savedAgain).status()).toBe(200)
     await expect(items).toHaveCount(1)
-    const saved = (await backendState()).episodes[me.id]
-    expect(saved).toHaveLength(1)
-    expect(saved[0].summary).toContain("Q: Draft a note")
-    expect(saved[0].summary).toContain("Q: and add a title")
+    const state = await backendState()
+    const mine = state.conversations[me.id]
+    expect(mine).toHaveLength(1)
+    const mineAsks = state.asks.filter((a) => a.user === me.id)
+    expect(mineAsks[0].conversation_id).toBeNull()             // first turn: server creates it
+    expect(mineAsks[1].conversation_id).toBe(mine[0].id)       // follow-up continues it
+    // the server owns the transcript, so both turns are in it
+    const transcript = state.convMessages[mine[0].id].map((m) => m.content)
+    expect(transcript).toContain("Draft a note")
+    expect(transcript).toContain("and add a title")
 
     // back on the landing page: the chat is in the rail
     await page.goto("/")
@@ -67,12 +72,10 @@ test.describe("chats rail", () => {
     // reloading /chat and continuing does not create a duplicate entry
     await page.goto("/chat")
     await expect(page.locator(".h-prose")).toHaveCount(2)
-    const savedMore = page.waitForResponse((r) => r.url().endsWith("/api/chats") && r.request().method() === "POST")
     await ask(page, "more")
     await expectReply(page, "Reply to: more")
-    await savedMore
     await expect(page.getByTestId("chats-item")).toHaveCount(2)
-    expect((await backendState()).episodes[me.id]).toHaveLength(2)
+    expect((await backendState()).conversations[me.id]).toHaveLength(2)
   })
 
   test("each row is the user's query only — cut with … when long, no model answer", async ({ page }) => {
@@ -92,8 +95,11 @@ test.describe("chats rail", () => {
     await expect(row.getByTestId("chats-preview")).toHaveCount(0)
   })
 
-  test("hovering the header reveals 'View all'; it opens the full history with transcripts", async ({ page }) => {
-    await seedChat(me, "Draft a note", { summary: "Q: Draft a note\nA: Here is a draft.\nQ: shorter\nA: Draft, shorter." })
+  test("hovering the header reveals 'View all'; it opens the full history", async ({ page }) => {
+    await seedChat(me, "Draft a note", { messages: [
+      { role: "user", content: "Draft a note" }, { role: "assistant", content: "Here is a draft." },
+      { role: "user", content: "shorter" }, { role: "assistant", content: "Draft, shorter." },
+    ] })
     await seedChat(me, "Check the web")
     await page.goto("/")
     const panel = page.getByTestId("chats-panel")
@@ -113,10 +119,11 @@ test.describe("chats rail", () => {
     await expect(dialog).toContainText("All chats")
     const entries = dialog.getByTestId("chats-history-item")
     await expect(entries).toHaveCount(2)
+    // The transcript lives on the server now, so the dialog shows what the rail
+    // knows -- the title, the message count -- and offers to open the chat.
     const draft = entries.filter({ hasText: "Draft a note" })
-    await expect(draft).toContainText("Here is a draft.")
-    await expect(draft).toContainText("shorter")
-    await expect(draft).toContainText("Draft, shorter.")
+    await expect(draft).toContainText("4 messages")
+    await expect(draft.getByTestId("chats-history-open")).toBeVisible()
     await page.keyboard.press("Escape")
     await expect(dialog).toHaveCount(0)
   })
@@ -195,13 +202,13 @@ test.describe("chats rail", () => {
     await del.hover()
     await expect(del).toHaveCSS("color", errColor)
 
-    const deleted = page.waitForResponse((r) => r.url().includes("/api/chats/") && r.request().method() === "DELETE")
+    const deleted = page.waitForResponse((r) => r.url().includes("/api/conversations/") && r.request().method() === "DELETE")
     await del.click()
     await expect(page.getByTestId("chats-item")).toHaveCount(0)
     expect((await deleted).status()).toBe(200)
 
     // deactivated, not deleted: still on the backend, flagged inactive
-    const mine = (await backendState()).episodes[me.id]
+    const mine = (await backendState()).conversations[me.id]
     expect(mine).toHaveLength(1)
     expect(mine[0]).toMatchObject({ title: "remember this one", active: false })
 
@@ -214,7 +221,7 @@ test.describe("chats rail", () => {
     await ask(page, "keep me")
     await expectReply(page, "Reply to: keep me")
     await expect(page.getByTestId("chats-item")).toHaveCount(1)
-    await page.route("**/api/chats/*", (r) => r.fulfill({ status: 502, contentType: "application/json", body: JSON.stringify({ detail: "The assistant is unreachable right now.", code: "upstream_unreachable" }) }))
+    await page.route("**/api/conversations/*", (r) => r.fulfill({ status: 502, contentType: "application/json", body: JSON.stringify({ detail: "The assistant is unreachable right now.", code: "upstream_unreachable" }) }))
     const row = page.getByTestId("chats-item").first()
     await row.hover()
     await row.getByRole("button", { name: "Chat options" }).click()
