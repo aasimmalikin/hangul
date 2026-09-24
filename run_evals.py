@@ -1,82 +1,50 @@
-"""Run the eval harness against the agent and save a versioned report."""
+"""Run an eval suite against the real agent and save a versioned report.
 
+    python run_evals.py                      # qa (correctness + faithfulness), as before
+    python run_evals.py --suite tool_selection
+    python run_evals.py --suite all --limit 3
+
+Both suites call the real model and (for judged metrics) the real judge, so
+they cost money. Reports land in data/eval_runs/<suite>-<UTC stamp>.json and
+show up on the admin page."""
+
+import argparse
 import asyncio
-import json
-from datetime import datetime, timezone
-from pathlib import Path
 
-from harness.eval.dataset import load_case
-from harness.eval.runner import run_eval
-from harness.eval.openai_judge import OpenAIJudge
-from harness.agent.loop import run_agent
-from harness.obs.tracing import Trace
-from harness.prompts.registry import get_prompt
-from harness.providers import get_provider
-from harness.api.routes.ask import _registry, _policy, _audit, _store
-from harness.tools.registry import ToolRegistry
-from harness.tools.builtin.search_docs import SEARCH_DOCS_TOOL
-from harness.tools.builtin.calculator import CALCULATOR_TOOL
-import uuid
-
-_eval_registry = ToolRegistry()
-_eval_registry.registry(SEARCH_DOCS_TOOL)
-_eval_registry.registry(CALCULATOR_TOOL)
+from harness.eval.agent_runner import run_suite
+from harness.eval.catalog import SUITES
 
 
-async def run_fn(question: str) -> tuple[str, str]:
-    """Run the real agent on one question, return (answer, retrieved_context).
-    Uses a docs-only registry (search_docs + calculator, no web) so the eval
-    measures document-grounded QA, not web lookups."""
-    tid = "eval-" + uuid.uuid4().hex[:12]
-    result = await run_agent(
-        question=question,
-        prompt_text=get_prompt("system_agent").text,
-        registry=_eval_registry,
-        provider=get_provider(),
-        policy=_policy,
-        audit=_audit,
-        store=_store,
-        thread_id=tid,
-        trace=Trace(trace_id=tid),
-    )
-    
-    return result.answer, result.retrieved_context
-
-def current_index_version(path:Path = "data/index_version.txt")->str:
-    p = Path("data/index_version.txt")
-    return p.read_text().strip() if p.exists() else "unknown"
+def _print(report: dict) -> None:
+    print(f"suite:   {report['suite']}   cases: {report['n']}   prompt={report.get('prompt_version')}  "
+          f"model={report.get('model')}")
+    for k, v in report["metrics"].items():
+        print(f"  {k:<28} {v}")
+    print("per-case:")
+    for c in report["cases"]:
+        s = c["scores"]
+        summary = "  ".join(f"{k}={v:.2f}" for k, v in s.items() if isinstance(v, (int, float)))
+        print(f"  {c['id']}: {summary}")
+        for note in s.get("notes", []) or []:
+            print(f"      - {note}")
 
 
 async def main() -> None:
-    cases = load_case("data/evalset.jsonl")
-    print(f"running eval over {len(cases)} cases...\n")
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--suite", default="qa", choices=[*SUITES, "all"])
+    ap.add_argument("--limit", type=int, default=None, help="only the first N cases")
+    ap.add_argument("--ids", default=None, help="comma-separated case ids to run, e.g. ts15,ts16")
+    ap.add_argument("--no-save", action="store_true")
+    args = ap.parse_args()
 
-    report = await run_eval(
-        cases=cases,
-        run_fn=run_fn,
-        judge=OpenAIJudge(),
-        prompt_version=get_prompt("system_agent").version,
-        index_version=current_index_version(),    
-        model=get_provider().model,
-    )
-
-    # print a readable summary
-    print(f"cases:            {report.n}")
-    print(f"avg correctness:  {report.avg_correctness:.2f}")
-    print(f"avg faithfulness: {report.avg_faithfulness:.2f}")
-    print(f"pass rate:        {report.pass_rate:.0%}")
-    print(f"prompt={report.prompt_version}  index={report.index_version}  model={report.model}")
-    print("\nper-case:")
-    for r in report.result:
-        print(f"  {r.id}: correctness={r.correctness:.2f} faithfulness={r.faithfulness:.2f}")
-
-    # save the full report, timestamped, so runs can be compared over time
-    out_dir = Path("data/eval_runs")
-    out_dir.mkdir(parents=True, exist_ok=True)
-    stamp = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S")
-    out_path = out_dir / f"eval-{stamp}.json"
-    out_path.write_text(json.dumps(report.model_dump(), indent=2))
-    print(f"\nsaved report -> {out_path}")
+    suites = list(SUITES) if args.suite == "all" else [args.suite]
+    for suite in suites:
+        print(f"\nrunning {suite} ...\n")
+        report, path = await run_suite(suite, save=not args.no_save, limit=args.limit,
+                                       ids=args.ids.split(",") if args.ids else None)
+        _print(report)
+        if path:
+            print(f"\nsaved report -> {path}")
 
 
 if __name__ == "__main__":

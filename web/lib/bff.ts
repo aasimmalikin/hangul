@@ -1,5 +1,5 @@
 import { auth } from "@/auth"
-import { mintServiceToken } from "@/lib/service-token"
+import { mintServiceToken, type ServiceIdentity } from "@/lib/service-token"
 
 /**
  * Shared guard rails for the BFF routes (/api/chat, /api/upload, /api/approve,
@@ -18,6 +18,8 @@ import { mintServiceToken } from "@/lib/service-token"
 
 export type BffErrorCode =
   | "unauthorized"
+  | "reauth_required"
+  | "forbidden"
   | "forbidden_origin"
   | "rate_limited"
   | "bad_request"
@@ -58,6 +60,33 @@ export async function requireUser(): Promise<{ userId: string } | Response> {
   const userId = session?.user?.id
   if (!userId) return jsonError(401, "unauthorized", "Sign in to continue.")
   return { userId }
+}
+
+/** How recent the Google sign-in must be for the admin console (mirrors the backend's admin_max_auth_age_s). */
+export const ADMIN_MAX_AUTH_AGE_MS = 12 * 60 * 60 * 1000
+
+export type AdminSession = { userId: string; identity: ServiceIdentity }
+
+/**
+ * The admin console's session check. It does NOT decide who is an admin --
+ * the email allowlist lives on the backend -- it only makes sure there is a
+ * session that *could* be one: a Google sign-in (verified email) that is
+ * recent enough. Anything else is turned away here, before a token is
+ * minted, with a code the page can act on:
+ *   unauthorized      no session -> show the Google sign-in
+ *   reauth_required   session is not Google-backed or is too old -> sign in again
+ */
+export async function requireAdmin(): Promise<AdminSession | Response> {
+  const session = await auth()
+  const user = session?.user
+  if (!user?.id) return jsonError(401, "unauthorized", "Sign in with Google to continue.")
+  if (user.provider !== "google" || !user.email) {
+    return jsonError(401, "reauth_required", "The admin console needs a Google sign-in.")
+  }
+  if (!user.authAt || Date.now() - user.authAt > ADMIN_MAX_AUTH_AGE_MS) {
+    return jsonError(401, "reauth_required", "Your sign-in is too old for the admin console. Sign in again.")
+  }
+  return { userId: user.id, identity: { email: user.email, authProvider: user.provider, authAt: user.authAt } }
 }
 
 // ------------------------------------------------------------ rate limit
@@ -106,12 +135,12 @@ export async function upstream(
   path: string,
   userId: string,
   init: RequestInit,
-  { timeoutMs, signal }: { timeoutMs: number; signal?: AbortSignal },
+  { timeoutMs, signal, identity }: { timeoutMs: number; signal?: AbortSignal; identity?: ServiceIdentity },
 ): Promise<Response> {
   const base = process.env.FASTAPI_URL
   if (!base) throw new UpstreamError(502, "upstream_unreachable", "Assistant backend is not configured.")
 
-  const token = await mintServiceToken(userId, "user")
+  const token = await mintServiceToken(userId, identity ? "admin" : "user", identity)
   const signals = [AbortSignal.timeout(timeoutMs), ...(signal ? [signal] : [])]
 
   try {

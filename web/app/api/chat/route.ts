@@ -36,7 +36,8 @@ const textOf = (m: IncomingMessage) =>
  *   tool_result           ->  same part, status "done" | "error" | "awaiting"
  *                             (awaiting = parked for human approval)
  *   approval_required     ->  data-approval | data-choice part
- *   done                  ->  data-run part (steps, cost, tools) + finish
+ *   security              ->  data-security part (a defence layer fired; may carry the guarded answer)
+ *   done                  ->  data-run part (steps, cost, tools, conversationId) + finish
  *
  * The prior turns of the conversation go up as `history`, so follow-up
  * questions have context. The UI owns the transcript; the backend caps it.
@@ -50,12 +51,23 @@ export async function POST(req: Request) {
   const limited = rateLimit(`chat:${userId}`, 60, 60_000)
   if (limited) return limited
 
-  let body: { messages?: IncomingMessage[]; docsOnly?: unknown }
+  let body: { messages?: IncomingMessage[]; docsOnly?: unknown; model?: unknown; effort?: unknown; connectors?: unknown; mode?: unknown; conversationId?: unknown }
   try {
     body = await req.json()
   } catch {
     return jsonError(400, "bad_request", "Malformed request body.")
   }
+  // Model / effort are opaque ids here; the backend's registry decides whether
+  // they are valid (422). Only their shape is checked so junk never crosses.
+  const pick = (v: unknown, max: number) =>
+    typeof v === "string" && v.trim() && v.length <= max ? v.trim() : undefined
+  const model = pick(body.model, 64)
+  const effort = pick(body.effort, 16)
+  // Connector keys are opaque ids too; shape only (the backend 422s unknown ones).
+  const mode = body.mode === "research" ? "research" : "default"
+  const connectors = Array.isArray(body.connectors)
+    ? Array.from(new Set(body.connectors.filter((k): k is string => typeof k === "string" && /^[a-z0-9_-]{1,32}$/.test(k)))).slice(0, 8)
+    : []
   const messages = Array.isArray(body.messages) ? body.messages : []
   const last = messages[messages.length - 1]
   const question = last ? textOf(last).trim() : ""
@@ -64,19 +76,32 @@ export async function POST(req: Request) {
     return jsonError(400, "bad_request", `Questions are limited to ${MAX_QUESTION_CHARS} characters.`)
   }
 
-  const history = messages
-    .slice(0, -1)
-    .filter((m) => m.role === "user" || m.role === "assistant")
-    .map((m) => ({ role: m.role as "user" | "assistant", content: textOf(m).trim().slice(0, MAX_HISTORY_CHARS) }))
-    .filter((m) => m.content)
-    .slice(-MAX_HISTORY_TURNS)
+  // The conversation to continue. The server owns the transcript, so it loads
+  // the earlier turns itself -- including the tool results, which the client
+  // never had. Absent on a first message: the backend creates a conversation
+  // and names it on the `done` event.
+  const conversationId = typeof body.conversationId === "string" && /^[0-9a-f]{1,64}$/.test(body.conversationId)
+    ? body.conversationId
+    : undefined
+
+  // Legacy fallback for a run with no conversation (the backend also ignores
+  // this whenever conversation_id is set).
+  const history = conversationId
+    ? []
+    : messages
+        .slice(0, -1)
+        .filter((m) => m.role === "user" || m.role === "assistant")
+        .map((m) => ({ role: m.role as "user" | "assistant", content: textOf(m).trim().slice(0, MAX_HISTORY_CHARS) }))
+        .filter((m) => m.content)
+        .slice(-MAX_HISTORY_TURNS)
 
   let res: Response
   try {
     res = await upstream("/ask/stream", userId, {
       method: "POST",
       headers: { "Content-Type": "application/json", Accept: "text/event-stream" },
-      body: JSON.stringify({ question, history, docs_only: body.docsOnly === true }),
+      body: JSON.stringify({ question, history, conversation_id: conversationId,
+                             docs_only: body.docsOnly === true, model, effort, connectors, mode }),
     }, { timeoutMs: STREAM_TOTAL_MS, signal: req.signal })
   } catch (e) {
     if (e instanceof UpstreamError) return jsonError(e.status, e.code, e.message)
@@ -104,6 +129,7 @@ export async function POST(req: Request) {
         send({ type: "data-status", id: "status", data: { phase, step } })
       }
       const startedAt = Date.now()
+      let securitySeq = 0
       let finished = false
 
       const send = (obj: unknown) => controller.enqueue(encoder.encode(`data: ${JSON.stringify(obj)}\n\n`))
@@ -219,6 +245,8 @@ export async function POST(req: Request) {
                     preview: awaiting || notRun ? undefined : data.preview,
                     ms: data.ms,
                     cached: data.cached,
+                    // structured payload some tools attach (Gmail/Calendar/Drive/Docs cards)
+                    ui: data.ui && typeof data.ui === "object" ? data.ui : undefined,
                   },
                 })
                 break
@@ -226,15 +254,20 @@ export async function POST(req: Request) {
 
               case "approval_required":
                 setStatus("idle")
+                // A paused run never reaches `done`, so the conversation id
+                // rides along here too or the tab would forget which chat it
+                // is in until the approval resolves.
                 if (data.name === "ask_user") {
                   send({
                     type: "data-choice",
-                    data: { runId: data.run_id, question: data.arguments.question, options: data.arguments.options ?? [] },
+                    data: { runId: data.run_id, conversationId: data.conversation_id ?? null,
+                            question: data.arguments.question, options: data.arguments.options ?? [] },
                   })
                 } else {
                   send({
                     type: "data-approval",
-                    data: { runId: data.run_id, tool: data.name, arguments: data.arguments },
+                    data: { runId: data.run_id, conversationId: data.conversation_id ?? null,
+                            tool: data.name, arguments: data.arguments },
                   })
                 }
                 break
@@ -246,15 +279,38 @@ export async function POST(req: Request) {
                   type: "data-run",
                   data: {
                     runId: data.run_id,
+                    // Which conversation this landed in. On a first message the
+                    // server created it, and this is how the tab learns its id.
+                    conversationId: data.conversation_id ?? null,
                     steps: data.steps,
                     costUsd: data.cost_usd,
                     toolsUsed: data.tools_used ?? [],
+                    model: data.model,
+                    effort: data.effort ?? null,
                     ms: Date.now() - startedAt,
                   },
                 })
                 send({ type: "finish" })
                 finished = true
                 break
+
+              case "security": {
+                // A defence layer fired: shown to the user as a notice; when the
+                // output guard changed the answer, the guarded text replaces
+                // what was streamed (see the chat page's renderer).
+                securitySeq += 1
+                send({
+                  type: "data-security",
+                  id: `security-${securitySeq}`,
+                  data: {
+                    layer: data.layer, severity: data.severity, source: data.source, action: data.action,
+                    reasons: Array.isArray(data.reasons) ? data.reasons.slice(0, 4) : [],
+                    step: data.step ?? null,
+                    answer: typeof data.answer === "string" ? data.answer : undefined,
+                  },
+                })
+                break
+              }
 
               case "error":
                 setStatus("idle")

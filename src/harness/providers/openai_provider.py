@@ -2,18 +2,25 @@ from openai import AsyncOpenAI
 from harness.providers.base import AssistantTurn, ToolCall
 import json
 
+from harness.logging import log
+
 
 class OpenAIProvider:
-    def __init__(self, api_key: str, model: str = "gpt-4o"):
-        self.client = AsyncOpenAI(api_key=api_key)
+    def __init__(self, api_key: str, model: str = "gpt-4o",
+                 reasoning_effort: str | None = None,
+                 client: AsyncOpenAI | None = None):
+        self.client = client or AsyncOpenAI(api_key=api_key)
         self.model = model
+        # Sent as `reasoning_effort` when set; leave None for non-reasoning models.
+        self.reasoning_effort = reasoning_effort
 
-    async def chat(self, messages: list[dict], tools: list[dict],
-                   tool_choice: str | None = None) -> AssistantTurn:
-        """Generate a completion using the OpenAI API.
+    def bound(self, model: str, reasoning_effort: str | None) -> "OpenAIProvider":
+        """A per-request provider for another model/effort, sharing this HTTP client."""
+        return OpenAIProvider(api_key="", model=model,
+                              reasoning_effort=reasoning_effort, client=self.client)
 
-        tool_choice: pass "required" to force the model to call a tool this turn
-        (used by docs-only mode so it MUST call search_docs, not narrate)."""
+    def _base_kwargs(self, messages: list[dict], tools: list[dict],
+                     tool_choice: str | None) -> dict:
         kwargs = {
             "model": self.model,
             "messages": messages,
@@ -21,8 +28,35 @@ class OpenAIProvider:
         }
         if tool_choice is not None and tools:
             kwargs["tool_choice"] = tool_choice
+        if self.reasoning_effort is not None:
+            kwargs["reasoning_effort"] = self.reasoning_effort
+        return kwargs
 
-        response = await self.client.chat.completions.create(**kwargs)
+    async def _create(self, kwargs: dict):
+        """chat.completions.create, retried once without ``reasoning_effort``
+        when the API refuses the combination (OpenAI rejects effort + function
+        tools for some models on /v1/chat/completions; the Responses API would
+        be the full fix). The run keeps working at the model's default effort."""
+        from openai import BadRequestError
+        try:
+            return await self.client.chat.completions.create(**kwargs)
+        except BadRequestError as e:
+            if "reasoning_effort" in str(e) and "reasoning_effort" in kwargs:
+                log.warning("reasoning_effort not accepted with tools; retrying without",
+                            model=kwargs.get("model"), effort=kwargs["reasoning_effort"])
+                kwargs = {k: v for k, v in kwargs.items() if k != "reasoning_effort"}
+                return await self.client.chat.completions.create(**kwargs)
+            raise
+
+    async def chat(self, messages: list[dict], tools: list[dict],
+                   tool_choice: str | None = None) -> AssistantTurn:
+        """Generate a completion using the OpenAI API.
+
+        tool_choice: pass "required" to force the model to call a tool this turn
+        (used by docs-only mode so it MUST call search_docs, not narrate)."""
+        kwargs = self._base_kwargs(messages, tools, tool_choice)
+
+        response = await self._create(kwargs)
         msg = response.choices[0].message
         calls = [ToolCall(id=tc.id, name=tc.function.name,
                           arguments=json.loads(tc.function.arguments or "{}"))
@@ -48,17 +82,11 @@ class OpenAIProvider:
         watch, say, a file's content being drafted) and uses the final
         AssistantTurn for the parsed tool calls and token accounting.
         """
-        kwargs = {
-            "model": self.model,
-            "messages": messages,
-            "tools": tools or None,
-            "stream": True,
-            "stream_options": {"include_usage": True},
-        }
-        if tool_choice is not None and tools:
-            kwargs["tool_choice"] = tool_choice
+        kwargs = self._base_kwargs(messages, tools, tool_choice)
+        kwargs["stream"] = True
+        kwargs["stream_options"] = {"include_usage": True}
 
-        stream = await self.client.chat.completions.create(**kwargs)
+        stream = await self._create(kwargs)
 
         text_parts: list[str] = []
         tool_fragments: dict[int, dict] = {}

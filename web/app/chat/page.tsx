@@ -1,6 +1,6 @@
 "use client"
 
-import { Suspense, useCallback, useEffect, useRef, useState } from "react"
+import { Suspense, useCallback, useEffect, useMemo, useRef, useState } from "react"
 import { useRouter, useSearchParams } from "next/navigation"
 import { useSession } from "next-auth/react"
 import { useChat } from "@ai-sdk/react"
@@ -15,12 +15,17 @@ import { AppHeader } from "@/components/hangul/AppHeader"
 import { SignInModal, type AuthMode } from "@/components/hangul/SignInModal"
 import { AttachMenu, type Attachment } from "@/components/hangul/AttachMenu"
 import { AttachmentChips } from "@/components/hangul/AttachmentChips"
+import { ConnectorChips } from "@/components/hangul/ConnectorChips"
+import { GmailCompose, GoogleCard, isGoogleUi } from "@/components/hangul/GoogleCards"
+import { readConnectors, readResearchMode, writeConnectors, writeResearchMode } from "@/lib/connectors"
+import { ModelPicker } from "@/components/hangul/ModelPicker"
 import { StatusBanner } from "@/components/hangul/StatusBanner"
 import { ChatsPanel } from "@/components/hangul/ChatsPanel"
 import { useConnectivity } from "@/components/hangul/useConnectivity"
 import { parseApiFailure, failureFromResponse, type ApiFailure } from "@/lib/apiError"
 
 type Approval = { runId: string; tool: string; arguments: Record<string, unknown> }
+type SecurityNotice = { layer: "input" | "tool_result" | "action" | "output"; severity: "low" | "medium" | "high"; source: string; action: string; reasons: string[]; step: number | null; answer?: string }
 type ChoiceOption = { label: string; description: string }
 type Choice = { runId: string; question: string; options: ChoiceOption[] }
 
@@ -32,46 +37,145 @@ type Part = {
 }
 
 /**
- * What survives a refresh: the messages, answered approvals, attached docs.
- * Kept in sessionStorage, so it is scoped to *this tab*: a new tab is a new
- * conversation, and two tabs never mix their threads. Refresh, back and
- * forward within the tab restore it.
+ * What a tab caches about a conversation: the messages, answered approvals,
+ * attached docs and the settings it was started with.
+ *
+ * The SERVER owns the transcript now (`conversation_messages`), so this is an
+ * optimistic cache, not the record: it paints instantly on a refresh and is
+ * then reconciled against `GET /api/conversations/<id>`. It is still keyed per
+ * tab AND per conversation, so two tabs on different chats never mix, and one
+ * tab can switch between chats without losing either.
  */
 type SavedThread = {
   messages: UIMessage[]
   resolved: Record<string, string>
   attachments: Attachment[]
   docsOnly?: boolean
+  connectors?: string[]
+  mode?: "default" | "research"
+  /** Model / reasoning effort chosen for this conversation; null = server default. */
+  model?: string | null
+  effort?: string | null
   savedAt?: number
-  /** Conversation id: what the "Chats" rail entry is keyed by (episodes.thread_id). */
-  threadId?: string
+  /** Server-side conversation id (conversations.id); null until the first run. */
+  conversationId?: string | null
 }
 const STORAGE_PREFIX = "hangul:chat:"
+/** Which conversation this tab is currently showing. */
+const ACTIVE_PREFIX = "hangul:chat:active:"
 const MAX_QUESTION_CHARS = 8_000
 // How tall the composer grows before it scrolls: ~8 lines at 22px.
 const MAX_COMPOSER_PX = 200
-const newThreadId = () => crypto.randomUUID()
+
+/** One message of a stored transcript, as GET /api/conversations/<id> sends it. */
+type TranscriptMessage = {
+  seq: number
+  role: "user" | "assistant" | "tool"
+  content: string
+  tool_calls?: { id?: string; function?: { name?: string; arguments?: string } }[]
+  tool_call_id?: string | null
+  ui?: unknown
+}
+
+type ConversationDetail = {
+  id: string
+  title: string
+  model?: string | null
+  effort?: string | null
+  connectors?: string[]
+  mode?: string
+  docs_only?: boolean
+  messages?: TranscriptMessage[]
+}
 
 /**
- * What the "Chats" rail stores about a conversation: its title (the first
- * question) and a compact transcript the backend embeds for
- * `recall_episodes`. Built here from the UI messages — no model call.
+ * Rebuild the chat UI from a stored transcript.
+ *
+ * The transcript is in OpenAI wire shape (assistant turns carrying tool_calls,
+ * then one `tool` message per call); the UI wants one message per turn with
+ * `data-tool` parts. So tool results are matched back to the call that asked
+ * for them by `tool_call_id` and folded into that assistant message — the same
+ * shape the live stream produces, so the renderer needs no special case.
+ *
+ * Each restored run gets its own hidden `data-run` marker — that is how the
+ * page counts finished runs (and how the e2e tests spot the end of one). A run
+ * ends at the last assistant message before the next user turn, so the count
+ * matches what the live stream would have produced.
  */
-function summariseThread(messages: UIMessage[]): { title: string; summary: string } | null {
-  const lines: string[] = []
-  let title = ""
-  for (const m of messages) {
-    const text = (m.parts as Part[]).filter((p) => p.type === "text" && p.text).map((p) => p.text!.trim()).join(" ").trim()
-    if (!text) continue
-    if (m.role === "user") {
-      if (!title) title = text
-      lines.push(`Q: ${text.slice(0, 300)}`)
-    } else if (m.role === "assistant") {
-      lines.push(`A: ${text.slice(0, 300)}`)
+function toUIMessages(rows: TranscriptMessage[]): UIMessage[] {
+  const out: UIMessage[] = []
+  // tool_call_id -> the part to fill in when its result arrives
+  const awaiting = new Map<string, { activity: ToolActivity }>()
+
+  const pushAssistant = (parts: Part[]) => {
+    out.push({ id: `restored-a-${out.length}`, role: "assistant", parts } as unknown as UIMessage)
+  }
+
+  /** Close the run that the last assistant message belongs to. */
+  const endRun = () => {
+    const last = out[out.length - 1] as unknown as { role: string; parts: Part[] } | undefined
+    if (last?.role === "assistant" && !last.parts.some((p) => p.type === "data-run")) {
+      last.parts.push({ type: "data-run", data: { restored: true } })
     }
   }
-  if (!title) return null
-  return { title: title.slice(0, 200), summary: lines.join("\n").slice(0, 2048) }
+
+  for (const row of rows) {
+    if (row.role === "user") {
+      // a new question means the previous run finished
+      endRun()
+      out.push({
+        id: `restored-u-${out.length}`, role: "user",
+        parts: [{ type: "text", text: row.content }],
+      } as unknown as UIMessage)
+      continue
+    }
+
+    if (row.role === "tool") {
+      const slot = row.tool_call_id ? awaiting.get(row.tool_call_id) : undefined
+      if (slot) {
+        slot.activity.status = row.content.startsWith("Error") ? "error" : "done"
+        slot.activity.preview = row.content
+        if (row.ui) slot.activity.ui = row.ui as ToolActivity["ui"]
+        if (row.tool_call_id) awaiting.delete(row.tool_call_id)
+      }
+      continue
+    }
+
+    // assistant
+    const parts: Part[] = []
+    if (row.content) parts.push({ type: "text", text: row.content })
+    for (const tc of row.tool_calls ?? []) {
+      let args: Record<string, unknown> = {}
+      try { args = JSON.parse(tc.function?.arguments || "{}") } catch { /* keep {} */ }
+      // Status starts as "done": a stored call already ran. A `tool` row later
+      // in the transcript corrects it to "error" if it failed.
+      const activity: ToolActivity = { tool: tc.function?.name ?? "tool", arguments: args, status: "done" }
+      parts.push({ type: "data-tool", id: tc.id, data: activity })
+      if (tc.id) awaiting.set(tc.id, { activity })
+    }
+    if (parts.length) pushAssistant(parts)
+  }
+
+  // The final run has no following user turn to close it.
+  endRun()
+  return out
+}
+
+/** This tab's cache slot for one conversation. "new" until the server names it. */
+function slotKey(userId: string, conversationId: string | null): string {
+  return `${STORAGE_PREFIX}${userId}:${conversationId ?? "new"}`
+}
+
+function readActive(userId: string): string | null {
+  try { return sessionStorage.getItem(`${ACTIVE_PREFIX}${userId}`) } catch { return null }
+}
+
+function writeActive(userId: string, conversationId: string | null) {
+  try {
+    const k = `${ACTIVE_PREFIX}${userId}`
+    if (conversationId) sessionStorage.setItem(k, conversationId)
+    else sessionStorage.removeItem(k)
+  } catch { /* quota / private mode */ }
 }
 
 function loadThread(key: string): SavedThread | null {
@@ -82,7 +186,13 @@ function loadThread(key: string): SavedThread | null {
     if (!raw) return null
     const t = JSON.parse(raw) as Partial<SavedThread>
     if (!Array.isArray(t.messages)) return null
-    return { messages: t.messages, resolved: t.resolved ?? {}, attachments: t.attachments ?? [], docsOnly: t.docsOnly ?? false, savedAt: t.savedAt, threadId: t.threadId }
+    return {
+      messages: t.messages, resolved: t.resolved ?? {}, attachments: t.attachments ?? [], docsOnly: t.docsOnly ?? false,
+      connectors: Array.isArray(t.connectors) ? t.connectors : undefined,
+      mode: t.mode === "research" ? "research" : "default",
+      model: typeof t.model === "string" ? t.model : null, effort: typeof t.effort === "string" ? t.effort : null,
+      savedAt: t.savedAt, conversationId: t.conversationId ?? null,
+    }
   } catch {
     return null
   }
@@ -92,6 +202,40 @@ function saveThread(key: string, t: SavedThread) {
 }
 function clearThread(key: string) {
   try { sessionStorage.removeItem(key) } catch { /* ignore */ }
+}
+
+/** One line explaining a security notice to the person, by layer. */
+function securityTitle(n: SecurityNotice): string {
+  switch (n.layer) {
+    case "input": return n.action === "throttled" ? "Your message was flagged; further suspicious messages are being limited." : "Your message contained instruction-like text; it was handled as a normal question."
+    case "tool_result": return `Content from ${toolName(n.source)} looked like instructions to the assistant. It was treated as data, not followed.`
+    case "action": return n.action === "denied"
+      ? `A call to ${toolName(n.source)} was blocked: it would have sent protected data out.`
+      : `Because earlier content was suspicious, ${toolName(n.source)} now needs your approval.`
+    case "output": return "Part of the answer was removed before showing it (possible data leak)."
+    default: return "Security notice"
+  }
+}
+
+/**
+ * The conversation the server put the latest run in.
+ *
+ * On a first message the client sends no id and the backend creates one, naming
+ * it on the `done` event (or on `approval_required`, since a paused run never
+ * reaches `done`). This is how the tab learns it, so every later turn continues
+ * the same chat instead of starting another.
+ */
+function conversationIdFrom(messages: UIMessage[]): string | null {
+  for (let i = messages.length - 1; i >= 0; i--) {
+    const parts = messages[i].parts as Part[]
+    for (let j = parts.length - 1; j >= 0; j--) {
+      const p = parts[j]
+      if (p.type !== "data-run" && p.type !== "data-approval" && p.type !== "data-choice") continue
+      const id = (p.data as { conversationId?: unknown } | undefined)?.conversationId
+      if (typeof id === "string" && id) return id
+    }
+  }
+  return null
 }
 
 /** Completed runs in a thread — every run ends with a hidden data-run part. */
@@ -123,6 +267,25 @@ function AnswerText({ text }: { text: string }) {
  * edits for edits, a plain key/value list for anything else.
  */
 function ActionDetails({ tool, args }: { tool: string; args: Record<string, unknown> }) {
+  if (tool === "gmail__send_message" || tool === "gmail__create_draft") {
+    // what will leave (or be saved to) the user's mailbox, shown as a Gmail compose window
+    return (
+      <div>
+        <div className="h-muted" style={{ fontSize: 12, marginBottom: 6 }}>
+          {tool === "gmail__send_message" ? "This email will be SENT from your Gmail:" : "This will be saved to your Gmail drafts (not sent):"}
+        </div>
+        <GmailCompose status="pending" to={String(args.to ?? "")} cc={typeof args.cc === "string" ? args.cc : null}
+          subject={String(args.subject ?? "")} body={String(args.body ?? "")} />
+      </div>
+    )
+  }
+  if (tool === "calendar__create_event") {
+    return (
+      <GoogleCard ui={{ kind: "calendar_events", created: false, events: [{ summary: String(args.summary ?? ""), start: String(args.start ?? ""), end: String(args.end ?? ""),
+        all_day: String(args.start ?? "").length === 10, location: typeof args.location === "string" ? args.location : null,
+        attendees: Array.isArray(args.attendees) ? (args.attendees as string[]) : [], description: typeof args.description === "string" ? args.description : "" }] }} />
+    )
+  }
   const path = typeof args.path === "string" ? args.path : null
   const content = typeof args.content === "string" ? args.content : null
   const edits = Array.isArray(args.edits) ? (args.edits as Record<string, unknown>[]) : null
@@ -234,7 +397,23 @@ function ChatInner() {
   const [resolved, setResolved] = useState<Record<string, string>>({})
   const [busy, setBusy] = useState<string | null>(null)
   const [docsOnly, setDocsOnly] = useState(false)
-  const [threadId, setThreadId] = useState<string>(newThreadId)
+  // Deep research: multi-step, cited, bigger budget (see RESEARCH_INSTRUCTION on the backend).
+  const [mode, setMode] = useState<"default" | "research">("default")
+  // Connectors on for this conversation: restored with the thread, else from
+  // the tab (the landing page may have switched some on before the first send).
+  const [connectors, setConnectorsState] = useState<string[]>([])
+  const setConnectors = useCallback((next: string[]) => { setConnectorsState(next); writeConnectors(next) }, [])
+  // null = let the server pick its default model / effort.
+  const [model, setModel] = useState<string | null>(null)
+  const [effort, setEffort] = useState<string | null>(null)
+  // The server-side conversation. null means "not created yet": the first send
+  // goes up without one and the backend names the conversation on `done`.
+  const [conversationId, setConversationId] = useState<string | null>(null)
+  // What every send carries alongside the text. conversationId is how the
+  // server knows which transcript to load, so it has to be in here.
+  const runOptions = useMemo(
+    () => ({ docsOnly, model, effort, connectors, mode, conversationId }),
+    [docsOnly, model, effort, connectors, mode, conversationId])
 
   // A question handed over from the landing page (`/chat?q=`), plus any
   // documents attached there (`&doc=`, already indexed server-side). Signed-in
@@ -248,79 +427,174 @@ function ChatInner() {
   const [uploading, setUploading] = useState<string | null>(null)
   const [uploadError, setUploadError] = useState<string | null>(null)
 
-  // The thread lives in this tab's sessionStorage, keyed by user, so a refresh
-  // brings it back instead of starting over while a new tab starts clean.
-  // (The backend keeps checkpoints per run, not per conversation, so there
-  // is nothing server-side to reload from.)
-  const storageKey = session?.user?.id ? `${STORAGE_PREFIX}${session.user.id}` : null
+  // `?c=<id>` opens a specific conversation (a click in the Chats rail). It is
+  // the one thing that can point this tab at a chat it has never shown, so it
+  // wins over the tab's own remembered conversation.
+  const requestedConv = searchParams.get("c")
+  const userId = session?.user?.id ?? null
+  // sessionStorage slot for whichever conversation is showing. It is a cache:
+  // the server owns the transcript, this just avoids a blank screen.
+  const storageKey = userId ? slotKey(userId, conversationId) : null
   const restoredRef = useRef(false)
   // Arriving with `?q=` is a hand-off from the landing page ("Draft a note",
   // "Check the web", a typed question): that is a *new* conversation, so the
-  // tab's previous thread is dropped instead of the question being appended
-  // to it. Captured once at mount — the URL loses `q` right after sending,
-  // and a plain refresh (no `q`) must still restore. Nothing server-side is
-  // lost: every run stays checkpointed and `remember` facts persist.
+  // tab starts clean instead of appending to whatever it last showed. Captured
+  // once at mount — the URL loses `q` right after sending, and a plain refresh
+  // (no `q`) must still restore.
   const handoffRef = useRef(Boolean(q))
-  // Runs already saved to the Chats rail (so a restored thread is not re-saved).
-  const savedRunsRef = useRef(0)
+  // False only on the first run of the conversation effect below, so a `?q=`
+  // hand-off is honoured once and a later rail click is not mistaken for one.
+  const switchedRef = useRef(false)
+  // Set once the tab's connector selection has been read, so the handed-over
+  // ?q= send below goes up with the connectors the landing page switched on.
+  const [tabReady, setTabReady] = useState(false)
+  const [hydrating, setHydrating] = useState(false)
+  // The save effect below must not run before the restore effect has put the
+  // cached messages back: on mount `messages` is [], and saving that would
+  // erase the very thread we are about to restore.
+  const [restored, setRestored] = useState(false)
+
+  // Tab-level preferences, once.
   useEffect(() => {
-    if (!storageKey || restoredRef.current) return
+    if (!userId || restoredRef.current) return
     restoredRef.current = true
-    if (handoffRef.current) { clearThread(storageKey); return }
-    const saved = loadThread(storageKey)
-    if (!saved) return
-    setMessages(saved.messages)
-    // Restoring a saved thread is the one place state is synced from an
-    // external store on mount; the lint rule is about cascading renders.
+    setConnectorsState(readConnectors())
+    setMode(readResearchMode() ? "research" : "default")
+    setTabReady(true)
+  }, [userId])
+
+  // Which conversation is on screen. This re-runs whenever `?c=` changes, not
+  // just at mount: clicking a row in the Chats rail is a query-string change on
+  // an already-mounted page, so a mount-only effect would ignore it.
+  useEffect(() => {
+    if (!userId) return
+
+    // An explicit ?c= wins; otherwise the one this tab was last on; otherwise
+    // none (a fresh chat). A `?q=` hand-off from the landing page is always a
+    // new conversation, but only for the load it arrived on.
+    const handoff = handoffRef.current && !switchedRef.current
+    switchedRef.current = true
+    const target = requestedConv ?? (handoff ? null : readActive(userId))
+    // Nothing to show: clear the thread so a switch does not leave the previous
+    // conversation on screen while the new one loads. This effect's whole job is
+    // to sync React state from the URL and sessionStorage, which is the case the
+    // rule exempts; the cascade it warns about is bounded by `switchedRef` and
+    // by the guard at the top.
     // eslint-disable-next-line react-hooks/set-state-in-effect
-    setResolved(saved.resolved)
-    setAttachments((a) => (a.length ? a : saved.attachments))
-    setDocsOnly(Boolean(saved.docsOnly))
-    if (saved.threadId) setThreadId(saved.threadId)
-    savedRunsRef.current = countRuns(saved.messages)
-  }, [storageKey, setMessages])
+    setRestored(false)
+    if (handoff) {
+      clearThread(slotKey(userId, null))
+      writeActive(userId, null)
+      setConversationId(null)
+      setRestored(true)
+      return
+    }
+    setConversationId(target)
+    writeActive(userId, target)
+    setMessages([])
+    setResolved({})
+
+    // Paint the cache first if this tab has one, so a refresh is instant.
+    // `target` may still be null -- a conversation whose first run never
+    // finished has no id yet, and its thread lives in the "new" slot. That is
+    // exactly the navigate-away-mid-answer case, so it must be restored too.
+    const saved = loadThread(slotKey(userId, target))
+    if (saved) {
+      setMessages(saved.messages)
+      // Restoring is the one place state is synced from an external store on
+      // mount; the lint rule is about cascading renders.
+      setResolved(saved.resolved)
+      setAttachments((a) => (a.length ? a : saved.attachments))
+      setDocsOnly(Boolean(saved.docsOnly))
+      if (saved.mode) setMode(saved.mode)
+      if (saved.connectors) setConnectorsState(saved.connectors)
+      setModel(saved.model ?? null)
+      setEffort(saved.effort ?? null)
+    }
+    // Batched with the restore above, so the save effect's first run already
+    // sees the restored messages rather than the empty initial state.
+    setRestored(true)
+    // Nothing server-side to reconcile against until the conversation exists.
+    if (!target) return
+    // Then reconcile with the server, which is the actual record. This is what
+    // makes a chat resumable in a tab that has never seen it — and on another
+    // device, where there is no cache at all.
+    if (!saved) setHydrating(true)
+    const cachedCount = saved?.messages.length ?? 0
+    let alive = true
+    fetch(`/api/conversations/${target}`, { signal: AbortSignal.timeout(15_000) })
+      .then((r) => (r.ok ? r.json() : Promise.reject(new Error(String(r.status)))))
+      .then((detail: ConversationDetail) => {
+        if (!alive) return
+        const rebuilt = toUIMessages(detail.messages ?? [])
+        // Only take the server's copy when it actually has more than this tab
+        // does. The cache can legitimately hold something the transcript does
+        // not: a run cut short mid-answer keeps its partial text and its Retry
+        // here, and the server only stores a turn once it completes. Adopting a
+        // shorter transcript would silently throw that away.
+        if (rebuilt.length > cachedCount) setMessages(rebuilt)
+        // Settings are safe to take either way — they are the conversation's.
+        setModel(detail.model ?? null)
+        setEffort(detail.effort ?? null)
+        setDocsOnly(Boolean(detail.docs_only))
+        setMode(detail.mode === "research" ? "research" : "default")
+        if (Array.isArray(detail.connectors)) setConnectorsState(detail.connectors)
+      })
+      .catch(() => { /* the cache (or an empty page) is what the user gets */ })
+      .finally(() => { if (alive) setHydrating(false) })
+    return () => { alive = false }
+  }, [userId, requestedConv, setMessages])
+
+  // Remember which conversation this tab is on, so a refresh comes back to it.
+  useEffect(() => {
+    if (userId) writeActive(userId, conversationId)
+  }, [userId, conversationId])
 
   const streaming = status === "submitted" || status === "streaming"
   // Save on every change, including mid-answer: if the user navigates away
   // while the agent is still talking, the question (and whatever streamed so
   // far) is there when they come back, flagged as cut short with a Retry.
   useEffect(() => {
-    if (!storageKey || !restoredRef.current) return
-    saveThread(storageKey, { messages, resolved, attachments, docsOnly, threadId })
-  }, [storageKey, messages, resolved, attachments, docsOnly, threadId])
+    if (!storageKey || !restored) return
+    saveThread(storageKey, { messages, resolved, attachments, docsOnly, connectors, mode, model, effort, conversationId })
+  }, [storageKey, restored, messages, resolved, attachments, docsOnly, connectors, mode, model, effort, conversationId])
 
-  // Every completed run saves the conversation to the Chats rail (upsert by
-  // threadId), so it is already listed when the user goes back to the
-  // landing page. `chatsVersion` bumps after a save so the rail on this
-  // page refetches.
+  // The rail is written server-side from the real transcript now (the backend
+  // stores the conversation and its episode), so there is nothing to POST from
+  // here. `chatsVersion` still bumps once a run finishes so the rail refetches
+  // and shows the new (or renamed) chat.
+  // Adopt the conversation the server created for a first message, so the next
+  // turn carries it and the tab can restore this chat after a refresh.
+  const reportedConv = conversationIdFrom(messages)
+  useEffect(() => {
+    if (!reportedConv || reportedConv === conversationId) return
+    // Adopting an id the server just told us about, once — the guard above makes
+    // this idempotent, so it cannot cascade.
+    // eslint-disable-next-line react-hooks/set-state-in-effect
+    setConversationId(reportedConv)
+    // The thread moves from the "new" slot to this conversation's own slot;
+    // drop the old one so it cannot resurrect into the next fresh chat.
+    if (userId) clearThread(slotKey(userId, null))
+  }, [reportedConv, conversationId, userId])
+
   const runsDone = countRuns(messages)
   const [chatsVersion, setChatsVersion] = useState(0)
+  const seenRunsRef = useRef(0)
   useEffect(() => {
-    if (runsDone === 0 || runsDone <= savedRunsRef.current) return
-    savedRunsRef.current = runsDone
-    const s = summariseThread(messages)
-    if (!s) return
-    let alive = true
-    fetch("/api/chats", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ thread_id: threadId, ...s }),
-      signal: AbortSignal.timeout(20_000),
-    })
-      .then((r) => { if (alive && r.ok) setChatsVersion((v) => v + 1) })
-      .catch(() => { /* the rail just won't show this chat until the next run */ })
-    return () => { alive = false }
-  }, [runsDone, messages, threadId])
+    if (runsDone === 0 || runsDone <= seenRunsRef.current) return
+    seenRunsRef.current = runsDone
+    setChatsVersion((v) => v + 1)
+  }, [runsDone])
 
   // Send the handed-over question once, then drop it from the URL so a
   // refresh (or back/forward) does not send it again.
   const sentRef = useRef(false)
   useEffect(() => {
-    if (!q || sentRef.current || authStatus !== "authenticated") return
+    if (!q || sentRef.current || authStatus !== "authenticated" || !tabReady) return
     sentRef.current = true
-    sendMessage({ text: q }, { body: { docsOnly } })
-    router.replace("/chat")
-  }, [q, sendMessage, authStatus, router, docsOnly])
+    sendMessage({ text: q }, { body: runOptions })
+    router.replace("/chat")   // drop ?q= (and ?doc=) so a refresh does not resend
+  }, [q, sendMessage, authStatus, router, runOptions, tabReady])
   const [gateDismissed, setGateDismissed] = useState(false)
   const gateFromQuery = Boolean(q) && authStatus === "unauthenticated" && !gateDismissed
 
@@ -333,12 +607,12 @@ function ChatInner() {
     // eslint-disable-next-line react-hooks/set-state-in-effect
     setPendingText(null)
     if (authStatus === "authenticated") {
-      sendMessage({ text }, { body: { docsOnly } })
+      sendMessage({ text }, { body: runOptions })
       setInput("")
     } else {
       setSignIn({ open: true, mode: "signin", reason: "Sign in to ask the agent." })
     }
-  }, [pendingText, authStatus, sendMessage, docsOnly])
+  }, [pendingText, authStatus, sendMessage, runOptions])
 
   const submit = () => {
     const text = input.trim()
@@ -351,27 +625,40 @@ function ChatInner() {
     if (!requireAuth("Sign in to ask the agent.")) return
     setNotice(null)
     clearError()
-    sendMessage({ text }, { body: { docsOnly } })
+    sendMessage({ text }, { body: runOptions })
     setInput("")
   }
 
   const retryLast = () => {
     setNotice(null)
     clearError()
-    void regenerate({ body: { docsOnly } })
+    void regenerate({ body: runOptions })
   }
 
   const newChat = () => {
     if (streaming) stop()
     setMessages([])
-    setThreadId(newThreadId())
-    savedRunsRef.current = 0
+    // null, not a fresh client id: the backend creates the conversation on the
+    // first send and tells us its id on `done`.
+    setConversationId(null)
+    seenRunsRef.current = 0
     setResolved({})
     setAttachments([])
     setUploadError(null)
     setNotice(null)
     clearError()
-    if (storageKey) clearThread(storageKey)
+    // Drop only the "new" slot; the previous conversation's cache stays so
+    // reopening it from the rail is still instant.
+    if (userId) clearThread(slotKey(userId, null))
+    // A stale ?c= would drag the tab straight back into the old chat.
+    if (requestedConv) router.replace("/chat")
+  }
+
+  /** Switch this tab to another conversation (a click in the Chats rail). */
+  const openConversation = (id: string) => {
+    if (id === conversationId) return
+    if (streaming) stop()
+    router.push(`/chat?c=${id}`)
   }
 
   const resume = async (runId: string, body: Record<string, unknown>) => {
@@ -434,12 +721,21 @@ function ChatInner() {
       out.push(<ActivityGroup key={`${msgId}-g${out.length}`} items={group} live={live} />)
       group = []
     }
+    // An output-guard notice carries the guarded answer: the text streamed
+    // before it is superseded and not shown.
+    const guardedAt = parts.findIndex((p) => p.type === "data-security" && (p.data as SecurityNotice).answer !== undefined)
     parts.forEach((part, i) => {
       const key = `${msgId}-${i}`
+      if (part.type === "text" && guardedAt !== -1 && i < guardedAt) return
       if (part.type === "data-tool") {
         const activity = part.data as ToolActivity
         // ask_user has no result worth showing — the choice card below says it.
         if (activity.tool !== "ask_user") group.push({ kind: "tool", key, activity })
+        // A Workspace result renders as a Google-styled card right after its step.
+        if (activity.status === "done" && isGoogleUi(activity.ui)) {
+          flush(false)
+          out.push(<GoogleCard key={`${key}-card`} ui={activity.ui} />)
+        }
         return
       }
       if (part.type === "data-status") {
@@ -467,6 +763,21 @@ function ChatInner() {
   const renderPart = (part: Part, key: string) => {
     if (part.type === "text") {
       return part.text ? <AnswerText key={key} text={part.text} /> : null
+    }
+    if (part.type === "data-security") {
+      const n = part.data as SecurityNotice
+      return (
+        <div key={key} className="h-surface" role="status" data-testid="security-notice" data-layer={n.layer} data-severity={n.severity}
+          style={{ padding: "10px 12px", fontSize: 12, margin: "6px 0", display: "flex", gap: 10, alignItems: "flex-start",
+                   borderColor: n.severity === "high" ? "var(--err)" : "var(--surface-border)" }}>
+          <i className="ti ti-shield-exclamation" style={{ fontSize: 15, marginTop: 1, color: n.severity === "high" ? "var(--err)" : "var(--fg)" }} />
+          <div style={{ minWidth: 0 }}>
+            <div style={{ fontWeight: 500 }}>{securityTitle(n)}</div>
+            {n.reasons.length > 0 && <div className="h-muted" style={{ marginTop: 2, wordBreak: "break-word" }}>{n.reasons.join(" · ")}</div>}
+            {n.answer !== undefined && <div style={{ marginTop: 8 }}><AnswerText text={n.answer} /></div>}
+          </div>
+        </div>
+      )
     }
 
     if (part.type === "data-choice") {
@@ -548,11 +859,19 @@ function ChatInner() {
       <StatusBanner c={connectivity} />
 
       <div style={{ flex: 1, display: "flex", minHeight: 0 }}>
-      {authStatus === "authenticated" && <ChatsPanel refreshKey={chatsVersion} onUnauthorized={onChatsUnauthorized} />}
+      {authStatus === "authenticated" && <ChatsPanel refreshKey={chatsVersion} onUnauthorized={onChatsUnauthorized} onOpen={openConversation} activeId={conversationId} />}
       <div style={{ flex: 1, display: "flex", flexDirection: "column", minWidth: 0 }}>
       <Conversation className="flex-1">
         <ConversationContent className="mx-auto min-h-full w-full max-w-3xl px-5 py-6" data-testid="thread">
-          {messages.length === 0 ? (
+          {messages.length === 0 && hydrating ? (
+            /* Opening a chat this tab has never shown (from the rail, or on
+               another device) — there is no cache to paint, so say so rather
+               than flash "Ask anything" over someone's existing conversation. */
+            <div className="flex flex-1 flex-col items-center justify-center gap-3 p-8 text-center" data-testid="chat-loading">
+              <HangulSigil size={40} />
+              <p className="h-muted" style={{ fontSize: 13 }}>Loading this conversation…</p>
+            </div>
+          ) : messages.length === 0 ? (
             <div className="flex flex-1 flex-col items-center justify-center gap-3 p-8 text-center">
               <HangulSigil size={40} />
               <p className="h-display" style={{ fontSize: 22, margin: "8px 0 0" }}>Ask anything</p>
@@ -613,6 +932,26 @@ function ChatInner() {
               <i className="ti ti-book-2" style={{ fontSize: 12, marginRight: 5 }} />
               Documents only
             </button>
+            <button
+              type="button"
+              className="h-chip"
+              data-testid="research-mode"
+              aria-pressed={mode === "research"}
+              onClick={() => setMode((m) => { const next = m === "research" ? "default" : "research"; writeResearchMode(next === "research"); return next })}
+              title="Deep research: plan, several searches (documents, web, arXiv), numbered citations and a sources list"
+              style={mode === "research" ? { background: "var(--solid-bg)", color: "var(--solid-fg)", borderColor: "var(--solid-bg)" } : undefined}
+            >
+              <i className="ti ti-telescope" style={{ fontSize: 12, marginRight: 5 }} />
+              Deep research
+            </button>
+            <ConnectorChips keys={connectors} onChange={setConnectors} />
+            {/* Which model answers and how hard it thinks; both go up with every send. */}
+            <ModelPicker
+              model={model}
+              effort={effort}
+              disabled={streaming}
+              onChange={(m, e) => { setModel(m); setEffort(e) }}
+            />
           </div>
 
           <form
@@ -627,6 +966,8 @@ function ChatInner() {
                 setUploadError(msg)
               }}
               onRequireSignIn={(reason) => setSignIn({ open: true, mode: "signin", reason })}
+              connectors={connectors}
+              onConnectorsChange={setConnectors}
             />
             <textarea
               value={input}

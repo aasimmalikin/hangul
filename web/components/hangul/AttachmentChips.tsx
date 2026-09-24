@@ -21,10 +21,12 @@ export function AttachmentChips({
         <span
           key={`${a.name}-${i}`}
           className="h-chip"
-          style={{ cursor: "default", display: "inline-flex", alignItems: "center", gap: 6 }}
-          title={a.chunks ? `${a.chunks} chunks indexed` : undefined}
+          style={{ cursor: "default", display: "inline-flex", alignItems: "center", gap: 6,
+                   ...(a.warning ? { borderColor: "var(--err)" } : {}) }}
+          title={a.warning ?? (a.chunks ? `${a.chunks} chunks indexed` : undefined)}
+          data-testid={a.warning ? "attachment-warning" : undefined}
         >
-          <i className="ti ti-file-text" style={{ fontSize: 13 }} />
+          <i className={`ti ${a.warning ? "ti-shield-exclamation" : "ti-file-text"}`} style={{ fontSize: 13, ...(a.warning ? { color: "var(--err)" } : {}) }} />
           {a.name}
         </span>
       ))}
@@ -35,6 +37,11 @@ export function AttachmentChips({
         </span>
       )}
       {error && <span style={{ fontSize: 12, color: "var(--err)", alignSelf: "center" }}>{error}</span>}
+      {attachments.some((a) => a.warning) && (
+        <span className="h-muted" style={{ fontSize: 12, alignSelf: "center", flexBasis: "100%" }} role="status">
+          {attachments.filter((a) => a.warning).map((a) => a.warning).join(" ")} The assistant treats such passages as data, never as commands.
+        </span>
+      )}
     </div>
   )
 }

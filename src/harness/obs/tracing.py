@@ -3,6 +3,8 @@ import uuid
 from contextlib import contextmanager
 from dataclasses import dataclass, field
 
+from harness.vault.redact import redactor
+
 @dataclass
 class Span:
     name: str
@@ -23,7 +25,8 @@ class Trace:
 
     @contextmanager
     def span(self, name:str, **attributes):
-        s = Span(name = name, span_id = uuid.uuid4().hex[:8], start = time.time(), attributes = dict(attributes))
+        s = Span(name = name, span_id = uuid.uuid4().hex[:8], start = time.time(),
+                 attributes = redactor.scrub(dict(attributes)))
         self.spans.append(s)
         try:
             yield s
@@ -48,10 +51,17 @@ class Trace:
 
         }
 
-PRICING = {"gpt-5.5": (5.00, 30.00)}
-
 def cost_usd(model: str, input_tokens: int, output_tokens: int) -> float:
-    pin, pout = PRICING.get(model, (0.0, 0.0))
-    return round(input_tokens / 1_000_000 * pin + output_tokens / 1_000_000 * pout, 6)
+    """Dollar cost of a run, priced from providers.registry (unknown model → 0)."""
+    # Imported here: registry pulls in config, and tracing must stay import-light.
+    from harness.providers.registry import get_model
+    from harness.logging import log
+
+    spec = get_model(model)
+    if spec is None:
+        log.warning("no pricing for model; cost recorded as 0", model=model)
+        return 0.0
+    return round(input_tokens / 1_000_000 * spec.input_usd_per_m
+                 + output_tokens / 1_000_000 * spec.output_usd_per_m, 6)
 
 

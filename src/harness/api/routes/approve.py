@@ -7,15 +7,17 @@ from pydantic import BaseModel
 
 from harness.agent.loop import run_agent
 from harness.logging import log
-from harness.providers import get_provider
+from harness.providers import provider_for
+from harness.providers.registry import resolve, budget_for
 from harness.prompts.registry import get_prompt
 from harness.api.session import get_session_id
 from harness.api.auth import get_current_user
 from harness.obs.tracing import Trace, cost_usd
 from harness.policy.guarded import guarded_dispatch
 
+from harness.api.conversation_lock import conversation_slot
 from harness.api.routes.ask import (
-    _store, _audit, _policy, _trace_store, _registry, AskResponse,
+    _store, _audit, _policy, _trace_store, _registry, AskResponse, _persist_turn,
 )
 from harness.tools.registry import ToolRegistry
 from harness.tools.builtin.calculator import CALCULATOR_TOOL
@@ -23,6 +25,9 @@ from harness.tools.builtin.web_search import WEB_SEARCH_TOOL
 from harness.tools.builtin.ask_user import ASK_USER_TOOL
 from harness.tools.builtin.search_docs_session import make_search_docs_tool
 from harness.tools.builtin.filesystem_session import wrap_filesystem_tool
+from harness.tools.builtin.vault_request import build_vault_tools
+from harness.connectors import tools_for
+from harness.security import get_guard
 
 router = APIRouter()
 
@@ -33,7 +38,7 @@ class ApproveRequest(BaseModel):
     choice: str | None = None
 
 
-def _build_session_registry(user_id: str) -> ToolRegistry:
+async def _build_session_registry(user_id: str, thread_id: str, connectors: list[str] = ()) -> ToolRegistry:
     reg = ToolRegistry()
     reg.registry(make_search_docs_tool(user_id))
     reg.registry(CALCULATOR_TOOL)
@@ -42,6 +47,14 @@ def _build_session_registry(user_id: str) -> ToolRegistry:
     for t in _registry.list():
         if t.name.startswith("filesystem__"):
             reg.registry(wrap_filesystem_tool(t, user_id))
+    for t in await build_vault_tools(user_id, thread_id):
+        reg.registry(t)
+    if connectors:
+        from harness.api.routes.ask import prepare_connectors
+        from harness.mcp.manager import current as mcp_current
+        await prepare_connectors(list(connectors), user_id)
+        for t in tools_for(list(connectors), _registry.list(), user_id=user_id, manager=mcp_current())[0]:
+            reg.registry(t)
     return reg
 
 
@@ -68,9 +81,18 @@ async def approve(req: ApproveRequest, user: dict = Depends(get_current_user)) -
         raise HTTPException(status_code=404, detail="No pending action for that approval id.")
 
     pending = cp.pending_tool
-    model = get_provider().model
+    # Resume with the model/effort the run started with. If that model has
+    # since left the registry, fall back to the default rather than fail.
+    try:
+        spec, effort = resolve(cp.model, cp.effort)
+    except ValueError as e:
+        log.warning("run's model no longer available; resuming on default",
+                    model=cp.model, effort=cp.effort, error=str(e))
+        spec, effort = resolve(None, None)
+    model = spec.id
+    budget = budget_for(effort)
     prompt_version = get_prompt("system_agent")
-    session_registry = _build_session_registry(user["user_id"])
+    session_registry = await _build_session_registry(user["user_id"], req.approval_id, cp.connectors)
 
     # ask_user is a clarification, not an action: the run should carry on with
     # the original task, not summarise. Every other tool just gets confirmed.
@@ -114,18 +136,42 @@ async def approve(req: ApproveRequest, user: dict = Depends(get_current_user)) -
     await asyncio.to_thread(_store.save, cp)
 
     trace = Trace(trace_id=req.approval_id)
-    result = await run_agent(
-        question=follow_up,
-        prompt_text=prompt_version.text,
-        registry=session_registry,
-        provider=get_provider(),
-        policy=_policy,
-        audit=_audit,
-        store=_store,
-        thread_id=req.approval_id,
-        trace=trace,
-        user_id=user["user_id"],
-    )
+
+    async def _resume():
+        return await run_agent(
+            question=follow_up,
+            prompt_text=prompt_version.text,
+            registry=session_registry,
+            policy=_policy,
+            provider=provider_for(spec, effort),
+            audit=_audit,
+            store=_store,
+            thread_id=req.approval_id,
+            trace=trace,
+            max_steps=budget.max_steps,
+            max_tokens=budget.max_tokens,
+            user_id=user["user_id"],
+            security=get_guard(),
+            # The checkpointed system prompt was hardened with the CONVERSATION's
+            # canary, so the resume has to derive the same one -- a run-scoped
+            # canary here would not match the prompt the model already has.
+            security_scope=cp.conversation_id,
+        )
+
+    if cp.conversation_id is None:
+        result = await _resume()
+    else:
+        async with conversation_slot(cp.conversation_id, req.approval_id):
+            result = await _resume()
+
+    for ev in result.security_events:
+        _audit.record_security(run_id=req.approval_id, user_id=user["user_id"], **ev)
+
+    if cp.conversation_id is not None:
+        # The paused run appended nothing; now that it finished, the whole turn
+        # (question, tool calls, approved result, answer) lands in one go.
+        # persisted_upto on the checkpoint is what makes that exact, not a guess.
+        await _persist_turn(cp.conversation_id, req.approval_id, "")
 
     _trace_store.add(trace, model)
     summary = trace.summary()
@@ -134,7 +180,10 @@ async def approve(req: ApproveRequest, user: dict = Depends(get_current_user)) -
     return AskResponse(
         answer=result.answer,
         run_id=req.approval_id,
+        conversation_id=cp.conversation_id,
         prompt_version=prompt_version.version,
+        model=model,
+        effort=effort,
         steps=result.steps,
         stopped_reason=result.stopped_reason,
         cached=False,
@@ -144,4 +193,5 @@ async def approve(req: ApproveRequest, user: dict = Depends(get_current_user)) -
         cost_usd=run_cost,
         resumed_from_step=result.resumed_from_step,
         pending_tool=result.pending_tool,
+        security_events=result.security_events,
     )

@@ -14,5 +14,8 @@ class AssistantTurn(BaseModel):
 
 class Provider(Protocol):
     """Abstract class for a provider that can generate completions."""
+    model: str
+    reasoning_effort: str | None
+
     async def chat(self, messages: list[dict], tools: list[dict])->AssistantTurn: ...
 
