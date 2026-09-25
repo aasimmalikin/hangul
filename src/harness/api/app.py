@@ -29,6 +29,10 @@ async def lifespan(app: FastAPI):
     global _mcp_manager
     log.info("Starting up", app_name = settings.app_name, env = settings.environment,
              model = settings.model, default_effort = settings.default_effort)
+    if settings.uses_dev_jwt_secret:
+        log.warning("JWT_SECRET is the built-in dev default; set a random one before exposing this API")
+    if not settings.admin_emails.strip():
+        log.info("ADMIN_EMAILS is empty; the /admin console is disabled")
     if get_model(settings.model) is None:
         # Every /ask without an explicit model would 422 and cost would be 0.
         log.error("settings.model is not in providers.registry.MODELS", model = settings.model)

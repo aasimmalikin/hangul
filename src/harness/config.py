@@ -1,5 +1,10 @@
 from typing import Literal
+
+from pydantic import model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+DEV_JWT_SECRET = "dev-secret-change-in-production"
+MIN_JWT_SECRET_LEN = 32
 
 class Settings(BaseSettings):
     """Application configuration settings."""
@@ -13,7 +18,7 @@ class Settings(BaseSettings):
     tavily_api_key: str | None = None
     database_url: str = "postgresql+psycopg://agentic:agentic@localhost:5432/hangul_harness"
     redis_url: str = "redis://localhost:6379/0"
-    jwt_secret: str = "dev-secret-change-in-production"
+    jwt_secret: str = DEV_JWT_SECRET    # must be overridden (>= 32 chars) when environment=prod
     jwt_algorithm: str = "HS256"
     # Token vault (see harness/vault). Unset master key = vault disabled.
     vault_master_key: str | None = None      # Fernet key: python -c "from cryptography.fernet import Fernet;print(Fernet.generate_key().decode())"
@@ -35,9 +40,25 @@ class Settings(BaseSettings):
     security_offender_window_s: int = 600
     # Admin console. Only these Google-verified emails may call /admin/*; the
     # allowlist lives here, on the backend, so the web tier cannot widen it.
-    admin_emails: str = "aasimmallikk@gmail.com"      # comma-separated
+    admin_emails: str = ""                            # comma-separated; empty = nobody is admin
     admin_max_auth_age_s: int = 12 * 60 * 60          # the Google sign-in must be this recent
     admin_ip_allowlist: str = ""                      # comma-separated CIDRs; empty = any client
+
+    @model_validator(mode="after")
+    def _refuse_insecure_prod(self) -> "Settings":
+        # Tokens signed with a known or short secret can be forged by anyone,
+        # so a prod process must not start with one. Dev keeps the default.
+        weak = self.jwt_secret == DEV_JWT_SECRET or len(self.jwt_secret) < MIN_JWT_SECRET_LEN
+        if self.environment == "prod" and weak:
+            raise ValueError(
+                f"JWT_SECRET must be set to a random value of at least {MIN_JWT_SECRET_LEN} "
+                "characters when ENVIRONMENT=prod "
+                "(generate one with: python -c \"import secrets; print(secrets.token_urlsafe(48))\")")
+        return self
+
+    @property
+    def uses_dev_jwt_secret(self) -> bool:
+        return self.jwt_secret == DEV_JWT_SECRET
 
 def get_settings() -> Settings:
     """ Retrieve the application settings, cached for performance. """
