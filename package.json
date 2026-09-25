@@ -1,4 +1,6 @@
 {
+  "name": "hangul-harness",
+  "private": true,
   "dependencies": {
     "@ai-sdk/react": "^4.0.96",
     "ai": "^7.0.93"

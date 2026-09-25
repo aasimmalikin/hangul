@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## What this is
 
-An agentic QA harness: a FastAPI backend running a tool-calling agent loop over document retrieval, MCP filesystem tools, and web search, plus two frontends (a Next.js app in `web/`, and a legacy Streamlit demo in `streamlit_app.py`). `README.md`, `Makefile`, and `docs/architecture.md` are empty — this file and the source are the documentation.
+Hangul (`hangul-harness`), an agentic QA harness: a FastAPI backend running a tool-calling agent loop over document retrieval, MCP filesystem tools, and web search, plus two frontends (a Next.js app in `web/`, and a legacy Streamlit demo in `streamlit_app.py`). `README.md`, `Makefile`, and `docs/architecture.md` are empty — this file and the source are the documentation.
 
 ## Commands
 

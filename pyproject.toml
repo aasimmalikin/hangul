@@ -1,8 +1,10 @@
 [project]
 name = "harness"
 version = "0.1.0"
-description = "Agentic QA harness"
+description = "Hangul: an agent harness for grounded, auditable document Q&A"
 requires-python = ">=3.12"
+license = { file = "LICENSE" }
+authors = [{ name = "Aasim Malik" }]
 
 # Step 1 declares ONLY what the skeleton needs to walk. Dependencies grow as you
 # thicken: anthropic at step 4, langgraph at step 7, pgvector at step 9, and so on.

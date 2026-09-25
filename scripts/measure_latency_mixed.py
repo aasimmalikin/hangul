@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Measure server-side latency percentiles for agentic-qa across a MIX of
+"""Measure server-side latency percentiles for hangul-harness across a MIX of
 tool combinations (factual, web search, RAG, calculator, multi-tool reasoning).
 
 Run ON the EC2 instance (hits localhost:8000). Excludes approval-triggering

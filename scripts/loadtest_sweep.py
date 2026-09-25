@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Concurrency-sweep load test for agentic-qa. Run ON the EC2 instance
+"""Concurrency-sweep load test for hangul-harness. Run ON the EC2 instance
 (hits localhost:8000).
 
 Fires requests at increasing concurrency levels and measures, at each level:
