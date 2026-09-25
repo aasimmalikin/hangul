@@ -1,56 +1,66 @@
-# hangul-harness
+<a name="readme-top"></a>
 
-**Hangul: a secure personal agent that researches, reads your documents and inbox, and takes action for you once you approve.**
+<div align="center">
+  <h1>Hangul</h1>
+  <p><strong>A secure personal agent that researches, reads your documents and inbox, and takes action for you once you approve.</strong></p>
+</div>
 
-[![CI](https://github.com/aasimmalikin/hangul-harness/actions/workflows/ci.yml/badge.svg)](https://github.com/aasimmalikin/hangul-harness/actions/workflows/ci.yml)
-![Python](https://img.shields.io/badge/Python-3.12+-3776AB?logo=python&logoColor=white)
-![Next.js](https://img.shields.io/badge/Next.js-16-000000?logo=nextdotjs&logoColor=white)
-![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)
+<p align="center">
+  <a href="https://github.com/aasimmalikin/hangul/actions/workflows/ci.yml"><img src="https://img.shields.io/github/actions/workflow/status/aasimmalikin/hangul/ci.yml?branch=main&style=flat-square&label=ci" alt="CI status"></a>
+  <img src="https://img.shields.io/badge/python-3.12+-3776AB?style=flat-square&logo=python&logoColor=white" alt="Python 3.12+">
+  <img src="https://img.shields.io/badge/next.js-16-000000?style=flat-square&logo=nextdotjs&logoColor=white" alt="Next.js 16">
+  <img src="https://img.shields.io/badge/MCP-supported-6E56CF?style=flat-square" alt="MCP supported">
+  <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-green?style=flat-square" alt="License: MIT"></a>
+</p>
 
-hangul-harness is a self-hosted work assistant. You chat with it in the browser; it searches the web and arXiv, reads your files, Gmail, Calendar and Drive, and drafts the email, event or document you asked for. Anything that changes the outside world waits for your approval first.
+<p align="center">
+  <a href="#quick-start">Quick start</a> ·
+  <a href="#what-hangul-can-do">Features</a> ·
+  <a href="#connect-your-accounts">Connect accounts</a> ·
+  <a href="#security">Security</a> ·
+  <a href="#how-it-fits-together">Architecture</a> ·
+  <a href="#faq">FAQ</a>
+</p>
 
-It is built as a harness rather than a demo: every run is checkpointed and resumable, every tool call passes a policy and security check, credentials never reach the model, and changes to the agent are measured by evals before they ship.
-
----
-
-## What it does
-
-**Researches.** Ask a question and it searches the web and arXiv, reads what it finds, and answers with citations. *Deep research* mode plans several searches, reconciles the sources, and writes a referenced report.
-
-**Reads your documents and inbox.** It searches a document library and the files you upload, and with the Google Workspace connector it reads your Gmail threads, Calendar, Drive files and Google Docs. Each user only ever sees their own data.
-
-**Takes action once you approve.** Sending or drafting an email, creating a calendar event, editing a doc or writing a file pauses with an approval card showing exactly what will happen. Nothing is sent until you click approve; the run then continues where it stopped.
-
-**Remembers you.** It keeps your chats across devices, remembers facts you ask it to, follows your preferred tone and timezone, and can run a question on a schedule (for example, a morning summary of your inbox).
-
-## Why you can trust it
-
-- **Approval for every consequential action**, enforced by a tool policy in code, not by the prompt.
-- **Credentials stay in a vault.** Tokens are encrypted and only decrypted inside a proxy that makes the outbound call; the model and tools see a short-lived grant at most.
-- **Prompt-injection defence.** Content from emails, pages and files is marked as untrusted and screened. If a result looks like an attack, the run is flagged and every further outbound action needs approval.
-- **Isolation by construction.** Each request gets tools bound to the signed-in user, so one user's files, mail and memories are unreachable from another's session.
-- **Measured, not assumed.** Eval suites score answer quality, tool choice and resistance to injection, and a gate catches regressions.
+<!-- Add a screenshot or short GIF of a chat with an approval card here, e.g.
+<p align="center"><img src="docs/assets/hangul-chat.png" alt="Hangul chat" width="100%"></p> -->
 
 ---
 
-## Quickstart
+Hangul is an open-source AI assistant for your working day that you host yourself. Ask it something and it searches the web, arXiv, your files and your Google Workspace, then answers with sources. Ask it to *do* something (reply to an email, book a meeting, update a doc) and it drafts the action and shows you exactly what will happen. Nothing leaves until you approve.
 
-You will run three things: the databases (Docker), the API (Python) and the web app (Node). Allow about 15 minutes the first time.
+**Safe by design, not by prompt.** Approvals are enforced by a tool policy in code. Your credentials sit in an encrypted vault the model never sees. Emails, web pages and files are treated as untrusted input and screened for prompt injection. Every run is checkpointed, so an approval, crash or restart picks up exactly where it stopped.
 
-**You need:** Python 3.12+, Node.js 20.9+, Docker with Compose, an [OpenAI API key](https://platform.openai.com/api-keys), and a Google account to sign in with.
+## What Hangul can do
 
-### 1. Install
+<table>
+<tr><td><b>Research with sources</b></td><td>Searches the web and arXiv and cites what it used. <i>Deep research</i> mode plans several searches, reconciles conflicting sources and writes a referenced report.</td></tr>
+<tr><td><b>Read your documents</b></td><td>Semantic search over a shared document library plus your own uploads (PDF, Markdown and text), stored in Postgres with pgvector.</td></tr>
+<tr><td><b>Work in your inbox</b></td><td>Reads and searches Gmail, Calendar, Drive and Google Docs on your own account; drafts replies, events and document edits.</td></tr>
+<tr><td><b>Act only with your approval</b></td><td>Sending mail, creating events, editing docs and writing files pause with a preview card. Approve and the run resumes; reject and nothing happens.</td></tr>
+<tr><td><b>Remember you</b></td><td>Chats persist across devices, with older turns summarised automatically. It remembers facts you ask it to keep and follows your name, tone, timezone and custom instructions.</td></tr>
+<tr><td><b>Work on a schedule</b></td><td>Run any question on an interval (every 15 minutes or more) or daily at a set time, for example a morning digest of your unread email.</td></tr>
+<tr><td><b>Extend with MCP</b></td><td>Plug in any MCP server over stdio, streamable HTTP or SSE, and give it credentials through the vault instead of raw tokens.</td></tr>
+<tr><td><b>Show its work</b></td><td>Streams its reasoning, each tool call as it's drafted, and each result, live in the chat.</td></tr>
+<tr><td><b>Proven by evals</b></td><td>Suites for answer quality, tool selection and prompt-injection resistance, with a regression gate.</td></tr>
+</table>
+
+## Quick start
+
+You need **Python 3.12+**, **Node.js 20.9+**, **Docker**, an [OpenAI API key](https://platform.openai.com/api-keys), and a Google account to sign in with.
+
+**1. Install**
 
 ```bash
-git clone https://github.com/aasimmalikin/hangul-harness.git
-cd hangul-harness
+git clone https://github.com/aasimmalikin/hangul.git
+cd hangul
 
 python3 -m venv .venv && source .venv/bin/activate    # Windows: .venv\Scripts\activate
 pip install -e ".[dev]"
 (cd web && npm install)
 ```
 
-### 2. Configure
+**2. Configure**
 
 ```bash
 cp .env.example .env
@@ -59,8 +69,6 @@ python -c "import secrets; print(secrets.token_urlsafe(48))"    # secret A
 openssl rand -base64 32                                          # secret B
 ```
 
-Fill in four values; the rest can wait:
-
 | File | Key | Value |
 | --- | --- | --- |
 | `.env` | `openai_api_key` | your OpenAI key |
@@ -68,37 +76,39 @@ Fill in four values; the rest can wait:
 | `web/.env.local` | `FASTAPI_JWT_SECRET` | secret A (must match exactly) |
 | `web/.env.local` | `AUTH_SECRET` | secret B |
 
-### 3. Create a Google sign-in client
+**3. Create a Google sign-in client**
 
-1. In [Google Cloud Console](https://console.cloud.google.com/apis/credentials), create a project.
-2. Set up the **OAuth consent screen**: type *External*, and add your Google account under *Test users*.
-3. **Create credentials → OAuth client ID → Web application**, with the redirect URI `http://localhost:3000/api/auth/callback/google`.
-4. Put the client ID and secret in `web/.env.local` as `AUTH_GOOGLE_ID` and `AUTH_GOOGLE_SECRET`.
+In [Google Cloud Console](https://console.cloud.google.com/apis/credentials), create a project. Set up the **OAuth consent screen** (type *External*) and add your account as a *Test user*. Then create an **OAuth client ID** of type *Web application*, with the redirect URI `http://localhost:3000/api/auth/callback/google`, and put its ID and secret in `web/.env.local` as `AUTH_GOOGLE_ID` and `AUTH_GOOGLE_SECRET`.
 
-### 4. Start the databases and load the sample documents
+**4. Start the databases and index the sample documents**
 
 ```bash
-docker compose up -d                        # Postgres with pgvector, and Redis
+docker compose up -d                        # Postgres (pgvector) and Redis
 alembic upgrade head                        # create the tables
-python -m harness.retrieval.ingest docs     # index the sample docs in docs/ (a few cents)
+python -m harness.retrieval.ingest docs     # embed the sample docs in docs/
 ```
 
-### 5. Run
+**5. Run**
 
 ```bash
-uvicorn harness.api.app:app --reload --port 8000     # terminal 1
-cd web && npm run dev                                # terminal 2
+uvicorn harness.api.app:app --reload --port 8000     # terminal 1: API
+cd web && npm run dev                                # terminal 2: web app
 ```
 
 Open **http://localhost:3000**, sign in, and try:
 
-- *"How long are appointment slots at the clinic, and what was last quarter's no-show rate?"* It searches the sample docs and answers with a citation.
-- *"Write a file called summary.txt with a two-line summary of the clinic handbook."* It pauses with an approval card; approve it and the run continues.
+```text
+How long are appointment slots at the clinic, and what was last quarter's no-show rate?
+```
 
-That's the core running. Web search and your inbox are one step each, below.
+```text
+Write a file called summary.txt with a two-line summary of the clinic handbook.
+```
+
+The first searches the sample documents and answers with a citation. The second stops at an approval card; approve it to watch the run continue.
 
 <details>
-<summary><b>Something not working?</b></summary>
+<summary><b>Troubleshooting</b></summary>
 
 | Symptom | Fix |
 | --- | --- |
@@ -108,16 +118,14 @@ That's the core running. Web search and your inbox are one step each, below.
 | Port 5432 or 6379 already in use | Stop the local Postgres/Redis, or change the port in `docker-compose.yml` and in the URLs. |
 | Google: `redirect_uri_mismatch` | The redirect URI must be exactly `http://localhost:3000/api/auth/callback/google`. |
 | Google: "Access blocked" | Add your account as a *Test user* on the consent screen. |
-| File tools missing; `/healthz` shows `filesystem` as `failed` | Node/`npx` isn't on the API's PATH. Install Node and restart the API. |
-| Web search says `VAULT_UNAVAILABLE` | Set `vault_master_key` and `tavily_api_key` (next section). |
+| `/healthz` shows `filesystem` as `failed` | Node/`npx` isn't on the API's PATH. Install Node and restart the API. |
+| Web search says `VAULT_UNAVAILABLE` | Set `vault_master_key` and `tavily_api_key` (see below). |
 
 </details>
 
----
+## Connect your accounts
 
-## Turn on more
-
-Each feature is off until its keys are set, and switches on after an API restart.
+Everything below is optional and switches on after an API restart. Every key is documented in [`.env.example`](.env.example) and [`web/.env.example`](web/.env.example).
 
 **Web search.** Add a [Tavily](https://tavily.com) key and a vault key to `.env`:
 
@@ -130,109 +138,123 @@ vault_master_key = <the key printed above>
 tavily_api_key = tvly-...
 ```
 
-**Your inbox, calendar and Drive.**
-1. In the same Google Cloud project, enable the **Gmail, Google Calendar, Google Drive and Google Docs APIs**.
-2. Copy the web app's Google client ID and secret into `.env` as `auth_google_id` and `auth_google_secret`.
-3. In the app, open **Connected services** from the profile menu and click **Connect Google Workspace**.
-4. In a chat, switch it on from **+ → Connectors → Google Workspace**. Try *"Summarise my unread email from today"*.
+**Gmail, Calendar, Drive and Docs.**
+1. In your Google Cloud project, enable the Gmail, Google Calendar, Google Drive and Google Docs APIs.
+2. Copy the Google client ID and secret into `.env` as `auth_google_id` and `auth_google_secret`.
+3. In Hangul, open **Connected services** from the profile menu and click **Connect Google Workspace**.
+4. In a chat, turn it on from **+ → Connectors → Google Workspace**, then ask: *"Summarise my unread email from today."*
 
-**Research papers.** Switch on **+ → Connectors → Research** in a chat (no key needed), or pick *Deep research*.
+**arXiv.** Turn on **+ → Connectors → Research** in any chat. No key needed.
 
-**Admin console.** Add your Google email to `admin_emails` in `.env` and open `/admin` to see evals, security events and usage.
+**Admin console.** Add your Google email to `admin_emails` in `.env`, then open `/admin` for evals, security events and usage.
 
-**Email sign-in.** Set `AUTH_RESEND_KEY` and `AUTH_EMAIL_FROM` in `web/.env.local` ([Resend](https://resend.com); without a verified domain use `onboarding@resend.dev`, which only delivers to your own Resend address).
+**Email sign-in.** Set `AUTH_RESEND_KEY` and `AUTH_EMAIL_FROM` in `web/.env.local` to use [Resend](https://resend.com) magic links instead of, or as well as, Google.
 
-**More tools.** Any MCP server (stdio, streamable HTTP or SSE) can be added in [`src/harness/mcp/servers.yaml`](src/harness/mcp/servers.yaml).
+**Your own MCP servers.** Add them to [`src/harness/mcp/servers.yaml`](src/harness/mcp/servers.yaml). Use `vault:<provider>` in place of a token so the server only ever holds a short-lived grant.
 
-Every key is explained in [`.env.example`](.env.example) and [`web/.env.example`](web/.env.example).
+## Security
 
----
+Hangul reads content written by other people (emails, web pages, shared files) and can act on your accounts, so it assumes that content may be hostile:
 
-## How it works
+- **Human approval.** Every tool has a policy tier. Anything that sends, creates, edits or deletes pauses for your approval, and the policy is code the model cannot argue with.
+- **Token vault.** Third-party credentials are encrypted at rest and decrypted only inside the proxy that makes the outbound call, after host, method and budget checks. The model, the tools and MCP servers never hold a real token.
+- **Prompt-injection defence in layers.** A hardened prompt with a per-conversation canary; screening of your messages; tool results wrapped as untrusted data; results screened for injection (a hit **taints** the conversation, and from then on every outbound action needs approval); arguments that carry a secret are refused; and answers are redacted before display. Every event is audited and shown on the admin console.
+- **Per-user isolation.** Each request gets tools bound to the signed-in user: document search filters by user in SQL, and file tools can only reach that user's own folder.
+
+Before exposing Hangul beyond your machine, read the [deployment checklist](#deployment).
+
+## How it fits together
 
 ```mermaid
 flowchart LR
-    U[Browser] -->|session| W[Next.js app]
+    U[Browser] -->|session| W[Next.js web app]
     W -->|short-lived token| A[FastAPI]
     A --> L[Agent loop]
     L <--> M[LLM]
     L --> G{Policy and<br/>security check}
-    G -->|allowed| T[Tools: docs, files, web,<br/>Gmail, Calendar, arXiv]
+    G -->|allowed| T[Tools: docs, files, web,<br/>Gmail, Calendar, arXiv, MCP]
     G -->|needs approval| P[Pause and ask you]
     P -->|approved| T
     T -->|credentials via| V[Token vault]
     L -->|every step| D[(Postgres)]
-    L -->|streamed events| W
+    L -->|live events| W
 ```
 
-1. **The web app** signs you in and forwards each message to the API with a five-minute service token.
-2. **The API** loads your conversation (recent turns plus a summary of older ones) and builds a set of tools bound to you.
-3. **The agent loop** asks the model what to do. Each requested tool call is checked: safe calls run, consequential ones pause for approval, anything carrying a secret is refused. Tool results are wrapped as untrusted data and screened for injection before the model sees them.
-4. **Every step is checkpointed** to Postgres, so an approval, a crash or a restart resumes the run exactly where it stopped, and a tool that already ran is never run twice.
-5. **Events stream back** to the browser as they happen: the agent's narration, each tool call as it is drafted, results, and approval requests.
+- **Web app** (`web/`): Next.js chat UI with sign-in. Its API routes check your session and forward each request with a five-minute service token.
+- **API** (`src/harness/api/`): FastAPI. Loads your conversation, builds tools bound to you, and streams events back over SSE.
+- **Agent loop** (`src/harness/agent/`): asks the model what to do, runs each tool call through the policy and security guard, and checkpoints every step, so a tool that already ran is never run twice.
+- **Tools**: document search, sandboxed files over MCP, web search, memory, and the Google Workspace and arXiv connectors (`src/harness/connectors/`).
+- **Vault** (`src/harness/vault/`) and **security** (`src/harness/security/`): the credential store and the prompt-injection defence described above.
+- **Storage**: Postgres with pgvector for conversations, checkpoints, documents and credentials; Redis for the answer cache and vault grants.
 
-The main code paths, if you want to read further:
+## Evals
 
-| Area | Where |
-| --- | --- |
-| Agent loop and context window | [`src/harness/agent/`](src/harness/agent/) |
-| Tool policy and approval | [`src/harness/policy/`](src/harness/policy/), [`api/routes/approve.py`](src/harness/api/routes/approve.py) |
-| Prompt-injection defence | [`src/harness/security/`](src/harness/security/) |
-| Token vault | [`src/harness/vault/`](src/harness/vault/) |
-| Google Workspace and arXiv | [`src/harness/connectors/`](src/harness/connectors/) |
-| MCP servers | [`src/harness/mcp/`](src/harness/mcp/) |
-| Web app and its API proxy | [`web/`](web/) |
-
----
-
-## Evaluation
-
-Three suites run the real agent and score it with an LLM judge. They call OpenAI, so **each run costs money**; start with `--limit 5`.
-
-| Suite | Measures |
-| --- | --- |
-| `qa` | Answers are correct and faithful to what was retrieved |
-| `tool_selection` | Right tools, correct arguments, no unneeded calls, approval respected, no invented actions |
-| `prompt_injection` | Poisoned tool results don't cause leaks or unwanted actions |
+Three suites run the real agent and score it with an LLM judge. They call OpenAI, so each run costs money; start small.
 
 ```bash
-python run_evals.py --limit 5
-python run_evals.py --suite tool_selection --limit 5
-python ci_gate.py        # fails below 0.80, or on a drop of more than 0.05 vs data/eval_baseline.json
+python run_evals.py --limit 5                           # answer quality: correctness and faithfulness
+python run_evals.py --suite tool_selection --limit 5    # right tools, right arguments, approvals respected
+python ci_gate.py                                       # fail below 0.80 or on a regression vs the baseline
 ```
 
-The gate runs locally; the GitHub workflow only lints, so pushes don't spend API credits. To enforce the gate on pull requests, add an `OPENAI_API_KEY` secret and a job that runs `python ci_gate.py`.
-
----
-
-## Development
-
-```bash
-pytest tests/unit                        # backend; no database, network or API key needed
-ruff check src/
-cd web && npm run lint
-cd web && npx playwright install chromium && npm run test:e2e    # browser tests against a fake backend
-```
-
-Contributions are welcome. Please run the tests above before opening a pull request. Report security issues through a private [security advisory](https://github.com/aasimmalikin/hangul-harness/security/advisories/new), not a public issue.
-
----
+The `prompt_injection` suite poisons one tool result per case and measures attack success, leaks and detection. The gate runs locally; CI only lints, so pushes don't spend credits.
 
 ## Deployment
 
-The API and the web app deploy separately.
-
-- **API:** `docker build -t hangul-harness .` The image includes Node for MCP servers. Its default command also starts a legacy Streamlit demo; to run only the API, use `uvicorn harness.api.app:app --host 0.0.0.0 --port 8000`. Run `alembic upgrade head` against the production database first.
-- **Web app:** deploy `web/` to Vercel or run `npm run build && npm start`. Set `FASTAPI_URL` to the API, `AUTH_URL` to your public URL, and add `https://<your-domain>/api/auth/callback/google` to the Google client.
+The API and web app deploy separately. Build the API with `docker build -t hangul .` (the image includes Node for MCP servers) and run `alembic upgrade head` against your database first. Deploy `web/` to Vercel or with `npm run build && npm start`, set `FASTAPI_URL` and `AUTH_URL`, and add your domain's `/api/auth/callback/google` to the Google client.
 
 Before going live:
-- Set `environment = "prod"`. The API then refuses to start without a strong `jwt_secret`.
+- Set `environment = "prod"`. The API refuses to start without a strong `jwt_secret`.
 - Generate your own `vault_master_key` and back it up; without it, stored credentials can't be decrypted.
-- With several API replicas, set `scheduler_enabled = false` on all but one.
-- [`infra/terraform/`](infra/terraform/) is a reference AWS setup; replace its names and IDs with yours before applying.
+- With more than one API replica, set `scheduler_enabled = false` on all but one.
+- Treat [`infra/terraform/`](infra/terraform/) as a reference AWS setup and replace its names and IDs with your own.
 
----
+## FAQ
+
+<details>
+<summary><b>Which models does it support?</b></summary>
+
+OpenAI models today: the GPT-5.x family (the default is `gpt-5.5`), GPT-6 Astra, and GPT-4.1. Users pick the model and reasoning effort per message. The provider sits behind an interface, so adding another provider is a contained change.
+</details>
+
+<details>
+<summary><b>Where does my data go?</b></summary>
+
+Conversations, documents, memories and credentials stay in your own Postgres. Prompts and retrieved content go to OpenAI to generate answers; search queries go to Tavily if you enable web search; and Google Workspace calls go directly to Google on your account.
+</details>
+
+<details>
+<summary><b>Can it send an email without asking me?</b></summary>
+
+No. Sending, drafting, creating events, editing docs and writing files all require approval, enforced by the tool policy rather than the prompt. If a conversation has ingested something that looks like an injection attack, every outbound action needs approval too.
+</details>
+
+<details>
+<summary><b>Can I use it without Google?</b></summary>
+
+Yes. Use Resend email sign-in instead, and the assistant still researches, searches your documents and files, and runs scheduled tasks. The Gmail, Calendar, Drive and Docs tools need a Google account.
+</details>
+
+<details>
+<summary><b>Can several people use one deployment?</b></summary>
+
+Yes. Every user has their own conversations, uploads, memories, credentials and file folder, isolated in the queries and paths themselves.
+</details>
+
+## Contributing
+
+Issues and pull requests are welcome. Before opening a PR:
+
+```bash
+pytest tests/unit          # backend, no database or API key needed
+ruff check src/
+cd web && npm run lint && npm run test:e2e
+```
+
+Please report security issues through a private [security advisory](https://github.com/aasimmalikin/hangul/security/advisories/new), not a public issue.
 
 ## License
 
-MIT. See [`LICENSE`](LICENSE).
+[MIT](LICENSE)
+
+<p align="right"><a href="#readme-top">Back to top ↑</a></p>
