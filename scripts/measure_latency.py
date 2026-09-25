@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Measure server-side latency percentiles for agentic-qa.
+"""Measure server-side latency percentiles for hangul-harness.
 
 Run ON the EC2 instance (hits localhost:8000). Uses a pool of DISTINCT
 questions so every request is a cache miss (cache key is question text),

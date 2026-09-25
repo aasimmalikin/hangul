@@ -2,7 +2,7 @@
 
 **A production-grade agent harness for grounded, auditable document Q&A.**
 
-[![CI](https://github.com/aasimmalikin/Hangul/actions/workflows/ci.yml/badge.svg)](https://github.com/aasimmalikin/Hangul/actions/workflows/ci.yml)
+[![CI](https://github.com/aasimmalikin/hangul-harness/actions/workflows/ci.yml/badge.svg)](https://github.com/aasimmalikin/hangul-harness/actions/workflows/ci.yml)
 ![Python](https://img.shields.io/badge/Python-3.11+-3776AB?logo=python&logoColor=white)
 ![FastAPI](https://img.shields.io/badge/FastAPI-async-009688?logo=fastapi&logoColor=white)
 ![PostgreSQL](https://img.shields.io/badge/PostgreSQL-checkpoints-4169E1?logo=postgresql&logoColor=white)
@@ -132,8 +132,8 @@ Pulling the layers together, Hangul runs on a deliberately production-oriented s
 ## Quickstart
 
 ```bash
-git clone https://github.com/aasimmalikin/Hangul.git
-cd Hangul
+git clone https://github.com/aasimmalikin/hangul-harness.git
+cd hangul-harness
 
 cp .env.example .env          # set your model API key and secrets
 docker compose up -d          # Postgres + Redis

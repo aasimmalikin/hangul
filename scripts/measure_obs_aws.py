@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Observability measurement for agentic-qa, run ON the EC2 instance against
+"""Observability measurement for hangul-harness, run ON the EC2 instance against
 the live deployment (localhost:8000).
 
 Measures, across a mixed tool workload, per-request:

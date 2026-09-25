@@ -1,4 +1,4 @@
-"""Locust load test for agentic-qa — captures latency, tokens, cost, and steps.
+"""Locust load test for hangul-harness — captures latency, tokens, cost, and steps.
 
 Run from your laptop via SSH tunnel, or on the instance. Each user sends
 distinct questions (cache misses) across a mixed tool workload. Locust reports

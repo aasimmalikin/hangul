@@ -1,4 +1,4 @@
-"""agentic-qa demo frontend — clean chat up front; quality metrics and
+"""hangul-harness demo frontend — clean chat up front; quality metrics and
 observability live in the sidebar behind a reveal toggle."""
 
 import uuid
@@ -8,7 +8,7 @@ import streamlit as st
 
 API_URL = "http://localhost:8000"
 
-st.set_page_config(page_title="agentic-qa", page_icon="🧭", layout="wide")
+st.set_page_config(page_title="hangul-harness", page_icon="🧭", layout="wide")
 
 if "session_id" not in st.session_state:
     st.session_state.session_id = "sess-" + uuid.uuid4().hex[:16]
@@ -64,7 +64,7 @@ def store_result(data: dict) -> None:
 
 # --- sidebar --------------------------------------------------------------
 with st.sidebar:
-    st.markdown("### agentic-qa")
+    st.markdown("### hangul-harness")
     st.caption("an agent that picks the right tool")
 
     st.markdown("**Capabilities**")

@@ -19,7 +19,7 @@ NS = {"a": "http://www.w3.org/2005/Atom", "arxiv": "http://arxiv.org/schemas/ato
 MIN_INTERVAL_S = 3.0          # arXiv asks for no more than one request every 3 seconds
 MAX_RESULTS = 10
 ABSTRACT_CHARS = 1200
-USER_AGENT = "agentic-qa-harness/1.0 (research connector)"
+USER_AGENT = "hangul-harness/1.0 (research connector)"
 
 _lock = asyncio.Lock()
 _last_call = 0.0
