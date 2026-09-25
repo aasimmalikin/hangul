@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## What this is
 
-Hangul (`hangul-harness`), an agentic QA harness: a FastAPI backend running a tool-calling agent loop over document retrieval, MCP filesystem tools, and web search, plus two frontends (a Next.js app in `web/`, and a legacy Streamlit demo in `streamlit_app.py`). `README.md`, `Makefile`, and `docs/architecture.md` are empty — this file and the source are the documentation.
+Hangul (`hangul-harness`), an agentic QA harness: a FastAPI backend running a tool-calling agent loop over document retrieval, MCP filesystem tools, and web search, plus two frontends (a Next.js app in `web/`, and a legacy Streamlit demo in `streamlit_app.py`). `README.md` is the user-facing setup guide; this file and the source are the developer documentation.
 
 ## Commands
 
@@ -165,7 +165,7 @@ Adding a tool that can move data out of the system: put it in `guard.OUTBOUND` (
 ### Prompts, evals, observability
 
 - Prompts are files in `prompts/templates/*.txt`; `get_prompt()` versions them by SHA-256 prefix, so editing the text changes `prompt_version` and busts the cache. Prompt version is recorded on every run and every eval report.
-- Evals live in `src/harness/eval/` (the top-level `evals/` directory is empty stubs). Two suites (`catalog.py::SUITES`), both run by `eval/agent_runner.py::run_suite` (shared by `run_evals.py` and the admin API, and it brings up MCP + the vault itself when run from the CLI):
+- Evals live in `src/harness/eval/`. Two suites (`catalog.py::SUITES`), both run by `eval/agent_runner.py::run_suite` (shared by `run_evals.py` and the admin API, and it brings up MCP + the vault itself when run from the CLI):
   - `qa`: `data/evalset.jsonl` → `run_eval` → LLM judge scores correctness and faithfulness. `evaluate_gate` blocks on floors of 0.80 and on regressions >0.05 vs `data/eval_baseline.json`. `GET /quality` surfaces the newest report plus the gate verdict.
   - `tool_selection`: `data/evalsets/tool_selection.jsonl` — each case says which **concern** the request is about and which tools are expected / tolerated / forbidden, expected arguments, whether it must pause for approval, and what the answer must not claim. The run is captured as a `Trajectory` (`eval/trajectory.py`, from the loop's `on_event` stream plus full tool outputs from the checkpoint) and graded by `eval/tool_graders.py`: tool_choice (set-F1), tool_necessity (unneeded/repeated/forbidden calls), hallucination (invented tools/args deterministically, plus a judge on "claims an action no call backs"), separation_of_concerns (`CONCERN_TOOLS`), argument_correctness, approval_compliance, and efficiency/cost numbers. A case passes when every dimension ≥ 0.7.
   - Reports are `data/eval_runs/<suite>-<stamp>.json` (`eval-*` = qa) read by `eval/store.py`. `eval/catalog.py::CATALOG` lists every eval with `status` available/planned; add a new eval there and in a suite.

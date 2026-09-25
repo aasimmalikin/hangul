@@ -100,3 +100,9 @@ node_modules/
 *.tmp
 scratch/data/audit.jsonl
 data/sessions/
+
+# ---- Local downloads and tool state -------------------------
+# AWS CLI installer, and the Vercel project link (per-machine; `vercel link` recreates it)
+aws/
+awscliv2.zip
+.vercel/
