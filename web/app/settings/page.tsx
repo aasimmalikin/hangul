@@ -5,6 +5,7 @@ import { useSession } from "next-auth/react"
 import { AppHeader } from "@/components/hangul/AppHeader"
 import { SignInModal, type AuthMode } from "@/components/hangul/SignInModal"
 import { loadAvailableConnectors, type ConnectorInfo } from "@/lib/connectors"
+import { deviceTimeZone } from "@/lib/timezone"
 
 /**
  * /settings — how the assistant should treat you (name, tone, timezone,
@@ -13,7 +14,7 @@ import { loadAvailableConnectors, type ConnectorInfo } from "@/lib/connectors"
  * Chats rail as "⏰ <title>" conversations.
  */
 
-type Prefs = { display_name: string; instructions: string; tone: string; timezone: string; language: string; tones?: string[] }
+type Prefs = { display_name: string; instructions: string; tone: string; timezone: string; language: string; timezone_auto?: boolean; tones?: string[] }
 type Task = { id: number; title: string; question: string; every_minutes: number | null; daily_at: string | null; connectors: string[]; mode: string; enabled: boolean; next_run_at: string | null; last_run_at: string | null; last_status: string; last_run_id: string | null; last_answer: string }
 
 const mono = { fontFamily: "var(--font-geist-mono)" } as const
@@ -85,7 +86,9 @@ export default function SettingsPage() {
   const savePrefs = () => run(async () => {
     if (!prefs) return
     const { tones: _t, ...body } = prefs
-    await api("settings", { method: "PUT", body: JSON.stringify(body) })
+    // automatic = this device's timezone; pinned = what the user typed
+    const timezone = body.timezone_auto !== false ? (deviceTimeZone() ?? body.timezone) : body.timezone
+    await api("settings", { method: "PUT", body: JSON.stringify({ ...body, timezone, timezone_auto: body.timezone_auto !== false }) })
     setSaved(true); setTimeout(() => setSaved(false), 2000)
   })
 
@@ -121,7 +124,18 @@ export default function SettingsPage() {
               <select className="h-input" value={prefs.tone} onChange={(e) => setPrefs({ ...prefs, tone: e.target.value })} aria-label="Tone">
                 {(prefs.tones ?? ["concise", "balanced", "detailed"]).map((t) => <option key={t} value={t}>{t}</option>)}
               </select>
-              <input className="h-input" placeholder={`Timezone, e.g. ${browserTz}`} value={prefs.timezone} onChange={(e) => setPrefs({ ...prefs, timezone: e.target.value })} maxLength={64} aria-label="Timezone" list="tz-suggest" />
+              <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
+                {/* Automatic (the default): follows whatever device the user is on. */}
+                <input className="h-input" placeholder={`Timezone, e.g. ${browserTz}`}
+                  value={prefs.timezone_auto !== false ? browserTz : prefs.timezone}
+                  disabled={prefs.timezone_auto !== false}
+                  onChange={(e) => setPrefs({ ...prefs, timezone: e.target.value })} maxLength={64} aria-label="Timezone" list="tz-suggest" />
+                <label className="h-muted" style={{ fontSize: 12, display: "flex", alignItems: "center", gap: 6 }}>
+                  <input type="checkbox" checked={prefs.timezone_auto !== false} aria-label="Set timezone automatically"
+                    onChange={(e) => setPrefs({ ...prefs, timezone_auto: e.target.checked, timezone: e.target.checked ? browserTz : prefs.timezone })} />
+                  Set automatically from this device
+                </label>
+              </div>
               <datalist id="tz-suggest"><option value={browserTz} /><option value="UTC" /></datalist>
               <input className="h-input" placeholder="Preferred language (optional)" value={prefs.language} onChange={(e) => setPrefs({ ...prefs, language: e.target.value })} maxLength={16} aria-label="Language" />
               <textarea className="h-input" rows={4} placeholder="Custom instructions — e.g. 'I run a small clinic; prefer plain language and always give dates in DD/MM.'" value={prefs.instructions} onChange={(e) => setPrefs({ ...prefs, instructions: e.target.value })} maxLength={2000} style={{ gridColumn: "1 / -1", resize: "vertical" }} aria-label="Custom instructions" />

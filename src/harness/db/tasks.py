@@ -146,3 +146,16 @@ def mark_finished(task_id: int, *, status: str, run_id: str | None, answer: str)
         row.last_run_id = run_id
         row.last_answer = (answer or "")[:4000]
         s.commit()
+
+
+def retime_daily(user_id: str, tz: str) -> int:
+    """Re-aim every enabled daily task at HH:MM in the new timezone (after
+    the user's device moved), so "daily at 08:00" stays 08:00 where they are."""
+    with SessionLocal() as s:
+        rows = s.execute(select(ScheduledTask).where(ScheduledTask.user_id == int(user_id),
+                                                     ScheduledTask.daily_at.is_not(None),
+                                                     ScheduledTask.enabled.is_(True))).scalars().all()
+        for row in rows:
+            row.next_run_at = compute_next_run(None, row.daily_at, tz)
+        s.commit()
+        return len(rows)

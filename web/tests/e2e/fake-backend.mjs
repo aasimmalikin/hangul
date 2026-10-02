@@ -7,12 +7,18 @@
  *
  *   "APPROVAL …"   run pauses on a destructive tool → approval_required
  *   "ASK …"        run pauses on ask_user → approval_required with options
+ *   "APPROVAL TWICE …"  as APPROVAL, but the approved run pauses again on a
+ *                  stepped-up web_search (what a tainted run does)
  *   "DROP …"       stream some text, then close the socket without `done`
  *   "ERROR …"      stream an `error` event
  *   "SLOW …"       first token after 3 s (for the Stop button)
  *   "INJECT …"     security events: flagged tool result, stepped-up action, redacted answer
  *   "GMAIL …"      a Gmail search card (structured ui) then a send that pauses for approval
+ *   "SHOPPING …"   the `lists` tool adds to Shopping -> a live checklist card
+ *   "WEATHER …"    the `weather` tool -> a weather card
  *   "E500 / E429 / E401 / E422"   answer with that HTTP status, no stream
+ *   "PAYWALL …" / "BROKE …" / "FULL …"   402 plan refusal (plan_required /
+ *                  insufficient_balance / free_pool_exhausted)
  *   "HISTORY …"    reply states how many history turns arrived
  *   anything else  "Reply to: <question>" with one search_docs tool call
  *
@@ -26,7 +32,7 @@ import crypto from "node:crypto"
 const PORT = Number(process.env.FAKE_BACKEND_PORT ?? 8765)
 const SECRET = process.env.FASTAPI_JWT_SECRET ?? "e2e-service-secret"
 
-const state = { down: false, approves: {}, executed: {}, uploads: [], asks: [], inFlight: {}, memory: {}, episodes: {}, conversations: {}, convMessages: {}, adminCalls: [], evalRuns: {}, prefs: {}, tasks: {}, google: {} }
+const state = { down: false, approves: {}, executed: {}, uploads: [], asks: [], inFlight: {}, memory: {}, episodes: {}, conversations: {}, convMessages: {}, adminCalls: [], evalRuns: {}, prefs: {}, tasks: {}, google: {}, checkouts: [], todos: {}, reminders: {}, notes: {}, deviceTz: {}, transcripts: [], transcribed: [], spoken: [] }
 
 function verify(req) {
   const h = req.headers.authorization ?? ""
@@ -61,7 +67,18 @@ const MODELS = {
       supports_reasoning: true, efforts: ["low", "medium", "high"], default_effort: "medium" },
     { id: "fake-plain", label: "Fake Plain", input_usd_per_m: 2, output_usd_per_m: 8,
       supports_reasoning: false, efforts: [], default_effort: null },
+    // not in the caller's plan: the picker shows it locked (harness.billing)
+    { id: "fake-frontier", label: "Fake Frontier", input_usd_per_m: 10, output_usd_per_m: 50,
+      supports_reasoning: true, efforts: ["low", "medium"], default_effort: "medium", locked: true, plan_needed: "pro" },
   ],
+  plan: "free",
+}
+
+// The 402 body harness.billing.entitlements raises: detail is an object.
+const PAYWALLS = {
+  PAYWALL: { detail: "Fake Frontier needs the Plus plan.", code: "plan_required", plan_needed: "plus" },
+  BROKE: { detail: "You've used this period's allowance. Upgrade or buy credits to continue.", code: "insufficient_balance", plan_needed: "plus" },
+  FULL: { detail: "Free capacity is full for this month. Upgrade or buy credits to keep going.", code: "free_pool_exhausted", plan_needed: "plus" },
 }
 
 async function askStream(req, res, user) {
@@ -70,7 +87,10 @@ async function askStream(req, res, user) {
   const history = Array.isArray(body.history) ? body.history : []
   state.asks.push({ user: user.sub, question: q, history: history.length, conversation_id: body.conversation_id ?? null,
                     docs_only: body.docs_only === true, connectors: body.connectors ?? [], mode: body.mode ?? "default",
-                    model: body.model ?? null, effort: body.effort ?? null })
+                    model: body.model ?? null, effort: body.effort ?? null, client_timezone: body.client_timezone ?? null })
+
+  const pw = q.match(/^(PAYWALL|BROKE|FULL)\b/)
+  if (pw) return json(res, 402, { detail: PAYWALLS[pw[1]] }, { "X-Reason": PAYWALLS[pw[1]].code })
 
   const m = q.match(/^(E\d{3})\b/)
   if (m) {
@@ -149,6 +169,29 @@ async function askStream(req, res, user) {
       return res.end()
     }
 
+    if (q.startsWith("SHOPPING")) {
+      const items = (state.todos[user.sub] ??= [])
+      for (const text of ["milk", "eggs"]) items.push({ id: items.length + 1, list_name: "Shopping", text, done: false })
+      send("tool_call", { id: "c1", name: "lists", arguments: { action: "add", list: "Shopping", items: ["milk", "eggs"] }, step: 1 })
+      send("tool_result", { id: "c1", name: "lists", ok: true, preview: "Added 2 item(s) to Shopping.", ms: 8, cached: false,
+        ui: { kind: "todo_list", list: "Shopping", items } })
+      send("text_start", { block }); send("text_delta", { block, text: "Added milk and eggs to your Shopping list." }); send("text_end", { block })
+      send("done", { steps: 1, run_id: runId, cost_usd: 0.001, tools_used: ["lists"] })
+      return res.end()
+    }
+
+    if (q.startsWith("WEATHER")) {
+      send("tool_call", { id: "c1", name: "weather", arguments: { location: "Pune" }, step: 1 })
+      send("tool_result", { id: "c1", name: "weather", ok: true, preview: "Pune now: Light rain", ms: 40, cached: false,
+        ui: { kind: "weather", place: "Pune, Maharashtra, India",
+              current: { temp: 27.4, feels: 29, humidity: 70, wind: 12, label: "Light rain", icon: "cloud-rain" },
+              daily: [{ date: "2026-10-02", label: "Light rain", icon: "cloud-rain", max: 29, min: 22, rain_chance: 80 },
+                      { date: "2026-10-03", label: "Clear sky", icon: "sun", max: 31, min: 23, rain_chance: 5 }] } })
+      send("text_start", { block }); send("text_delta", { block, text: "Take an umbrella today." }); send("text_end", { block })
+      send("done", { steps: 1, run_id: runId, cost_usd: 0.001, tools_used: ["weather"] })
+      return res.end()
+    }
+
     if (q.startsWith("INJECT")) {
       // a poisoned document: the tool-result screen fires, the outbound call is
       // stepped up to approval, and the output guard replaces the streamed answer
@@ -175,7 +218,7 @@ async function askStream(req, res, user) {
 
     if (q.startsWith("APPROVAL") || q.startsWith("ASK")) {
       const isAsk = q.startsWith("ASK")
-      state.approves[runId] = { user: user.sub, pending: true }
+      state.approves[runId] = { user: user.sub, pending: true, repause: q.startsWith("APPROVAL TWICE") }
       const fileArgs = { path: "/sessions/notes.txt", content: "Line one of the notes.\nLine two, with a bit more detail.\nLine three closes it." }
       if (!isAsk) {
         // Stream the call the way the real provider does: name first, then
@@ -211,6 +254,15 @@ async function approve(req, res, user) {
   a.pending = false
   await sleep(150) // window for a double-click to arrive
   state.executed[body.approval_id] = (state.executed[body.approval_id] ?? 0) + 1
+  if (a.repause && body.decision === "approve") {
+    // The resumed run parks again, under the same run id, like /approve does.
+    a.repause = false
+    a.pending = true
+    return json(res, 200, { answer: "The agent wants to run 'web_search'. Your approval is needed.", run_id: body.approval_id,
+      prompt_version: "v", steps: 3, stopped_reason: "pending_approval", cached: false,
+      pending_tool: { name: "web_search", arguments: { query: "latest AI news" }, tool_call_id: "c2" },
+      security_events: [{ layer: "action", severity: "medium", source: "web_search", action: "stepped_up", reasons: ["context tainted by web_search; web_search needs your approval"], step: 3 }] })
+  }
   const answer = body.choice ? `You chose ${body.choice}.` : body.decision === "approve" ? "Wrote notes.txt." : "Okay, I won't write the file."
   json(res, 200, { answer, run_id: body.approval_id, prompt_version: "v", steps: 2, stopped_reason: "answered", cached: false })
 }
@@ -316,12 +368,25 @@ const server = http.createServer(async (req, res) => {
   }
   if (url.pathname === "/__google" && req.method === "POST") {
     const b = JSON.parse((await readBody(req)).toString() || "{}")
-    state.google[String(b.user)] = { connected: true, products: ["gmail", "calendar", "drive", "docs"], scopes: [] }
+    state.google[String(b.user)] = { connected: true, products: Array.isArray(b.products) ? b.products : ["gmail", "calendar", "drive", "docs"], scopes: [] }
     return json(res, 200, { ok: true })
   }
   if (url.pathname === "/__state") return json(res, 200, state)
   // Test hook: plant a server-owned conversation (and optionally its transcript)
   // for a user, with a chosen timestamp -- what the rail reads.
+  if (url.pathname === "/__transcripts" && req.method === "POST") {
+    // what the next /voice/transcribe calls will "hear", in order
+    state.transcripts.push(...(JSON.parse((await readBody(req)).toString() || "{}").texts ?? []))
+    return json(res, 200, { ok: true })
+  }
+  if (url.pathname === "/__reminder" && req.method === "POST") {
+    // plant a reminder that has already fired (what the scheduler would leave)
+    const b = JSON.parse((await readBody(req)).toString() || "{}")
+    const rows = (state.reminders[b.user] ??= [])
+    const r = { id: rows.length + 1, text: b.text, due_at: new Date().toISOString(), status: b.status ?? "sent", sent_at: null }
+    rows.push(r)
+    return json(res, 200, r)
+  }
   if (url.pathname === "/__conversation" && req.method === "POST") {
     const b = JSON.parse((await readBody(req)).toString() || "{}")
     const at = b.updated_at ?? new Date().toISOString()
@@ -340,11 +405,12 @@ const server = http.createServer(async (req, res) => {
     rows.push({ id: ++episodeSeq, thread_id: b.thread_id ?? `seed-${episodeSeq}`, title: b.title, summary: b.summary ?? `Q: ${b.title}\nA: Reply to: ${b.title}`, created_at: at, updated_at: at, active: true })
     return json(res, 200, { ok: true })
   }
-  if (url.pathname === "/__reset") { Object.assign(state, { down: false, approves: {}, executed: {}, uploads: [], asks: [], inFlight: {}, memory: {}, episodes: {}, conversations: {}, convMessages: {}, adminCalls: [], evalRuns: {}, prefs: {}, tasks: {}, google: {} }); convSeq = 0; return json(res, 200, { ok: true }) }
+  if (url.pathname === "/__reset") { Object.assign(state, { down: false, approves: {}, executed: {}, uploads: [], asks: [], inFlight: {}, memory: {}, episodes: {}, conversations: {}, convMessages: {}, adminCalls: [], evalRuns: {}, prefs: {}, tasks: {}, google: {}, checkouts: [], todos: {}, reminders: {}, notes: {}, deviceTz: {}, transcripts: [], transcribed: [], spoken: [] }); convSeq = 0; return json(res, 200, { ok: true }) }
   if (url.pathname === "/healthz") return state.down ? json(res, 503, { status: "down" }) : json(res, 200, { status: "ok" })
   if (url.pathname === "/connectors") return json(res, 200, [
     { key: "arxiv", label: "Research", description: "Search and read arXiv papers", kind: "builtin", icon: "book-2", per_user: false, auth: null, servers: [] },
-    { key: "google", label: "Google Workspace", description: "Gmail, Calendar, Drive and Docs", kind: "mcp", icon: "brand-google", per_user: true, auth: "google", servers: ["gmail", "calendar", "drive", "docs"] },
+    ...[["gmail", "Gmail", "mail"], ["calendar", "Google Calendar", "calendar"], ["drive", "Google Drive", "brand-google-drive"], ["docs", "Google Docs", "file-text"]]
+      .map(([key, label, icon]) => ({ key, label, description: `${label} on your own Google account`, kind: "builtin", icon, per_user: true, auth: "google", product: key, group: "Google Workspace", servers: [] })),
   ])
   if (url.pathname === "/quality") return json(res, 200, { available: true, avg_correctness: 0.91, avg_faithfulness: 0.88, pass_rate: 0.9, cases: 20, gate_passed: true, blocking_failures: [], advisory_notes: [] })
 
@@ -422,6 +488,75 @@ const server = http.createServer(async (req, res) => {
     row.active = false
     return json(res, 200, { deleted: row.id })
   }
+  // ---- billing (harness.billing): a free plan with part of its allowance used
+  if (url.pathname === "/billing" && req.method === "GET") {
+    return json(res, 200, {
+      enabled: true, plan: "free", plan_label: "Free", status: null, renews_at: null, ends_at: null,
+      allowance_usd: 0.5, allowance_left_usd: 0.2, credits_usd: 1.5, has_portal: true,
+      plans: [
+        { id: "free", label: "Free", price_usd_month: 0, model_tiers: ["basic"], max_effort: "medium", research_allowed: false, monthly_allowance_usd: 0.5 },
+        { id: "plus", label: "Plus", price_usd_month: 20, model_tiers: ["basic", "advanced"], max_effort: "xhigh", research_allowed: true, monthly_allowance_usd: 8 },
+        { id: "pro", label: "Pro", price_usd_month: 100, model_tiers: ["basic", "advanced", "frontier"], max_effort: "xhigh", research_allowed: true, monthly_allowance_usd: 40 },
+      ],
+    })
+  }
+  if (url.pathname === "/billing/checkout" && req.method === "POST") {
+    const b = JSON.parse((await readBody(req)).toString() || "{}")
+    if (!["plus", "pro", "topup"].includes(b.product)) return json(res, 422, { detail: "bad product" })
+    state.checkouts.push({ user: user.sub, product: b.product })
+    // stands in for the Dodo Payments hosted checkout URL
+    return json(res, 200, { url: `/billing?checkout=${b.product}` })
+  }
+  if (url.pathname === "/billing/portal" && req.method === "POST") return json(res, 200, { url: "/billing?portal=1" })
+  // ---- reminders, lists, notes (harness.api.routes.personal), per user
+  if (url.pathname === "/reminders" && req.method === "GET") {
+    const scope = url.searchParams.get("scope") ?? "upcoming"
+    const want = scope === "due" ? ["sent"] : scope === "open" ? ["pending", "sent"] : ["pending"]
+    return json(res, 200, (state.reminders[user.sub] ?? []).filter((r) => want.includes(r.status)))
+  }
+  const remDone = url.pathname.match(/^\/reminders\/(\d+)\/done$/)
+  if (remDone && req.method === "POST") {
+    const r = (state.reminders[user.sub] ?? []).find((x) => x.id === Number(remDone[1]))
+    if (!r) return json(res, 404, { detail: "No such reminder." })
+    r.status = "done"
+    return json(res, 200, r)
+  }
+  if (url.pathname === "/lists" && req.method === "GET") {
+    const lists = {}
+    for (const it of state.todos[user.sub] ?? []) if (!it.done) (lists[it.list_name] ??= []).push(it)
+    return json(res, 200, { lists })
+  }
+  if (url.pathname === "/lists" && req.method === "POST") {
+    const b = JSON.parse((await readBody(req)).toString() || "{}")
+    const items = (state.todos[user.sub] ??= [])
+    const it = { id: items.length + 1, list_name: b.list || "To-do", text: String(b.text ?? ""), done: false }
+    items.push(it)
+    return json(res, 200, it)
+  }
+  const item = url.pathname.match(/^\/lists\/items\/(\d+)$/)
+  if (item && req.method === "PATCH") {
+    const it = (state.todos[user.sub] ?? []).find((x) => x.id === Number(item[1]))
+    if (!it) return json(res, 404, { detail: "No such item." })
+    it.done = Boolean(JSON.parse((await readBody(req)).toString() || "{}").done)
+    return json(res, 200, it)
+  }
+  // ---- voice (harness.api.routes.voice)
+  if (url.pathname === "/voice/transcribe" && req.method === "POST") {
+    const buf = await readBody(req)
+    const seconds = Number((buf.toString("latin1").match(/name="seconds"\r\n\r\n([0-9.]+)/) ?? [])[1] ?? 0)
+    state.transcribed.push({ user: user.sub, bytes: buf.length, seconds })
+    return json(res, 200, { text: state.transcripts.shift() ?? "SHOPPING add milk and eggs" })
+  }
+  if (url.pathname === "/voice/speak" && req.method === "POST") {
+    state.spoken.push(JSON.parse((await readBody(req)).toString() || "{}").text)
+    res.writeHead(200, { "Content-Type": "audio/mpeg" })
+    return res.end(Buffer.from("ID3fake"))          // undecodable on purpose: playback errors out instantly
+  }
+  if (url.pathname === "/settings/timezone" && req.method === "POST") {
+    state.deviceTz[user.sub] = JSON.parse((await readBody(req)).toString() || "{}").timezone
+    return json(res, 200, { timezone: state.deviceTz[user.sub], timezone_auto: true })
+  }
+  if (url.pathname === "/notes" && req.method === "GET") return json(res, 200, state.notes[user.sub] ?? [])
   // ---- personalisation, scheduled tasks, integrations (per user)
   if (url.pathname === "/settings" && req.method === "GET") {
     return json(res, 200, { display_name: "", instructions: "", tone: "balanced", timezone: "UTC", language: "", ...(state.prefs[user.sub] ?? {}), tones: ["concise", "balanced", "detailed"] })

@@ -35,10 +35,11 @@ servers:
   # ---- Google Workspace bundle: Google's official MCP servers (streamable
   # HTTP, OAuth bearer). DISABLED: calling their tools requires a Google
   # Workspace organisation enrolled in the Developer Preview Program; personal
-  # accounts get "requires ... Developer Preview". The "google" connector is the
-  # builtin REST implementation instead (connectors/google_rest.py) -- same
-  # switch, same tool names. Flip these to enabled: true (and remove "google"
-  # from connectors.registry.BUILTIN) to use the official servers once enrolled.
+  # accounts get "requires ... Developer Preview". The gmail/calendar/drive/docs
+  # connectors are the builtin REST implementation instead
+  # (connectors/google_rest.py) -- same tool names. Flip these to enabled: true
+  # (and remove "google" from connectors.registry.BUILTIN) to use the official
+  # servers once enrolled; they come back as one bundled "google" switch.
   # They are per-user: the header carries the signed-in user's own Google
   # access token, so nothing is shared between users.
   - name: gmail

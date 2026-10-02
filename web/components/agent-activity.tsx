@@ -17,11 +17,12 @@ export type ToolActivity = {
   preview?: string
   ms?: number
   cached?: boolean
-  /** Structured result for a rich card (Google Workspace tools). */
-  ui?: GoogleUi
+  /** Structured result for a rich card (Google Workspace and everyday tools). */
+  ui?: GoogleUi | DailyUi
 }
 
 import type { GoogleUi } from "@/components/hangul/GoogleCards"
+import type { DailyUi } from "@/components/hangul/DailyCards"
 
 type Labels = { pending: string; running: string; done: string; awaiting: string }
 
@@ -53,6 +54,14 @@ const TOOL_LABELS: Record<string, Labels> = {
   drive__get_file: { pending: "Preparing to open a file", running: "Reading a Drive file", done: "Read a Drive file", awaiting: "Wants to read a Drive file" },
   docs__get_document: { pending: "Preparing to open a doc", running: "Reading a Google Doc", done: "Read a Google Doc", awaiting: "Wants to read a Google Doc" },
   docs__append_text: { pending: "Drafting text for a doc", running: "Editing a Google Doc", done: "Edited a Google Doc", awaiting: "Wants to edit a Google Doc" },
+  reminders: { pending: "Preparing a reminder", running: "Updating your reminders", done: "Updated your reminders", awaiting: "Wants to set a reminder" },
+  lists: { pending: "Preparing your list", running: "Updating your list", done: "Updated your list", awaiting: "Wants to change your list" },
+  notes: { pending: "Preparing a note", running: "Checking your notes", done: "Checked your notes", awaiting: "Wants to use your notes" },
+  read_webpage: { pending: "Preparing to open a link", running: "Reading the page", done: "Read the page", awaiting: "Wants to open a link" },
+  weather: { pending: "Preparing a forecast", running: "Checking the weather", done: "Checked the weather", awaiting: "Wants to check the weather" },
+  convert: { pending: "Preparing a conversion", running: "Converting", done: "Converted", awaiting: "Wants to convert" },
+  world_clock: { pending: "Preparing the world clock", running: "Checking times", done: "Checked times", awaiting: "Wants to check times" },
+  view_image: { pending: "Preparing to look at an image", running: "Looking at your image", done: "Looked at your image", awaiting: "Wants to look at your image" },
 }
 
 /** Human name for a tool id: "filesystem__write_file" → "write file". */

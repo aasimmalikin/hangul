@@ -16,9 +16,23 @@ export type ConnectorInfo = {
   /** Which connect flow the UI offers ("google"). */
   auth?: string | null
   servers?: string[]
+  /** OAuth product whose scopes it needs ("gmail", "calendar"…); checked against `Integrations.google.products`. */
+  product?: string | null
+  /** Connectors sharing a group are listed together under that heading ("Google Workspace"). */
+  group?: string | null
 }
 
-/** Scopes the Google Workspace bundle asks for when the user connects it. */
+/** The old all-in-one Google key, replaced by one connector per product. */
+const LEGACY_EXPANSIONS: Record<string, string[]> = { google: ["gmail", "calendar", "drive", "docs"] }
+
+/** Swap retired keys for their replacements (deduped, order kept). */
+export function normalizeConnectors(keys: string[]): string[] {
+  const out: string[] = []
+  for (const k of keys) for (const x of LEGACY_EXPANSIONS[k] ?? [k]) if (!out.includes(x)) out.push(x)
+  return out
+}
+
+/** Scopes the Google Workspace connectors ask for when the user connects it. */
 export const GOOGLE_WORKSPACE_SCOPES = [
   "openid", "email", "profile",
   "https://www.googleapis.com/auth/gmail.readonly", "https://www.googleapis.com/auth/gmail.compose",
@@ -44,7 +58,7 @@ export function readConnectors(): string[] {
   try {
     const raw = sessionStorage.getItem(CONNECTORS_KEY)
     const list = raw ? JSON.parse(raw) : []
-    return Array.isArray(list) ? list.filter((k): k is string => typeof k === "string" && KEY_RE.test(k)) : []
+    return Array.isArray(list) ? normalizeConnectors(list.filter((k): k is string => typeof k === "string" && KEY_RE.test(k))) : []
   } catch { return [] }
 }
 

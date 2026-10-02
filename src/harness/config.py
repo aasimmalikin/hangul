@@ -1,4 +1,5 @@
 from typing import Literal
+from pydantic import AliasChoices, Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 class Settings(BaseSettings):
@@ -38,6 +39,42 @@ class Settings(BaseSettings):
     admin_emails: str = "aasimmallikk@gmail.com"      # comma-separated
     admin_max_auth_age_s: int = 12 * 60 * 60          # the Google sign-in must be this recent
     admin_ip_allowlist: str = ""                      # comma-separated CIDRs; empty = any client
+    # Vision (harness/media/vision.py): reads uploaded photos / screenshots.
+    # Must be in providers.registry so its cost is charged to the user.
+    vision_model: str = "gpt-5-mini"
+    # Voice (harness/media/voice.py): speech-to-text for the mic / voice notes
+    # and text-to-speech for spoken answers. Costs are charged to the user's
+    # allowance at these approximate rates (VERIFY against OpenAI pricing).
+    stt_model: str = "gpt-4o-mini-transcribe"
+    tts_model: str = "gpt-4o-mini-tts"
+    tts_voice: str = "coral"
+    stt_usd_per_minute: float = 0.003
+    tts_usd_per_1k_chars: float = 0.015
+    # Reminder emails (harness/notify.py) via Resend -- the same account the web
+    # app uses for sign-in links, so AUTH_RESEND_KEY / AUTH_EMAIL_FROM work too.
+    # Unset = reminders are in-app only.
+    resend_api_key: str | None = Field(default=None, validation_alias=AliasChoices("resend_api_key", "auth_resend_key"))
+    email_from: str | None = Field(default=None, validation_alias=AliasChoices("email_from", "auth_email_from"))
+    app_url: str = "http://localhost:3000"     # links in emails
+    # Billing (harness/billing) via Dodo Payments, the merchant of record.
+    # Unset API key = billing off: no plan checks, every model open (dev).
+    dodo_api_key: str | None = None
+    dodo_webhook_secret: str | None = None    # whsec_… from the Dodo dashboard
+    dodo_product_plus: str | None = None      # pdt_… subscription product
+    dodo_product_pro: str | None = None
+    dodo_product_topup: str | None = None     # pdt_… one-time product
+    dodo_test_mode: bool = True               # test.dodopayments.com vs live.dodopayments.com
+    billing_return_url: str = "http://localhost:3000/billing"   # where checkout sends the buyer back
+    # Allowances and credits are dollars of MODEL cost (registry prices), not
+    # what the user pays; the gap is the margin for tools, embeddings, tax.
+    billing_allowance_free: float = 0.50       # per calendar month
+    billing_allowance_plus: float = 8.00       # per billing period
+    billing_allowance_pro: float = 40.00
+    billing_topup_credit_usd: float = 5.00     # credit granted per top-up purchase
+    # Cap on what ALL free users together may spend per UTC month (dollars of
+    # model cost). Protects the prepaid OpenAI balance that paying users rely
+    # on from a surge of free sign-ups. Unset = no cap.
+    billing_free_pool_usd: float | None = None
 
 def get_settings() -> Settings:
     """ Retrieve the application settings, cached for performance. """

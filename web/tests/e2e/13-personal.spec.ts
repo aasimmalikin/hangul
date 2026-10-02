@@ -1,7 +1,7 @@
 import { test, expect } from "@playwright/test"
 import { ask, backend, expectReply, freshUser, signInAs } from "./helpers"
 
-/** Personalisation, scheduled tasks, deep research, and the Google Workspace bundle's connect state. */
+/** Personalisation, scheduled tasks, deep research, and the Google Workspace connectors' connect state. */
 test.describe("personal agent", () => {
   // Its own id rather than the shared `alice`: that one is fixed at 101 and used
   // by several spec files, so they share the BFF's per-user rate-limit buckets
@@ -22,10 +22,10 @@ test.describe("personal agent", () => {
 
     await page.getByLabel("Task title").fill("Morning brief")
     await page.getByLabel("Task question").fill("Summarise my day")
-    await page.getByLabel("Google Workspace").check()
+    await page.getByLabel("Gmail").check()
     await page.getByRole("button", { name: "Add task" }).click()
     await expect(page.getByTestId("task-1")).toContainText("Morning brief")
-    await expect(page.getByTestId("task-1")).toContainText("daily at 08:00 · google")
+    await expect(page.getByTestId("task-1")).toContainText("daily at 08:00 · gmail")
     await page.getByTestId("task-1").getByRole("button", { name: "Run now" }).click()
     await expect(page.getByTestId("task-1")).toContainText("Ran: Summarise my day")
     await page.getByTestId("task-1").getByRole("button", { name: "Pause" }).click()
@@ -46,29 +46,52 @@ test.describe("personal agent", () => {
     await expect(page.getByTestId("research-mode")).toHaveAttribute("aria-pressed", "true")
   })
 
-  test("Google Workspace: not connected sends you to /vault; connected can be switched on", async ({ page, context, baseURL }) => {
+  test("Google Workspace: not connected sends you to /vault; each product is switched on on its own", async ({ page, context, baseURL }) => {
     await signInAs(context, alice, baseURL!)
     await page.goto("/chat")
     await page.getByRole("button", { name: "Add" }).click()
     await page.getByTestId("menu-connectors").click()
-    await expect(page.getByTestId("connector-google")).toContainText("Connect your account first")
-    await page.getByTestId("connector-google").click()
+    await expect(page.getByTestId("connector-group-Google Workspace")).toBeVisible()
+    await expect(page.getByTestId("connector-gmail")).toContainText("Connect your account first")
+    await page.getByTestId("connector-gmail").click()
     await expect(page).toHaveURL(/\/vault/)
     await expect(page.getByTestId("google-workspace")).toContainText("Not connected")
     await expect(page.getByTestId("google-connect")).toContainText("Connect Google Workspace")
 
-    await backend("/__google", { user: alice.id })
+    // Connected, but Drive was not granted: Gmail and Calendar toggle, Drive asks for access.
+    await backend("/__google", { user: alice.id, products: ["gmail", "calendar", "docs"] })
     await page.reload()
-    await expect(page.getByTestId("google-workspace")).toContainText("Connected · gmail, calendar, drive, docs")
+    await expect(page.getByTestId("google-workspace")).toContainText("Connected · gmail, calendar, docs")
     await page.goto("/chat")
     await page.getByRole("button", { name: "Add" }).click()
     await page.getByTestId("menu-connectors").click()
-    await page.getByTestId("connector-google").click()
-    await expect(page.getByTestId("connector-google")).toHaveAttribute("aria-checked", "true")
+    await expect(page.getByTestId("connector-drive")).toContainText("Grant Google Drive access")
+    await page.getByTestId("connector-gmail").click()
+    await expect(page.getByTestId("connector-gmail")).toHaveAttribute("aria-checked", "true")
+    await expect(page.getByTestId("connector-calendar")).toHaveAttribute("aria-checked", "false")
+    await page.getByTestId("connector-calendar").click()
+    await expect(page.getByTestId("connector-calendar")).toHaveAttribute("aria-checked", "true")
     await page.locator("body").click({ position: { x: 5, y: 5 } })
+    await expect(page.getByTestId("chip-connector-gmail")).toContainText("Gmail")
+    await expect(page.getByTestId("chip-connector-calendar")).toContainText("Google Calendar")
     await ask(page, "what is on my calendar")
     await expectReply(page, "Reply to: what is on my calendar")
-    expect((await backend("/__state")).asks.at(-1).connectors).toEqual(["google"])
+    expect((await backend("/__state")).asks.at(-1).connectors).toEqual(["gmail", "calendar"])
+
+    // Switching one off leaves the other on.
+    await page.getByTestId("chip-connector-gmail").click()
+    await ask(page, "and tomorrow")
+    await expectReply(page, "Reply to: and tomorrow")
+    expect((await backend("/__state")).asks.at(-1).connectors).toEqual(["calendar"])
+  })
+
+  test("a chat saved with the old all-in-one Google connector reopens with each product on", async ({ page, context, baseURL }) => {
+    await signInAs(context, alice, baseURL!)
+    await page.goto("/")
+    await page.evaluate(() => sessionStorage.setItem("hangul:connectors", JSON.stringify(["google", "arxiv"])))
+    await page.goto("/chat")
+    for (const k of ["gmail", "calendar", "drive", "docs", "arxiv"]) await expect(page.getByTestId(`chip-connector-${k}`)).toBeVisible()
+    await expect(page.getByTestId("chip-connector-google")).toHaveCount(0)
   })
 
   test("a task that pauses for approval can be approved from the settings page", async ({ page, context, baseURL }) => {

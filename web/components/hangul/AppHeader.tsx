@@ -3,6 +3,7 @@
 import { useSession } from "next-auth/react"
 import { Wordmark } from "@/components/Wordmark"
 import { ProfileMenu } from "@/components/hangul/ProfileMenu"
+import { ReminderBell } from "@/components/hangul/ReminderBell"
 import { ThemeMenu } from "@/components/hangul/ThemeMenu"
 
 /**
@@ -45,7 +46,10 @@ export function AppHeader({
       {status === "loading" ? (
         <span style={{ width: 32, height: 32 }} />
       ) : status === "authenticated" ? (
-        <ProfileMenu />
+        <>
+          <ReminderBell />
+          <ProfileMenu />
+        </>
       ) : (
         <>
           <button className="h-btn-ghost" onClick={onSignIn}>Sign in</button>

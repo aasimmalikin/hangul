@@ -8,6 +8,7 @@ import { HangulSigil } from "@/components/HangulSigil"
 import { AppHeader } from "@/components/hangul/AppHeader"
 import { SignInModal, type AuthMode } from "@/components/hangul/SignInModal"
 import { AttachMenu, type Attachment } from "@/components/hangul/AttachMenu"
+import { MicButton } from "@/components/hangul/MicButton"
 import { AttachmentChips } from "@/components/hangul/AttachmentChips"
 import { ConnectorChips } from "@/components/hangul/ConnectorChips"
 import { useConnectorSelection, useResearchMode } from "@/lib/connectors"
@@ -96,6 +97,7 @@ export default function Landing() {
                 el.style.height = `${Math.min(el.scrollHeight, MAX_COMPOSER_PX)}px`
               }}
             />
+            {status === "authenticated" && <MicButton onText={(t) => onSubmit(t)} />}
             <button className="h-icon-solid" onClick={() => onSubmit()} aria-label="Send" style={{ flexShrink: 0 }}>
               <i className="ti ti-arrow-up" style={{ fontSize: 16 }} />
             </button>

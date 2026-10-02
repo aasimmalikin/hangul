@@ -6,22 +6,25 @@ from sse_starlette.sse import EventSourceResponse
 
 from harness.api.auth import get_current_user
 from harness.api.concurrency import run_slot
-from harness.api.routes.ask import AskRequest, _build_and_run, resolve_or_422
+from harness.api.routes.ask import AskRequest, _build_and_run
+from harness.billing import entitlements
 
 router = APIRouter()
 
 # Progress events the agent emits mid-run. Each is forwarded verbatim as a
 # named SSE event, so the browser sees what the agent is doing as it happens.
 AGENT_EVENTS = {"step", "text_start", "text_delta", "text_end",
-                "tool_pending", "tool_args_delta", "tool_call", "tool_result"}
+                "tool_pending", "tool_args_delta", "tool_call", "tool_result", "security"}
 
 
 @router.post("/ask/stream")
 async def ask_stream(req: AskRequest, request: Request,
                      user: dict = Depends(get_current_user)):
     user_id = user["user_id"]
-    # A bad model/effort must be a real 422, not an `error` event on a 200 stream.
-    resolve_or_422(req.model, req.effort)
+    # A bad model/effort must be a real 422 -- and a plan refusal a real 402 --
+    # not an `error` event on a 200 stream. The conversation's stored model is
+    # not known here; _build_and_run re-checks with it.
+    await entitlements.aresolve_for_user(user_id, req.model, req.effort, mode=req.mode)
 
     # Bridge between the agent (producing events) and the SSE generator
     # (sending them). The agent runs as a background task and pushes events

@@ -10,7 +10,7 @@ from harness.api.routes import ask, health, observability, upload, quality, appr
 from harness.mcp.config import load_server_configs
 from harness.mcp.manager import MCPManager, set_current as set_mcp_manager
 from harness.api.routes.ask import _registry
-from harness.api.routes import memory, episodes, models, vault as vault_routes, admin, connectors, integrations, settings as settings_routes
+from harness.api.routes import memory, episodes, models, vault as vault_routes, admin, connectors, integrations, settings as settings_routes, billing as billing_routes, personal as personal_routes, voice as voice_routes
 from harness.api.routes import conversations
 from harness import scheduler
 from harness.providers.registry import get_model
@@ -105,6 +105,9 @@ def create_app() -> FastAPI:
     app.include_router(connectors.router)
     app.include_router(integrations.router)
     app.include_router(settings_routes.router)
+    app.include_router(billing_routes.router)
+    app.include_router(personal_routes.router)
+    app.include_router(voice_routes.router)
     return app
 
 app = create_app()

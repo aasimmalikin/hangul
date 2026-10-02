@@ -9,7 +9,10 @@ import ReactMarkdown from "react-markdown"
 import remarkGfm from "remark-gfm"
 import { Conversation, ConversationContent } from "@/components/ai-elements/conversation"
 import { Message, MessageContent } from "@/components/ai-elements/message"
-import { ActivityGroup, toolName, type ActivityItem, type ToolActivity } from "@/components/agent-activity"
+import { ActivityGroup, label as activityLabel, toolName, type ActivityItem, type ToolActivity } from "@/components/agent-activity"
+import { MicButton } from "@/components/hangul/MicButton"
+import { SpeakButton } from "@/components/hangul/SpeakButton"
+import { VoiceMode, type VoicePause } from "@/components/hangul/VoiceMode"
 import { HangulSigil } from "@/components/HangulSigil"
 import { AppHeader } from "@/components/hangul/AppHeader"
 import { SignInModal, type AuthMode } from "@/components/hangul/SignInModal"
@@ -17,17 +20,29 @@ import { AttachMenu, type Attachment } from "@/components/hangul/AttachMenu"
 import { AttachmentChips } from "@/components/hangul/AttachmentChips"
 import { ConnectorChips } from "@/components/hangul/ConnectorChips"
 import { GmailCompose, GoogleCard, isGoogleUi } from "@/components/hangul/GoogleCards"
-import { readConnectors, readResearchMode, writeConnectors, writeResearchMode } from "@/lib/connectors"
+import { DailyCard, isDailyUi } from "@/components/hangul/DailyCards"
+import { normalizeConnectors, readConnectors, readResearchMode, writeConnectors, writeResearchMode } from "@/lib/connectors"
 import { ModelPicker } from "@/components/hangul/ModelPicker"
 import { StatusBanner } from "@/components/hangul/StatusBanner"
 import { ChatsPanel } from "@/components/hangul/ChatsPanel"
 import { useConnectivity } from "@/components/hangul/useConnectivity"
-import { parseApiFailure, failureFromResponse, type ApiFailure } from "@/lib/apiError"
+import { parseApiFailure, failureFromResponse, isBillingFailure, type ApiFailure } from "@/lib/apiError"
+import { UpgradeCard } from "@/components/hangul/UpgradeCard"
+import { deviceTimeZone } from "@/lib/timezone"
 
-type Approval = { runId: string; tool: string; arguments: Record<string, unknown> }
+type Approval = { runId: string; toolCallId?: string | null; tool: string; arguments: Record<string, unknown> }
 type SecurityNotice = { layer: "input" | "tool_result" | "action" | "output"; severity: "low" | "medium" | "high"; source: string; action: string; reasons: string[]; step: number | null; answer?: string }
 type ChoiceOption = { label: string; description: string }
-type Choice = { runId: string; question: string; options: ChoiceOption[] }
+type Choice = { runId: string; toolCallId?: string | null; question: string; options: ChoiceOption[] }
+
+/**
+ * Which pause a card answers. A run resumed by /approve keeps its run id, so
+ * when it pauses again the next card shares that id; the tool call id is what
+ * tells the two apart. Cards saved before it existed fall back to the run id.
+ */
+function pauseKey(p: { runId: string; toolCallId?: string | null }): string {
+  return p.toolCallId ? `${p.runId}:${p.toolCallId}` : p.runId
+}
 
 type Part = {
   type: string
@@ -354,6 +369,22 @@ function Card({ tone = "neutral", children, testId }: { tone?: "neutral" | "warn
   )
 }
 
+const STARTERS = [
+  { icon: "alarm", label: "Remind me…", text: "Remind me to " },
+  { icon: "checklist", label: "Shopping list", text: "Add milk, eggs and bread to my shopping list" },
+  { icon: "cloud-sun", label: "Weather", text: "What's the weather this week in " },
+  { icon: "link", label: "Summarise a link", text: "Summarise this page: " },
+  { icon: "arrows-exchange", label: "Convert", text: "How much is 100 USD in INR?" },
+  { icon: "notes", label: "Take a note", text: "Note: " },
+]
+
+/** The readable answer in an assistant message, as it would be said aloud. */
+function spokenTextOf(parts: Part[]): string {
+  const guarded = [...parts].reverse().find((p) => p.type === "data-security" && (p.data as SecurityNotice).answer !== undefined)
+  if (guarded) return String((guarded.data as SecurityNotice).answer ?? "")
+  return parts.filter((p) => p.type === "text").map((p) => p.text ?? "").join("\n").trim()
+}
+
 function ChatInner() {
   const { data: session, status: authStatus, update: refreshSession } = useSession()
   const router = useRouter()
@@ -394,6 +425,7 @@ function ChatInner() {
     onError: (e) => handleFailure(parseApiFailure(e)),
   })
   const [input, setInput] = useState("")
+  const composerRef = useRef<HTMLTextAreaElement>(null)
   const [resolved, setResolved] = useState<Record<string, string>>({})
   const [busy, setBusy] = useState<string | null>(null)
   const [docsOnly, setDocsOnly] = useState(false)
@@ -411,8 +443,10 @@ function ChatInner() {
   const [conversationId, setConversationId] = useState<string | null>(null)
   // What every send carries alongside the text. conversationId is how the
   // server knows which transcript to load, so it has to be in here.
+  // `timezone` is the device's, so "remind me at 7pm" and "what time is it"
+  // mean the user's 7pm wherever they are (adopted unless they pinned one).
   const runOptions = useMemo(
-    () => ({ docsOnly, model, effort, connectors, mode, conversationId }),
+    () => ({ docsOnly, model, effort, connectors, mode, conversationId, timezone: deviceTimeZone() }),
     [docsOnly, model, effort, connectors, mode, conversationId])
 
   // A question handed over from the landing page (`/chat?q=`), plus any
@@ -507,7 +541,7 @@ function ChatInner() {
       setAttachments((a) => (a.length ? a : saved.attachments))
       setDocsOnly(Boolean(saved.docsOnly))
       if (saved.mode) setMode(saved.mode)
-      if (saved.connectors) setConnectorsState(saved.connectors)
+      if (saved.connectors) setConnectorsState(normalizeConnectors(saved.connectors))
       setModel(saved.model ?? null)
       setEffort(saved.effort ?? null)
     }
@@ -538,7 +572,7 @@ function ChatInner() {
         setEffort(detail.effort ?? null)
         setDocsOnly(Boolean(detail.docs_only))
         setMode(detail.mode === "research" ? "research" : "default")
-        if (Array.isArray(detail.connectors)) setConnectorsState(detail.connectors)
+        if (Array.isArray(detail.connectors)) setConnectorsState(normalizeConnectors(detail.connectors))
       })
       .catch(() => { /* the cache (or an empty page) is what the user gets */ })
       .finally(() => { if (alive) setHydrating(false) })
@@ -614,8 +648,11 @@ function ChatInner() {
     }
   }, [pendingText, authStatus, sendMessage, runOptions])
 
-  const submit = () => {
-    const text = input.trim()
+  const submit = () => sendText(input)
+
+  // The composer, the mic and voice mode all send through here.
+  const sendText = (raw: string) => {
+    const text = raw.trim()
     if (!text || streaming) return
     if (text.length > MAX_QUESTION_CHARS) {
       setNotice({ code: "bad_request", detail: `Questions are limited to ${MAX_QUESTION_CHARS} characters.` })
@@ -661,8 +698,11 @@ function ChatInner() {
     router.push(`/chat?c=${id}`)
   }
 
-  const resume = async (runId: string, body: Record<string, unknown>) => {
-    if (busy) return
+  /** Resolves with the text to show / say next, or null when the run paused again. */
+  const resume = async (pause: Approval | Choice, body: Record<string, unknown>): Promise<string | null> => {
+    if (busy) return null
+    const runId = pause.runId
+    const key = pauseKey(pause)
     setBusy(runId)
     try {
       const res = await fetch("/api/approve", {
@@ -673,25 +713,81 @@ function ChatInner() {
       })
       if (!res.ok) {
         const f = await failureFromResponse(res)
-        if (f.code === "unauthorized") { handleFailure(f); return }
+        if (f.code === "unauthorized") { handleFailure(f); return null }
+        // Plan refusal: checked before the action is taken off the run, so it
+        // is still pending -- leave the buttons, show the upgrade card.
+        if (isBillingFailure(f)) { handleFailure(f); return null }
         // A 404 means the action is no longer pending: already decided in
         // another tab, or the run expired. Say so instead of leaving buttons.
-        setResolved((r) => ({ ...r, [runId]: res.status === 404 ? "This action was already handled." : f.detail }))
-        return
+        const msg = res.status === 404 ? "This action was already handled." : f.detail
+        setResolved((r) => ({ ...r, [key]: msg }))
+        return msg
       }
       const data = await res.json()
-      setResolved((r) => ({ ...r, [runId]: data.answer || "Done." }))
+      const next = data.pending_tool as { name?: string; arguments?: Record<string, unknown>; tool_call_id?: string } | null
+      if (next?.name) {
+        // The resumed run paused again (another approval, or a question).
+        // Its `answer` is only the "your approval is needed" placeholder, so
+        // settle this card briefly and put up the next one, or the run stays
+        // parked with nothing to click.
+        setResolved((r) => ({ ...r, [key]: "choice" in body ? `You chose: ${String(body.choice)}` : body.decision === "reject" ? "Rejected." : "Approved." }))
+        const common = { runId, toolCallId: next.tool_call_id ?? null, conversationId: data.conversation_id ?? null }
+        const args = next.arguments ?? {}
+        const part = next.name === "ask_user"
+          ? { type: "data-choice", data: { ...common, question: String(args.question ?? ""), options: (args.options as ChoiceOption[]) ?? [] } }
+          : { type: "data-approval", data: { ...common, tool: next.name, arguments: args } }
+        const notices = ((data.security_events ?? []) as SecurityNotice[])
+          .map((n, i) => ({ type: "data-security", id: `security-resume-${key}-${i}`, data: n }))
+        setMessages((m) => [...m, { id: `resume-${key}`, role: "assistant", parts: [...notices, part] } as unknown as UIMessage])
+        return null
+      }
+      const answerText = data.answer || "Done."
+      setResolved((r) => ({ ...r, [key]: answerText }))
+      return answerText
     } catch {
-      setResolved((r) => ({ ...r, [runId]: "Something went wrong resuming the run. Try again from a new message." }))
+      const msg = "Something went wrong resuming the run. Try again from a new message."
+      setResolved((r) => ({ ...r, [key]: msg }))
+      return msg
     } finally {
       setBusy(null)
     }
   }
-  const decide = (runId: string, decision: "approve" | "reject") => resume(runId, { decision })
-  const answer = (runId: string, choice: string) => resume(runId, { decision: "approve", choice })
+  const decide = (pause: Approval, decision: "approve" | "reject") => resume(pause, { decision })
+  const answer = (pause: Choice, choice: string) => resume(pause, { decision: "approve", choice })
 
   // Nothing has come back yet for the run in flight.
   const last = messages[messages.length - 1]
+
+  // ---- voice mode: what to say, and what is waiting on the user
+  const [voiceOpen, setVoiceOpen] = useState(false)
+  const lastSpoken = last?.role === "assistant" ? spokenTextOf(last.parts as Part[]) : ""
+  const voiceReply = last && lastSpoken ? { id: last.id, text: lastSpoken } : null
+  const voicePause = ((): VoicePause | null => {
+    if (!last || last.role !== "assistant") return null
+    for (const p of last.parts as Part[]) {
+      if (p.type === "data-approval") {
+        const a = p.data as Approval
+        if (resolved[pauseKey(a)] !== undefined) continue
+        const what = activityLabel({ tool: a.tool, status: "awaiting", arguments: a.arguments } as ToolActivity).replace(/^Wants to /, "")
+        const to = typeof a.arguments?.to === "string" ? ` to ${a.arguments.to}` : ""
+        return { kind: "approval", key: pauseKey(a), summary: `${what}${to}` }
+      }
+      if (p.type === "data-choice") {
+        const c = p.data as Choice
+        if (resolved[pauseKey(c)] !== undefined) continue
+        return { kind: "choice", key: pauseKey(c), question: c.question, options: c.options.map((o) => o.label) }
+      }
+    }
+    return null
+  })()
+  const voiceDecide = async (yes: boolean) => {
+    const p = [...((last?.parts ?? []) as Part[])].reverse().find((x) => x.type === "data-approval")
+    return p ? decide(p.data as Approval, yes ? "approve" : "reject") : null
+  }
+  const voiceChoose = async (option: string) => {
+    const p = [...((last?.parts ?? []) as Part[])].reverse().find((x) => x.type === "data-choice")
+    return p ? answer(p.data as Choice, option) : null
+  }
   const showThinking = streaming && (!last || last.role === "user" || last.parts.length === 0)
 
   // The last question never got any answer at all (tab navigated away before
@@ -704,6 +800,9 @@ function ChatInner() {
   const lastAssistantEmpty = !streaming && last?.role === "assistant" &&
     !(last.parts as Part[]).some((p) => (p.type === "text" && p.text?.trim()) || p.type === "data-approval" || p.type === "data-choice")
   const interrupted = Boolean(error) || lastUserUnanswered || lastAssistantEmpty
+  // A plan refusal (402) gets an upgrade card instead of the error notice.
+  const errorFailure = error ? parseApiFailure(error) : null
+  const billingFailure = isBillingFailure(notice) ? notice : isBillingFailure(errorFailure) ? errorFailure : null
 
   /**
    * Parts arrive in the order the agent produced them. Text is rendered as
@@ -731,8 +830,12 @@ function ChatInner() {
         const activity = part.data as ToolActivity
         // ask_user has no result worth showing — the choice card below says it.
         if (activity.tool !== "ask_user") group.push({ kind: "tool", key, activity })
-        // A Workspace result renders as a Google-styled card right after its step.
-        if (activity.status === "done" && isGoogleUi(activity.ui)) {
+        // A structured result renders as a card right after its step: an
+        // everyday tool (reminder, list, weather…) or a Google-styled one.
+        if (activity.status === "done" && isDailyUi(activity.ui)) {
+          flush(false)
+          out.push(<DailyCard key={`${key}-card`} ui={activity.ui} />)
+        } else if (activity.status === "done" && isGoogleUi(activity.ui)) {
           flush(false)
           out.push(<GoogleCard key={`${key}-card`} ui={activity.ui} />)
         }
@@ -782,8 +885,8 @@ function ChatInner() {
 
     if (part.type === "data-choice") {
       const choice = part.data as Choice
-      if (resolved[choice.runId] !== undefined) {
-        return <AnswerText key={key} text={resolved[choice.runId]} />
+      if (resolved[pauseKey(choice)] !== undefined) {
+        return <AnswerText key={key} text={resolved[pauseKey(choice)]} />
       }
       return (
         <Card key={key} testId="choice-card">
@@ -792,7 +895,7 @@ function ChatInner() {
             {choice.options.map((opt) => (
               <button
                 key={opt.label}
-                onClick={() => answer(choice.runId, opt.label)}
+                onClick={() => answer(choice, opt.label)}
                 disabled={busy === choice.runId}
                 className="h-btn-outline"
                 style={{ justifyContent: "flex-start", flexDirection: "column", alignItems: "flex-start", gap: 2, padding: "8px 12px", lineHeight: 1.3 }}
@@ -808,8 +911,8 @@ function ChatInner() {
 
     if (part.type === "data-approval") {
       const approval = part.data as Approval
-      if (resolved[approval.runId] !== undefined) {
-        return <AnswerText key={key} text={resolved[approval.runId]} />
+      if (resolved[pauseKey(approval)] !== undefined) {
+        return <AnswerText key={key} text={resolved[pauseKey(approval)]} />
       }
       return (
         <Card key={key} tone="warn" testId="approval-card">
@@ -823,11 +926,11 @@ function ChatInner() {
             Nothing has been changed yet. The agent will only continue once you decide.
           </p>
           <div className="flex gap-2">
-            <button className="h-btn-solid" onClick={() => decide(approval.runId, "approve")} disabled={busy === approval.runId}>
+            <button className="h-btn-solid" onClick={() => decide(approval, "approve")} disabled={busy === approval.runId}>
               <i className="ti ti-check" style={{ fontSize: 14 }} />
               {busy === approval.runId ? "Working…" : "Approve"}
             </button>
-            <button className="h-btn-outline" onClick={() => decide(approval.runId, "reject")} disabled={busy === approval.runId}>
+            <button className="h-btn-outline" onClick={() => decide(approval, "reject")} disabled={busy === approval.runId}>
               <i className="ti ti-x" style={{ fontSize: 14 }} />
               Reject
             </button>
@@ -875,9 +978,18 @@ function ChatInner() {
             <div className="flex flex-1 flex-col items-center justify-center gap-3 p-8 text-center">
               <HangulSigil size={40} />
               <p className="h-display" style={{ fontSize: 22, margin: "8px 0 0" }}>Ask anything</p>
-              <p className="h-muted" style={{ fontSize: 13, maxWidth: 360 }}>
-                Your documents, the web, and your connected tools. Use <b>+</b> to add a document and ask about it.
+              <p className="h-muted" style={{ fontSize: 13, maxWidth: 380 }}>
+                Reminders, lists, notes, the weather, links, photos and your documents. Use <b>+</b> to add a file or photo.
               </p>
+              {/* Starter prompts: tapping one puts it in the box to edit or send. */}
+              <div className="flex flex-wrap justify-center gap-2" style={{ maxWidth: 520, marginTop: 6 }} data-testid="starters">
+                {STARTERS.map((s) => (
+                  <button key={s.text} type="button" className="h-chip" onClick={() => { setInput(s.text); composerRef.current?.focus() }}
+                    style={{ display: "inline-flex", alignItems: "center", gap: 6 }}>
+                    <i className={`ti ti-${s.icon}`} style={{ fontSize: 13 }} />{s.label}
+                  </button>
+                ))}
+              </div>
             </div>
           ) : (
             messages.map((m) => (
@@ -889,13 +1001,17 @@ function ChatInner() {
                   {m.role === "assistant"
                     ? renderParts(m.parts as Part[], m.id, m === last)
                     : (m.parts as Part[]).map((p, i) => renderPart(p, `${m.id}-${i}`))}
+                  {m.role === "assistant" && !(streaming && m === last) && (
+                    <div style={{ marginTop: 2 }}><SpeakButton text={spokenTextOf(m.parts as Part[])} onFailure={handleFailure} /></div>
+                  )}
                 </MessageContent>
               </Message>
             ))
           )}
           {showThinking && <ActivityGroup items={[{ kind: "thinking", key: "pre" }]} live />}
 
-          {(notice || (interrupted && messages.length > 0)) && (
+          {billingFailure && <UpgradeCard failure={billingFailure} onDismiss={() => { setNotice(null); clearError() }} />}
+          {!billingFailure && (notice || (interrupted && messages.length > 0)) && (
             <Card tone="error" testId="notice-card">
               <p className="text-sm" style={{ margin: 0 }}>
                 {notice?.detail ?? (error ? parseApiFailure(error).detail : "That question didn't get an answer.")}
@@ -970,6 +1086,7 @@ function ChatInner() {
               onConnectorsChange={setConnectors}
             />
             <textarea
+              ref={composerRef}
               value={input}
               onChange={(e) => setInput(e.target.value)}
               onKeyDown={(e) => {
@@ -990,6 +1107,14 @@ function ChatInner() {
                 el.style.height = `${Math.min(el.scrollHeight, MAX_COMPOSER_PX)}px`
               }}
             />
+            {!streaming && <MicButton onText={sendText} onFailure={handleFailure} disabled={!connectivity.online} />}
+            {!streaming && !input.trim() && (
+              <button type="button" className="h-icon-btn" style={{ borderRadius: 999, flexShrink: 0 }} data-testid="voice-mode-button"
+                aria-label="Voice mode" title="Voice mode — talk hands-free"
+                onClick={() => { if (requireAuth("Sign in to talk to the agent.")) setVoiceOpen(true) }}>
+                <i className="ti ti-wave-sine" style={{ fontSize: 16 }} />
+              </button>
+            )}
             {streaming ? (
               <button type="button" className="h-icon-solid" style={{ flexShrink: 0 }} onClick={() => stop()} aria-label="Stop" title="Stop generating">
                 <i className="ti ti-player-stop" style={{ fontSize: 15 }} />
@@ -1004,6 +1129,9 @@ function ChatInner() {
       </div>
       </div>
       </div>
+
+      <VoiceMode open={voiceOpen} onClose={() => setVoiceOpen(false)} send={sendText} streaming={streaming}
+        reply={voiceReply} pause={voicePause} decide={voiceDecide} choose={voiceChoose} onFailure={handleFailure} />
 
       <SignInModal
         open={signIn.open || gateFromQuery}

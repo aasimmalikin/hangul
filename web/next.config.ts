@@ -9,6 +9,8 @@ const csp = [
   "style-src 'self' 'unsafe-inline'",
   "img-src 'self' data: blob: https://*.googleusercontent.com",
   "font-src 'self' data:",
+  // spoken answers are played from blob: URLs (lib/voice.ts Speaker)
+  "media-src 'self' blob:",
   "connect-src 'self'",
   "frame-ancestors 'none'",
   "form-action 'self' https://accounts.google.com",
@@ -26,7 +28,8 @@ const nextConfig: NextConfig = {
           { key: "X-Content-Type-Options", value: "nosniff" },
           { key: "X-Frame-Options", value: "DENY" },
           { key: "Referrer-Policy", value: "strict-origin-when-cross-origin" },
-          { key: "Permissions-Policy", value: "camera=(), microphone=(), geolocation=()" },
+          // microphone: our own pages only (voice); never embedded third parties
+          { key: "Permissions-Policy", value: "camera=(), microphone=(self), geolocation=()" },
           // Browsers ignore HSTS over plain http, so this is harmless in dev
           // and pins the site to TLS wherever it is served over https.
           { key: "Strict-Transport-Security", value: "max-age=31536000; includeSubDomains" },

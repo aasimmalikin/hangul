@@ -10,7 +10,7 @@ from harness.agent.loop import run_agent
 from harness.logging import log
 from harness.schemas.run import RunRecord
 from harness.providers import provider_for
-from harness.providers.registry import ModelSpec, Effort, resolve, budget_for
+from harness.providers.registry import budget_for
 from harness.prompts.registry import get_prompt
 from harness.tools.registry import ToolRegistry
 from harness.tools.builtin.calculator import CALCULATOR_TOOL
@@ -20,6 +20,7 @@ from harness.tools.builtin.ask_user import ASK_USER_TOOL
 from harness.tools.builtin.search_docs_session import make_search_docs_tool
 from harness.tools.builtin.filesystem_session import wrap_filesystem_tool
 from harness.tools.builtin.vault_request import build_vault_tools
+from harness.tools.builtin.daily import build_daily_tools
 from harness.connectors import tools_for, validate_keys
 from harness.security import get_guard
 from harness.tools.builtin.recall import make_recall_tool
@@ -48,7 +49,7 @@ from harness.db.conversations import (
     set_summary,
     set_title,
 )
-from harness.db.ledger import record_transaction
+from harness.billing import entitlements
 from decimal import Decimal
 
 from dataclasses import dataclass
@@ -87,6 +88,16 @@ _policy = ToolPolicy(tiers={
     "recall": Tier.SAFE,
     "remember": Tier.SAFE,
     "recall_episodes": Tier.SAFE,
+    # everyday assistant (tools/builtin/daily.py): the user's own data, or
+    # public read-only lookups -- nothing here acts on anyone else
+    "reminders": Tier.SAFE,
+    "lists": Tier.SAFE,
+    "notes": Tier.SAFE,
+    "read_webpage": Tier.SAFE,           # outbound: stepped up on a tainted run (guard.OUTBOUND)
+    "weather": Tier.SAFE,
+    "convert": Tier.SAFE,
+    "world_clock": Tier.SAFE,
+    "view_image": Tier.SAFE,
 }, patterns=[
     # Google Workspace bundle (official MCP servers): anything that sends,
     # creates, changes or deletes pauses for approval; reads run.
@@ -154,6 +165,9 @@ class AskRequest(BaseModel):
     connectors: list[str] = Field(default_factory=list, max_length=8)
     # "research": a multi-step, citation-required run with a bigger budget
     mode: Literal["default", "research"] = "default"
+    # The device's IANA timezone (from the browser). Adopted as the user's
+    # timezone while it is automatic, so times are local to wherever they are.
+    client_timezone: str | None = Field(default=None, max_length=64)
 
 
 RESEARCH_INSTRUCTION = (
@@ -190,13 +204,6 @@ async def prepare_connectors(keys: list[str], user_id: str) -> list[str]:
     user has not connected is dropped with a note (the run still proceeds)."""
     from harness.connectors.registry import prepare
     return await prepare(keys, user_id)
-
-
-def resolve_or_422(model: str | None, effort: str | None) -> tuple[ModelSpec, Effort | None]:
-    try:
-        return resolve(model, effort)
-    except ValueError as e:
-        raise HTTPException(status_code=422, detail=str(e))
 
 
 class AskResponse(BaseModel):
@@ -266,10 +273,7 @@ async def _finish_run(req: AskRequest, user_id: str, run: RunRecord,
     cost = Decimal(str(run_cost))
     if cost > 0:
         try:
-            await asyncio.to_thread(
-                record_transaction,
-                user_id=user_id, amount=-cost, kind="run_cost", thread_id=run.run_id,
-            )
+            await asyncio.to_thread(entitlements.settle, user_id, cost, run.run_id)
         except Exception as e:  # noqa: BLE001
             log.warning("ledger write failed", error=str(e))
 
@@ -351,8 +355,13 @@ async def _build_and_run(req: AskRequest, user_id: str, on_event=None) -> RunOut
             log.warning("history ignored: conversation_id given",
                         conversation_id=req.conversation_id)
 
-    spec, effort = resolve_or_422(req.model or (conv.model if conv else None),
-                                  req.effort or (conv.effort if conv else None))
+    # The plan check (402) comes before any token is spent. A model or effort
+    # inherited from the conversation that the plan no longer covers is
+    # swapped for an allowed one rather than refused (see entitlements).
+    spec, effort = await entitlements.aresolve_for_user(
+        user_id, req.model, req.effort, mode=req.mode,
+        fallback_model=conv.model if conv else None,
+        fallback_effort=conv.effort if conv else None)
     model = spec.id
     budget = budget_for(effort)
     run = RunRecord(model=model, prompt_version=prompt_version.version)
@@ -361,6 +370,9 @@ async def _build_and_run(req: AskRequest, user_id: str, on_event=None) -> RunOut
     # keeps the tools and mode it was started with when the client sends none.
     docs_only = req.docs_only or bool(conv and conv.docs_only)
     mode = req.mode if req.mode != "default" else (conv.mode if conv else "default")
+    if mode == "research" and req.mode != "research" and not await asyncio.to_thread(
+            entitlements.allows_research, user_id):
+        mode = "default"                 # inherited research mode on a downgraded plan
 
     # No conversation given: start one, so the very first turn is already
     # durable and the client gets an id back without a second round trip.
@@ -381,6 +393,18 @@ async def _build_and_run(req: AskRequest, user_id: str, on_event=None) -> RunOut
              model=model, effort=effort)
 
 
+    # Loaded before the tools: reminders and the world clock work in the
+    # user's own timezone. Also appended to the prompt below.
+    prefs = None
+    try:
+        if req.client_timezone:
+            from harness.db.settings import adopt_device_timezone
+            prefs = await asyncio.to_thread(adopt_device_timezone, user_id, req.client_timezone)
+        else:
+            prefs = await asyncio.to_thread(user_prefs, user_id)
+    except Exception as e:  # noqa: BLE001 - a DB blip must not fail the question
+        log.warning("user settings load failed", error=str(e))
+
     session_registry = ToolRegistry()
 
     # search_docs is ALWAYS available — it is the one tool docs-only mode needs
@@ -398,6 +422,8 @@ async def _build_and_run(req: AskRequest, user_id: str, on_event=None) -> RunOut
             if t.name.startswith("filesystem__"):
                 session_registry.registry(wrap_filesystem_tool(t, user_id))
         for t in await build_vault_tools(user_id, run.run_id):
+            session_registry.registry(t)
+        for t in build_daily_tools(user_id, prefs.timezone if prefs else "UTC", run.run_id):
             session_registry.registry(t)
     connectors = connectors_or_422(req.connectors or (list(conv.connectors) if conv else []))
     if mode == "research" and not docs_only and "arxiv" not in connectors:
@@ -439,12 +465,8 @@ async def _build_and_run(req: AskRequest, user_id: str, on_event=None) -> RunOut
         prompt_text = prompt_text + "\n\n=== USER PROFILE ===\n" + profile
 
     # personalisation: name, timezone/local time, tone, custom instructions
-    prefs = None
-    try:
-        prefs = await asyncio.to_thread(user_prefs, user_id)
+    if prefs is not None:
         prompt_text = prompt_text + "\n\n" + prefs_block(prefs)
-    except Exception as e:  # noqa: BLE001 - a DB blip must not fail the question
-        log.warning("user settings load failed", error=str(e))
 
     if docs_only:
         prompt_text = prompt_text + DOCS_ONLY_INSTRUCTION
@@ -601,7 +623,8 @@ async def ask(req: AskRequest, user: dict = Depends(get_current_user)) -> AskRes
 
     # cache-hit shortcut stays here — it's specific to the JSON route
     prompt_version = get_prompt("system_agent")
-    spec, effort = resolve_or_422(req.model, req.effort)
+    # checked before the cache too: a cached answer is still the paid model's
+    spec, effort = await entitlements.aresolve_for_user(user_id, req.model, req.effort, mode=req.mode)
     model = spec.id
     session_registry = ToolRegistry()
     session_registry.registry(make_search_docs_tool(user_id))
@@ -613,6 +636,8 @@ async def ask(req: AskRequest, user: dict = Depends(get_current_user)) -> AskRes
             if t.name.startswith("filesystem__"):
                 session_registry.registry(wrap_filesystem_tool(t, user_id))
         for t in await build_vault_tools(user_id, None):
+            session_registry.registry(t)
+        for t in build_daily_tools(user_id):
             session_registry.registry(t)
         add_connector_tools(session_registry, connectors_or_422(req.connectors), user_id)
     prefs_v = ""

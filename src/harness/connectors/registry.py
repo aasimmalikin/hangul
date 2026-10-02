@@ -12,11 +12,48 @@ GOOGLE_INSTRUCTION = (
     "syntax works in gmail__search_messages (newer_than:1d, from:, is:unread, subject:)."
 )
 
+GOOGLE_PRODUCT_INSTRUCTIONS: dict[str, str] = {
+    "gmail": ("The Gmail connector is ON: gmail__* tools act on the user's own mailbox. Read freely when the "
+              "user asks about their mail; drafts are fine, sending pauses for their approval -- say what you "
+              "are about to send before calling it. Never forward or quote mail to third parties unasked. "
+              "Gmail search syntax works in gmail__search_messages (newer_than:1d, from:, is:unread, subject:)."),
+    "calendar": ("The Google Calendar connector is ON: calendar__* tools act on the user's own calendar. List "
+                 "events freely; creating an event pauses for their approval -- say what you are about to "
+                 "create before calling it."),
+    "drive": ("The Google Drive connector is ON: drive__* tools search and read the user's own Drive files. "
+              "Cite files by name and link."),
+    "docs": ("The Google Docs connector is ON: docs__* tools read the user's own Google Docs by id; appending "
+             "text pauses for their approval -- say what you are about to add before calling it."),
+}
+
+
+def _google_product_tools(product: str):
+    """A per-user factory exposing only ``<product>__*`` of the Google REST tools."""
+    def factory(user_id: str) -> list[Tool]:
+        return [t for t in make_google_tools(user_id) if t.name.startswith(f"{product}__")]
+    return factory
+
+
+def _google_product(key: str, label: str, description: str, icon: str) -> Connector:
+    return Connector(key=key, label=label, description=description, kind="builtin",
+                     tools=_google_product_tools(key), per_user=True, auth="google", icon=icon,
+                     product=key, group="Google Workspace", instruction=GOOGLE_PRODUCT_INSTRUCTIONS[key])
+
+
+# The Google products are separate switches so a conversation only gets the
+# tools (and the account access) it needs. "google" is the old all-in-one key:
+# hidden from the catalogue, still accepted so existing chats and tasks work.
+GOOGLE_PRODUCTS = ("gmail", "calendar", "drive", "docs")
+
 BUILTIN: dict[str, Connector] = {
+    "gmail": _google_product("gmail", "Gmail", "Search, read and draft email in your Gmail", "mail"),
+    "calendar": _google_product("calendar", "Google Calendar", "See and create events on your calendar", "calendar"),
+    "drive": _google_product("drive", "Google Drive", "Find and read files in your Drive", "brand-google-drive"),
+    "docs": _google_product("docs", "Google Docs", "Read and append to your Google Docs", "file-text"),
     "google": Connector(
         key="google", label="Google Workspace", description="Gmail, Calendar, Drive and Docs on your own Google account",
         kind="builtin", tools=make_google_tools, per_user=True, auth="google", icon="brand-google",
-        instruction=GOOGLE_INSTRUCTION,
+        group="Google Workspace", hidden=True, instruction=GOOGLE_INSTRUCTION,
     ),
     "arxiv": Connector(
         key="arxiv", label="Research", description="Search and read arXiv papers", kind="builtin",
@@ -44,11 +81,13 @@ def _mcp_connectors() -> dict[str, Connector]:
     except ValueError:
         return out
     for cfg in cfgs:
-        if "connector" not in cfg.tags or cfg.name in BUILTIN:
+        if "connector" not in cfg.tags:
             continue
         bundle = cfg.tag("bundle")
-        if bundle in BUILTIN:
-            continue          # a builtin connector of the same key wins (e.g. Google over REST)
+        # a builtin connector of the same key wins (e.g. Google over REST); a
+        # bundled server is judged by its bundle key, not its own name
+        if (bundle or cfg.name) in BUILTIN:
+            continue
         if bundle:
             bundles.setdefault(bundle, []).append(cfg)
             continue
@@ -82,7 +121,7 @@ def all_connectors() -> dict[str, Connector]:
 
 
 def available() -> list[dict]:
-    return [c.public() for c in all_connectors().values()]
+    return [c.public() for c in all_connectors().values() if not c.hidden]
 
 
 def validate_keys(keys: list[str]) -> list[str]:

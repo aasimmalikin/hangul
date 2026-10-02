@@ -21,6 +21,20 @@ class SettingsIn(BaseModel):
     tone: str = Field(default="balanced", max_length=16)
     timezone: str = Field(default="UTC", max_length=64)
     language: str = Field(default="", max_length=16)
+    timezone_auto: bool = True
+
+
+class DeviceTimezone(BaseModel):
+    timezone: str = Field(min_length=1, max_length=64)
+
+
+@router.post("/settings/timezone")
+async def device_timezone(req: DeviceTimezone, user: dict = Depends(get_current_user)) -> dict:
+    """The web app reports the device's timezone on every page load; it is
+    stored only while the user's timezone is automatic (see adopt_device_timezone)."""
+    from harness.db.settings import adopt_device_timezone
+    st = await asyncio.to_thread(adopt_device_timezone, user["user_id"], req.timezone)
+    return {"timezone": st.timezone, "timezone_auto": st.timezone_auto}
 
 
 @router.get("/settings")

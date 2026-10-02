@@ -13,7 +13,7 @@ test.describe("documents", () => {
   test("+ → Docs → file → chip; question then goes out", async ({ page }) => {
     await page.goto("/chat")
     await page.getByRole("button", { name: "Add" }).click()
-    const [chooser] = await Promise.all([page.waitForEvent("filechooser"), page.getByRole("menuitem", { name: "Docs" }).click()])
+    const [chooser] = await Promise.all([page.waitForEvent("filechooser"), page.getByRole("menuitem", { name: "Files & photos" }).click()])
     await chooser.setFiles(pdf("handbook.pdf"))
     await expect(page.getByText("handbook.pdf")).toBeVisible()
     await expect(page.getByPlaceholder("Ask about your document…")).toBeVisible()
@@ -25,7 +25,7 @@ test.describe("documents", () => {
   test("landing page upload carries the document into chat", async ({ page }) => {
     await page.goto("/")
     await page.getByRole("button", { name: "Add" }).click()
-    const [chooser] = await Promise.all([page.waitForEvent("filechooser"), page.getByRole("menuitem", { name: "Docs" }).click()])
+    const [chooser] = await Promise.all([page.waitForEvent("filechooser"), page.getByRole("menuitem", { name: "Files & photos" }).click()])
     await chooser.setFiles(pdf("from-landing.pdf"))
     await expect(page.getByText("from-landing.pdf")).toBeVisible()
     await page.getByPlaceholder(/Ask/).fill("summarise")
@@ -38,12 +38,12 @@ test.describe("documents", () => {
   test("wrong type and oversize files are refused by the BFF, not the backend", async ({ page }) => {
     await page.goto("/chat")
     await page.getByRole("button", { name: "Add" }).click()
-    let [chooser] = await Promise.all([page.waitForEvent("filechooser"), page.getByRole("menuitem", { name: "Docs" }).click()])
+    let [chooser] = await Promise.all([page.waitForEvent("filechooser"), page.getByRole("menuitem", { name: "Files & photos" }).click()])
     await chooser.setFiles({ name: "movie.mp4", mimeType: "video/mp4", buffer: Buffer.alloc(10, 1) })
-    await expect(page.getByText("Only PDF, TXT and MD")).toBeVisible()
+    await expect(page.getByText("Supported: PDF, Word, Excel")).toBeVisible()
 
     await page.getByRole("button", { name: "Add" }).click()
-    ;[chooser] = await Promise.all([page.waitForEvent("filechooser"), page.getByRole("menuitem", { name: "Docs" }).click()])
+    ;[chooser] = await Promise.all([page.waitForEvent("filechooser"), page.getByRole("menuitem", { name: "Files & photos" }).click()])
     await chooser.setFiles(pdf("huge.pdf", 11 * 1024 * 1024))
     await expect(page.getByText("larger than 10 MB")).toBeVisible()
     expect((await backendState()).uploads).toHaveLength(0)
@@ -56,7 +56,7 @@ test.describe("documents", () => {
     // Either the client already noticed (session refetch) and gates the +,
     // or it still believes it is signed in and the upload's 401 gates it.
     await page.getByRole("button", { name: "Add" }).click()
-    const docs = page.getByRole("menuitem", { name: "Docs" })
+    const docs = page.getByRole("menuitem", { name: "Files & photos" })
     if (await docs.isVisible().catch(() => false)) {
       const [chooser] = await Promise.all([page.waitForEvent("filechooser"), docs.click()])
       await chooser.setFiles(pdf("late.pdf"))

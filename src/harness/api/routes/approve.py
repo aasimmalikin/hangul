@@ -8,7 +8,9 @@ from pydantic import BaseModel
 from harness.agent.loop import run_agent
 from harness.logging import log
 from harness.providers import provider_for
-from harness.providers.registry import resolve, budget_for
+from harness.providers.registry import budget_for, get_model
+from harness.billing import entitlements
+from decimal import Decimal
 from harness.prompts.registry import get_prompt
 from harness.api.session import get_session_id
 from harness.api.auth import get_current_user
@@ -18,6 +20,7 @@ from harness.policy.guarded import guarded_dispatch
 from harness.api.conversation_lock import conversation_slot
 from harness.api.routes.ask import (
     _store, _audit, _policy, _trace_store, _registry, AskResponse, _persist_turn,
+    _spawn_bookkeeping,
 )
 from harness.tools.registry import ToolRegistry
 from harness.tools.builtin.calculator import CALCULATOR_TOOL
@@ -26,6 +29,8 @@ from harness.tools.builtin.ask_user import ASK_USER_TOOL
 from harness.tools.builtin.search_docs_session import make_search_docs_tool
 from harness.tools.builtin.filesystem_session import wrap_filesystem_tool
 from harness.tools.builtin.vault_request import build_vault_tools
+from harness.tools.builtin.daily import build_daily_tools
+from harness.db.settings import get_settings as user_prefs
 from harness.connectors import tools_for
 from harness.security import get_guard
 
@@ -48,6 +53,12 @@ async def _build_session_registry(user_id: str, thread_id: str, connectors: list
         if t.name.startswith("filesystem__"):
             reg.registry(wrap_filesystem_tool(t, user_id))
     for t in await build_vault_tools(user_id, thread_id):
+        reg.registry(t)
+    try:
+        tz = (await asyncio.to_thread(user_prefs, user_id)).timezone
+    except Exception:  # noqa: BLE001 - the default timezone is fine for a resume
+        tz = "UTC"
+    for t in build_daily_tools(user_id, tz, thread_id):
         reg.registry(t)
     if connectors:
         from harness.api.routes.ask import prepare_connectors
@@ -73,6 +84,17 @@ async def approve(req: ApproveRequest, user: dict = Depends(get_current_user)) -
     if req.decision not in ("approve", "reject"):
         raise HTTPException(status_code=422, detail="decision must be 'approve' or 'reject'.")
 
+    # The plan check comes BEFORE the claim: refusing after it would leave the
+    # run with its pending action taken and nothing to resume. A user who has
+    # since downgraded gets the 402 and can approve again after upgrading.
+    peek = await asyncio.to_thread(_store.load, req.approval_id)
+    if peek is not None and peek.user_id == user["user_id"]:
+        # a model that has left the registry resumes on the plan's default
+        known = get_model(peek.model) if peek.model else None
+        spec, effort = await entitlements.aresolve_for_user(
+            user["user_id"], known.id if known else None,
+            peek.effort if known else None)
+
     # One conditional UPDATE both checks that the caller owns this run and
     # takes the pending action off it, so a retried or double-clicked approve
     # cannot execute the tool twice, and a foreign run id reads as not found.
@@ -81,14 +103,8 @@ async def approve(req: ApproveRequest, user: dict = Depends(get_current_user)) -
         raise HTTPException(status_code=404, detail="No pending action for that approval id.")
 
     pending = cp.pending_tool
-    # Resume with the model/effort the run started with. If that model has
-    # since left the registry, fall back to the default rather than fail.
-    try:
-        spec, effort = resolve(cp.model, cp.effort)
-    except ValueError as e:
-        log.warning("run's model no longer available; resuming on default",
-                    model=cp.model, effort=cp.effort, error=str(e))
-        spec, effort = resolve(None, None)
+    # Resumes with the model/effort the run started with (resolved above,
+    # with the plan check, from the same row).
     model = spec.id
     budget = budget_for(effort)
     prompt_version = get_prompt("system_agent")
@@ -176,6 +192,14 @@ async def approve(req: ApproveRequest, user: dict = Depends(get_current_user)) -
     _trace_store.add(trace, model)
     summary = trace.summary()
     run_cost = cost_usd(model, summary["input_tokens"], summary["output_tokens"])
+    if run_cost > 0:
+        async def _charge():
+            try:
+                await asyncio.to_thread(entitlements.settle, user["user_id"],
+                                        Decimal(str(run_cost)), req.approval_id)
+            except Exception as e:  # noqa: BLE001
+                log.warning("ledger write failed", error=str(e))
+        _spawn_bookkeeping(_charge())
 
     return AskResponse(
         answer=result.answer,

@@ -6,11 +6,13 @@ export const maxDuration = 120
 // Mirrors harness.retrieval.upload_ingest: refuse here so a 50 MB video
 // never crosses the wire to the backend.
 const MAX_BYTES = 10 * 1024 * 1024
-const ALLOWED = new Set([".pdf", ".txt", ".md"])
+const ALLOWED = new Set([".pdf", ".txt", ".md", ".docx", ".xlsx", ".csv", ".png", ".jpg", ".jpeg", ".webp", ".gif",
+  ".mp3", ".m4a", ".wav", ".webm", ".ogg"])
 
 /**
- * Relays a document upload to the backend, which chunks and embeds it into
- * the caller's per-user session index so `search_docs` can find it.
+ * Relays a document or image upload to the backend, which extracts (or, for an
+ * image, describes) its text and embeds it into the caller's per-user index so
+ * `search_docs` can find it; images are also kept for `view_image`.
  */
 export async function POST(req: Request) {
   const blocked = assertSameOrigin(req)
@@ -36,7 +38,7 @@ export async function POST(req: Request) {
 
   const name = file.name.replace(/[/\\]/g, "_").slice(0, 200) || "upload"
   const ext = name.includes(".") ? "." + name.split(".").pop()!.toLowerCase() : ""
-  if (!ALLOWED.has(ext)) return jsonError(400, "bad_request", "Only PDF, TXT and MD files are supported.")
+  if (!ALLOWED.has(ext)) return jsonError(400, "bad_request", "Supported: PDF, Word, Excel, CSV, text, images and audio (MP3, M4A, WAV, WebM).")
   if (file.size === 0) return jsonError(400, "bad_request", "That file is empty.")
   if (file.size > MAX_BYTES) return jsonError(413, "bad_request", "That file is larger than 10 MB.")
 

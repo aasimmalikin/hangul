@@ -93,7 +93,7 @@ def scan_arguments(name: str, args: dict, *, canary: str | None = None) -> list[
     if canary and canary in flat:
         reasons.append("the system prompt canary in the arguments")
     outbound = (name in ("web_search", "vault_request", "vault_mutate", "gmail__create_draft", "calendar__create_event",
-                         "docs__append_text") or name.startswith("arxiv_"))
+                         "docs__append_text", "read_webpage", "weather") or name.startswith("arxiv_"))
     if outbound:
         blob = BASE64_BLOB.search(flat)
         if blob:

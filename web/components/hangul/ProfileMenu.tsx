@@ -114,6 +114,24 @@ export function ProfileMenu() {
             Personalisation & tasks
           </Link>
           <Link
+            href="/lists"
+            className="h-btn-ghost"
+            style={{ width: "100%", justifyContent: "flex-start", padding: "8px 10px", textDecoration: "none" }}
+            onClick={() => setOpen(false)}
+          >
+            <i className="ti ti-checklist" style={{ fontSize: 15 }} />
+            Lists, notes & reminders
+          </Link>
+          <Link
+            href="/billing"
+            className="h-btn-ghost"
+            style={{ width: "100%", justifyContent: "flex-start", padding: "8px 10px", textDecoration: "none" }}
+            onClick={() => setOpen(false)}
+          >
+            <i className="ti ti-credit-card" style={{ fontSize: 15 }} />
+            Plan & billing
+          </Link>
+          <Link
             href="/vault"
             className="h-btn-ghost"
             style={{ width: "100%", justifyContent: "flex-start", padding: "8px 10px", textDecoration: "none" }}

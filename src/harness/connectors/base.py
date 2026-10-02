@@ -27,8 +27,16 @@ class Connector:
     # one paragraph the system prompt gets while the connector is on
     instruction: str = ""
     icon: str = "plug"
+    # the OAuth product whose scopes this connector needs (e.g. "gmail"), so the
+    # UI can tell "Google connected but Calendar not granted" apart
+    product: str | None = None
+    # connectors sharing a group are listed together in the menu ("Google Workspace")
+    group: str | None = None
+    # accepted on requests (old conversations/tasks) but not offered in the catalogue
+    hidden: bool = False
 
     def public(self) -> dict:
         return {"key": self.key, "label": self.label, "description": self.description,
                 "kind": self.kind, "icon": self.icon, "per_user": self.per_user, "auth": self.auth,
+                "product": self.product, "group": self.group,
                 "servers": list(self.servers) or ([self.server] if self.server else [])}

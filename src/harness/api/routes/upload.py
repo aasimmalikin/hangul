@@ -1,9 +1,17 @@
-"""POST /upload — embed a document into the caller's rows in pgvector."""
+"""POST /upload — embed a document into the caller's rows in pgvector.
+
+Documents (PDF, Word, Excel, CSV, text) are extracted locally. Images are
+described and transcribed once by the vision model, and audio (voice notes,
+meeting recordings) is transcribed by the speech model -- both billed to the
+user -- and that text is indexed, so search_docs finds "the electricity bill"
+or "what I said about the budget" later; the file itself is kept in the user's
+folder (images for ``view_image``).
+"""
 from pathlib import Path
 from fastapi import APIRouter, Depends, File, HTTPException, UploadFile
 from harness.api.session import get_session_id
 from harness.api.auth import get_current_user
-from harness.retrieval.upload_ingest import extract_text, chunk_text, UploadError, MAX_BYTES
+from harness.retrieval.upload_ingest import extract_text, chunk_text, ext_of, is_audio, is_image, UploadError, MAX_BYTES, ALLOWED
 from harness.security.detector import scan
 from harness.policy.audit import AuditLog
 
@@ -33,10 +41,33 @@ async def upload(file:UploadFile = File(...), user: dict = Depends(get_current_u
     
     filename = file.filename or "upload"
 
-    try:
-        text = extract_text(file.filename or "upload", data)
-    except UploadError as e:
-        raise HTTPException(status_code = 400, detail = str(e))
+    if ext_of(filename) not in ALLOWED:
+        raise HTTPException(status_code = 400, detail = f"Unsupported file type. Allowed: {', '.join(sorted(ALLOWED))}")
+    if is_image(filename):
+        from harness.media.vision import DESCRIBE_PROMPT, IMAGE_TYPES, ask_image
+        try:
+            described = await ask_image(data, IMAGE_TYPES[ext_of(filename)], DESCRIBE_PROMPT, user_id=user["user_id"])
+        except Exception as e:  # noqa: BLE001 - the model being down must not lose the upload silently
+            raise HTTPException(status_code = 502, detail = f"Could not read the image right now ({type(e).__name__}).")
+        text = f"Image file: {Path(filename).name}\n{described}"
+    elif is_audio(filename):
+        # a voice note / meeting recording: transcribed (billed) and indexed,
+        # so "summarise my voice note" and later searches work
+        from harness.media.voice import VoiceError, transcribe
+        try:
+            spoken = await transcribe(data, filename, user_id=user["user_id"])
+        except VoiceError as e:
+            raise HTTPException(status_code = 400, detail = str(e))
+        except Exception as e:  # noqa: BLE001
+            raise HTTPException(status_code = 502, detail = f"Could not transcribe the audio right now ({type(e).__name__}).")
+        if not spoken:
+            raise HTTPException(status_code = 400, detail = "No speech found in that recording.")
+        text = f"Voice note / recording: {Path(filename).name}\nTranscript:\n{spoken}"
+    else:
+        try:
+            text = extract_text(filename, data)
+        except UploadError as e:
+            raise HTTPException(status_code = 400, detail = str(e))
     
     chunks = chunk_text(text)
     if not chunks:
@@ -80,6 +111,7 @@ async def upload(file:UploadFile = File(...), user: dict = Depends(get_current_u
         "chunks_indexed": len(chunks),
         "mcp_path": f"{session_dir.name}/{safe_name}",
         "message": f"Indexed {len(chunks)} chunks from {file.filename}",
+        "kind": "image" if is_image(filename) else "audio" if is_audio(filename) else "document",
         "security": {
             "suspicious_chunks": len(suspicious), "hidden_chars": whole.hidden_chars,
             "warning": (f"{len(suspicious)} passage(s) in this file read like instructions to the assistant. "

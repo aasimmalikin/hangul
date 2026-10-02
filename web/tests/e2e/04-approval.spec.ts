@@ -80,6 +80,22 @@ test.describe("human in the loop", () => {
     expect(Object.values((await backendState()).executed)).toEqual([1])
   })
 
+  test("a resumed run that pauses again puts up the next card", async ({ page }) => {
+    await page.goto("/chat")
+    await ask(page, "APPROVAL TWICE chained")
+    await page.getByTestId("approval-card").getByRole("button", { name: "Approve" }).click()
+    // the first card settles; a second one, for the stepped-up search, takes its place
+    await expect(page.getByText("Approved.", { exact: true })).toBeVisible()
+    const next = page.getByTestId("approval-card")
+    await expect(next).toHaveCount(1)
+    await expect(next).toContainText("latest AI news")
+    await expect(page.getByTestId("security-notice").last()).toContainText("now needs your approval")
+    await expect(page.locator("body")).not.toContainText("Your approval is needed.")
+    await next.getByRole("button", { name: "Approve" }).click()
+    await expect(page.locator(".h-prose").last()).toContainText("Wrote notes.txt.")
+    expect(Object.values((await backendState()).executed)).toEqual([2])
+  })
+
   test("approval survives a refresh (persisted card) and can still be decided", async ({ page }) => {
     await page.goto("/chat")
     await ask(page, "APPROVAL then refresh")

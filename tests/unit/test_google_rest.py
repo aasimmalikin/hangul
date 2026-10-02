@@ -205,3 +205,19 @@ def test_registry_exposes_google_as_per_user_builtin():
     assert {"gmail__search_messages", "gmail__send_message", "gmail__send_draft", "calendar__list_events", "drive__search_files", "docs__get_document"} <= names
     assert "Google Workspace connector is ON" in note
     assert creg.tools_for(["google"], [], user_id=None)[0] == []          # per-user: no user, no tools
+
+
+def test_google_products_are_separate_connectors():
+    cons = creg.all_connectors()
+    offered = {c["key"] for c in creg.available()}
+    assert {"gmail", "calendar", "drive", "docs"} <= offered
+    assert "google" not in offered and cons["google"].hidden            # legacy key: accepted, not offered
+    assert creg.validate_keys(["google"]) == ["google"]
+    for product in ("gmail", "calendar", "drive", "docs"):
+        c = cons[product]
+        assert c.per_user and c.auth == "google" and c.product == product and c.group == "Google Workspace"
+        tools, note, _ = creg.tools_for([product], [], user_id="7")
+        assert tools and all(t.name.startswith(f"{product}__") for t in tools)
+        assert product in note.lower() or "calendar" in note.lower()
+    tools, _, _ = creg.tools_for(["gmail", "calendar"], [], user_id="7")
+    assert {t.name.split("__")[0] for t in tools} == {"gmail", "calendar"}

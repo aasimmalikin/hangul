@@ -16,6 +16,8 @@ from typing import Literal
 from harness.config import get_settings
 
 Effort = Literal["minimal", "low", "medium", "high", "xhigh"]
+# Which billing plans may use a model (see harness.billing.plans).
+Tier = Literal["basic", "advanced", "frontier"]
 
 # Efforts accepted by the current reasoning families (VERIFY per model page).
 _EFFORTS_5_4_PLUS: tuple[Effort, ...] = ("low", "medium", "high", "xhigh")
@@ -31,6 +33,7 @@ class ModelSpec:
     supports_reasoning: bool
     efforts: tuple[Effort, ...] = ()   # values the API accepts; () for non-reasoning models
     default_effort: Effort | None = None
+    tier: Tier = "basic"
 
     def to_dict(self) -> dict:
         d = asdict(self)
@@ -58,30 +61,30 @@ DEFAULT_BUDGET = EFFORT_BUDGETS["medium"]
 
 
 def _reasoning(id: str, label: str, pin: float, pout: float,
-               efforts: tuple[Effort, ...] = _EFFORTS_5_4_PLUS) -> ModelSpec:
+               efforts: tuple[Effort, ...] = _EFFORTS_5_4_PLUS, tier: Tier = "basic") -> ModelSpec:
     return ModelSpec(id, label, pin, pout, supports_reasoning=True,
-                     efforts=efforts, default_effort="medium")
+                     efforts=efforts, default_effort="medium", tier=tier)
 
 
-def _plain(id: str, label: str, pin: float, pout: float) -> ModelSpec:
-    return ModelSpec(id, label, pin, pout, supports_reasoning=False)
+def _plain(id: str, label: str, pin: float, pout: float, tier: Tier = "basic") -> ModelSpec:
+    return ModelSpec(id, label, pin, pout, supports_reasoning=False, tier=tier)
 
 
 # Insertion order is the order the UI lists them.
 _SPECS: list[ModelSpec] = [
     # VERIFY: prices from developers.openai.com/api/docs/pricing on 2026-09-18
-    _reasoning("gpt-6-astra", "GPT-6 Astra", 10.00, 50.00),
-    _reasoning("gpt-5.6-sol", "GPT-5.6 Sol", 4.00, 20.00),
-    _reasoning("gpt-5.6-terra", "GPT-5.6 Terra", 2.00, 12.00),
+    _reasoning("gpt-6-astra", "GPT-6 Astra", 10.00, 50.00, tier="frontier"),
+    _reasoning("gpt-5.6-sol", "GPT-5.6 Sol", 4.00, 20.00, tier="frontier"),
+    _reasoning("gpt-5.6-terra", "GPT-5.6 Terra", 2.00, 12.00, tier="advanced"),
     _reasoning("gpt-5.6-luna", "GPT-5.6 Luna", 0.20, 1.20),
-    _reasoning("gpt-5.5", "GPT-5.5", 5.00, 30.00),
-    _reasoning("gpt-5.4", "GPT-5.4", 2.50, 15.00),
-    _reasoning("gpt-5.4-mini", "GPT-5.4 mini", 0.75, 4.50),
+    _reasoning("gpt-5.5", "GPT-5.5", 5.00, 30.00, tier="frontier"),
+    _reasoning("gpt-5.4", "GPT-5.4", 2.50, 15.00, tier="advanced"),
+    _reasoning("gpt-5.4-mini", "GPT-5.4 mini", 0.75, 4.50, tier="advanced"),
     _reasoning("gpt-5.4-nano", "GPT-5.4 nano", 0.20, 1.25),
-    _reasoning("gpt-5.1", "GPT-5.1", 1.25, 10.00, _EFFORTS_5_X),
+    _reasoning("gpt-5.1", "GPT-5.1", 1.25, 10.00, _EFFORTS_5_X, tier="advanced"),
     _reasoning("gpt-5-mini", "GPT-5 mini", 0.25, 2.00, _EFFORTS_5_X),
     _reasoning("gpt-5-nano", "GPT-5 nano", 0.05, 0.40, _EFFORTS_5_X),
-    _plain("gpt-4.1", "GPT-4.1", 2.00, 8.00),
+    _plain("gpt-4.1", "GPT-4.1", 2.00, 8.00, tier="advanced"),
     _plain("gpt-4.1-mini", "GPT-4.1 mini", 0.40, 1.60),
 ]
 

@@ -54,6 +54,23 @@ class User(Base):
     image: Mapped[str | None] = mapped_column(String, nullable=True)
     role: Mapped[str] = mapped_column(String(32), nullable=False, server_default="user")
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+    # Billing (harness.billing). Written only by the Dodo Payments webhook.
+    plan: Mapped[str] = mapped_column(String(16), nullable=False, server_default="free")
+    plan_status: Mapped[str | None] = mapped_column(String(16), nullable=True)
+    # Start of the current paid period: the allowance counts spend since then.
+    plan_period_start: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    plan_renews_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    plan_ends_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    billing_customer_id: Mapped[str | None] = mapped_column(String(64), nullable=True, index=True)
+    billing_subscription_id: Mapped[str | None] = mapped_column(String(64), nullable=True, index=True)
+
+class BillingEvent(Base):
+    """One row per payment-provider webhook delivery (id = its `webhook-id`),
+    so a retried delivery is applied once."""
+    __tablename__ = "billing_events"
+    id: Mapped[str] = mapped_column(String(128), primary_key=True)
+    event_name: Mapped[str] = mapped_column(String(64), nullable=False)
+    received_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
 
 class Account(Base):
     __tablename__ = "accounts"
@@ -275,6 +292,9 @@ class UserSettings(Base):
     instructions: Mapped[str] = mapped_column(String(2000), nullable=False, default="")
     tone: Mapped[str] = mapped_column(String(16), nullable=False, default="balanced")   # concise | balanced | detailed
     timezone: Mapped[str] = mapped_column(String(64), nullable=False, default="UTC")
+    # True: follow the timezone of whatever device the user is on (sent by the
+    # web app); False: the user pinned `timezone` by hand in Personalisation.
+    timezone_auto: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True, server_default="true")
     language: Mapped[str] = mapped_column(String(16), nullable=False, default="")
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False)
 
@@ -297,4 +317,39 @@ class ScheduledTask(Base):
     last_status: Mapped[str] = mapped_column(String(32), nullable=False, default="never")
     last_run_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
     last_answer: Mapped[str] = mapped_column(String(4000), nullable=False, default="")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+
+
+class Reminder(Base):
+    """"Remind me to … at …": fired once by the scheduler, shown in the app's
+    bell and emailed. ``status``: pending -> sent -> done | cancelled."""
+    __tablename__ = "reminders"
+    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    user_id: Mapped[int] = mapped_column(Integer, nullable=False, index=True)
+    text: Mapped[str] = mapped_column(String(500), nullable=False)
+    due_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, index=True)
+    status: Mapped[str] = mapped_column(String(16), nullable=False, default="pending", server_default="pending")
+    sent_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    emailed: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False, server_default="false")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+
+
+class TodoItem(Base):
+    """One line on one of the user's lists ("To-do", "Shopping", …)."""
+    __tablename__ = "todo_items"
+    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    user_id: Mapped[int] = mapped_column(Integer, nullable=False, index=True)
+    list_name: Mapped[str] = mapped_column(String(60), nullable=False, default="To-do", server_default="To-do")
+    text: Mapped[str] = mapped_column(String(500), nullable=False)
+    done: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False, server_default="false")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+    done_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
+class Note(Base):
+    """A quick note the user asked to keep ("note: car service due in March")."""
+    __tablename__ = "notes"
+    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    user_id: Mapped[int] = mapped_column(Integer, nullable=False, index=True)
+    text: Mapped[str] = mapped_column(String(4000), nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)

@@ -1,7 +1,7 @@
 import { assertSameOrigin, jsonError, rateLimit, relayUpstreamError, requireUser, upstream, UpstreamError } from "@/lib/bff"
 
 /** Plain per-user pass-through for the settings / tasks routes (same rails as memory). */
-export async function userProxy(req: Request, path: string, init: { method: "GET" | "POST" | "PUT" | "DELETE"; body?: string }) {
+export async function userProxy(req: Request, path: string, init: { method: "GET" | "POST" | "PUT" | "PATCH" | "DELETE"; body?: string }) {
   if (init.method !== "GET") {
     const blocked = assertSameOrigin(req)
     if (blocked) return blocked

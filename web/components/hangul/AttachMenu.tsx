@@ -4,6 +4,7 @@ import { useEffect, useRef, useState } from "react"
 import { useSession } from "next-auth/react"
 import { loadAvailableConnectors, loadIntegrations, type ConnectorInfo, type Integrations } from "@/lib/connectors"
 import Link from "next/link"
+import { Recorder, voiceSupported } from "@/lib/voice"
 
 /** A document the backend indexed for this user. */
 export type Attachment = {
@@ -13,7 +14,7 @@ export type Attachment = {
   warning?: string | null
 }
 
-const ACCEPT = ".pdf,.txt,.md"
+const ACCEPT = ".pdf,.txt,.md,.docx,.xlsx,.csv,.png,.jpg,.jpeg,.webp,.gif,.mp3,.m4a,.wav,.webm,.ogg"
 
 /**
  * The `+` at the left of every composer. Opens a small menu of things to add
@@ -47,6 +48,8 @@ export function AttachMenu({
   const [open, setOpen] = useState(false)
   const [busy, setBusy] = useState(false)
   const [sub, setSub] = useState(false)          // the Connectors submenu
+  const [noteSecs, setNoteSecs] = useState<number | null>(null)   // recording a voice note
+  const noteRec = useRef<Recorder | null>(null)
   const [available, setAvailable] = useState<ConnectorInfo[] | null>(null)
   const [integrations, setIntegrations] = useState<Integrations | null>(null)
   const ref = useRef<HTMLDivElement>(null)
@@ -70,12 +73,15 @@ export function AttachMenu({
     return () => { cancelled = true }
   }, [open, status, integrations])
 
-  // true/false once known; null while the integrations status is still loading
-  const connectedFor = (c: ConnectorInfo): boolean | null => {
-    if (!c.per_user) return true
-    if (status !== "authenticated") return false
+  // "ok" / "connect" (no account) / "grant" (account connected, this
+  // product's scopes not granted); null while integrations are still loading
+  const connectedFor = (c: ConnectorInfo): "ok" | "connect" | "grant" | null => {
+    if (!c.per_user) return "ok"
+    if (status !== "authenticated") return "connect"
     if (integrations === null) return null
-    return c.auth === "google" ? Boolean(integrations.google.connected) : true
+    if (c.auth !== "google") return "ok"
+    if (!integrations.google.connected) return "connect"
+    return !c.product || integrations.google.products.includes(c.product) ? "ok" : "grant"
   }
 
   const toggleConnector = (key: string) => {
@@ -105,6 +111,27 @@ export function AttachMenu({
   const pickDocs = () => {
     setOpen(false)
     fileRef.current?.click()
+  }
+
+  // A voice note is recorded here and uploaded like any file: the backend
+  // transcribes and indexes it, so "summarise my voice note" works.
+  const recordNote = async () => {
+    setOpen(false)
+    const r = (noteRec.current = new Recorder())
+    setNoteSecs(0)
+    const tick = setInterval(() => setNoteSecs((x) => (x ?? 0) + 1), 1000)
+    let rec
+    try {
+      rec = await r.start({ maxMs: 10 * 60_000 })
+    } catch {
+      onError?.("Allow microphone access in your browser to record a voice note.")
+    } finally {
+      clearInterval(tick)
+      setNoteSecs(null)
+    }
+    if (!rec || rec.seconds < 1) return
+    const stamp = new Date().toISOString().slice(0, 16).replace(/[-:T]/g, "")
+    await upload(new File([rec.blob], `voice-note-${stamp}.${rec.ext}`, { type: rec.blob.type }))
   }
 
   const upload = async (file: File) => {
@@ -145,6 +172,14 @@ export function AttachMenu({
         hidden
         onChange={(e) => { const f = e.target.files?.[0]; if (f) upload(f) }}
       />
+      {noteSecs !== null && (
+        <button type="button" className="h-btn-solid" data-testid="voice-note-stop"
+          onClick={() => noteRec.current?.stop()} aria-label="Stop recording the voice note"
+          style={{ position: "absolute", bottom: 40, left: 0, zIndex: 31, gap: 6, whiteSpace: "nowrap", background: "var(--err)" }}>
+          <i className="ti ti-player-stop-filled" style={{ fontSize: 13 }} />
+          Recording {Math.floor(noteSecs / 60)}:{String(noteSecs % 60).padStart(2, "0")} — tap to finish
+        </button>
+      )}
       <button
         type="button"
         className="h-icon-btn"
@@ -167,9 +202,21 @@ export function AttachMenu({
             style={{ width: "100%", justifyContent: "flex-start", padding: "8px 10px", gap: 10 }}
             onClick={pickDocs}
           >
-            <i className="ti ti-file-text" style={{ fontSize: 15 }} />
-            Docs
+            <i className="ti ti-paperclip" style={{ fontSize: 15 }} />
+            Files & photos
           </button>
+          {voiceSupported() && (
+            <button
+              role="menuitem"
+              className="h-btn-ghost"
+              style={{ width: "100%", justifyContent: "flex-start", padding: "8px 10px", gap: 10 }}
+              onClick={() => void recordNote()}
+              data-testid="menu-voice-note"
+            >
+              <i className="ti ti-microphone" style={{ fontSize: 15 }} />
+              Record a voice note
+            </button>
+          )}
           {onConnectorsChange && (
             <div
               style={{ position: "relative" }}
@@ -204,48 +251,21 @@ export function AttachMenu({
                   {available !== null && available.length === 0 && (
                     <div className="h-muted" style={{ padding: "8px 10px", fontSize: 12 }}>No connectors available.</div>
                   )}
-                  {(available ?? []).map((c) => {
+                  {/* ungrouped first, then each group under its heading (stable within each) */}
+                  {[...(available ?? [])].sort((a, b) => Number(Boolean(a.group)) - Number(Boolean(b.group))).map((c, i, list) => {
                     const on = connectors.includes(c.key)
                     const state = connectedFor(c)
-                    if (state === null) {
-                      return (
-                        <div key={c.key} className="h-muted" style={{ padding: "8px 10px", fontSize: 12, display: "flex", gap: 10 }} data-testid={`connector-${c.key}-checking`}>
-                          <i className={`ti ti-${c.icon}`} style={{ fontSize: 15 }} /> {c.label} · checking…
+                    // A heading above the first connector of each group (the Google products).
+                    const heading = c.group && c.group !== list[i - 1]?.group
+                      ? (
+                        <div key={`group-${c.group}`} className="h-muted" data-testid={`connector-group-${c.group}`}
+                          style={{ padding: "8px 10px 2px", fontSize: 11, display: "flex", gap: 6, alignItems: "center", borderTop: i > 0 ? "0.5px solid var(--surface-border)" : undefined, marginTop: i > 0 ? 4 : 0 }}>
+                          {c.auth === "google" && <i className="ti ti-brand-google" style={{ fontSize: 12 }} aria-hidden />} {c.group}
                         </div>
                       )
-                    }
-                    if (!state) {
-                      return (
-                        <Link key={c.key} href="/vault" role="menuitem" className="h-btn-ghost" data-testid={`connector-${c.key}`}
-                          style={{ width: "100%", justifyContent: "flex-start", padding: "8px 10px", gap: 10, alignItems: "flex-start", textDecoration: "none" }}
-                          onClick={() => { setOpen(false); setSub(false) }} title={c.description}>
-                          <i className={`ti ti-${c.icon}`} style={{ fontSize: 15, marginTop: 1 }} />
-                          <span style={{ display: "flex", flexDirection: "column", alignItems: "flex-start", flex: 1 }}>
-                            <span>{c.label}</span>
-                            <span className="h-muted" style={{ fontSize: 11 }}>Connect your account first →</span>
-                          </span>
-                        </Link>
-                      )
-                    }
-                    return (
-                      <button
-                        key={c.key}
-                        role="menuitemcheckbox"
-                        aria-checked={on}
-                        className="h-btn-ghost"
-                        style={{ width: "100%", justifyContent: "flex-start", padding: "8px 10px", gap: 10, alignItems: "flex-start" }}
-                        onClick={() => toggleConnector(c.key)}
-                        data-testid={`connector-${c.key}`}
-                        title={c.description}
-                      >
-                        <i className={`ti ti-${c.icon}`} style={{ fontSize: 15, marginTop: 1 }} />
-                        <span style={{ display: "flex", flexDirection: "column", alignItems: "flex-start", flex: 1 }}>
-                          <span>{c.label}</span>
-                          <span className="h-muted" style={{ fontSize: 11 }}>{c.description}</span>
-                        </span>
-                        <i className={`ti ${on ? "ti-toggle-right" : "ti-toggle-left"}`} style={{ fontSize: 18, color: on ? "var(--fg)" : "var(--muted)" }} aria-hidden />
-                      </button>
-                    )
+                      : null
+                    const item = renderConnector(c, on, state)
+                    return heading ? [heading, item] : item
                   })}
                 </div>
               )}
@@ -255,4 +275,50 @@ export function AttachMenu({
       )}
     </div>
   )
+
+  function renderConnector(c: ConnectorInfo, on: boolean, state: ReturnType<typeof connectedFor>) {
+    // Grouped connectors sit indented under their heading.
+    const padding = `8px 10px 8px ${c.group ? 18 : 10}px`
+    if (state === null) {
+      return (
+        <div key={c.key} className="h-muted" style={{ padding, fontSize: 12, display: "flex", gap: 10 }} data-testid={`connector-${c.key}-checking`}>
+          <i className={`ti ti-${c.icon}`} style={{ fontSize: 15 }} /> {c.label} · checking…
+        </div>
+      )
+    }
+    if (state !== "ok") {
+      return (
+        <Link key={c.key} href="/vault" role="menuitem" className="h-btn-ghost" data-testid={`connector-${c.key}`}
+          style={{ width: "100%", justifyContent: "flex-start", padding, gap: 10, alignItems: "flex-start", textDecoration: "none" }}
+          onClick={() => { setOpen(false); setSub(false) }} title={c.description}>
+          <i className={`ti ti-${c.icon}`} style={{ fontSize: 15, marginTop: 1 }} />
+          <span style={{ display: "flex", flexDirection: "column", alignItems: "flex-start", flex: 1 }}>
+            <span>{c.label}</span>
+            <span className="h-muted" style={{ fontSize: 11 }}>
+              {state === "grant" ? `Grant ${c.label} access →` : "Connect your account first →"}
+            </span>
+          </span>
+        </Link>
+      )
+    }
+    return (
+      <button
+        key={c.key}
+        role="menuitemcheckbox"
+        aria-checked={on}
+        className="h-btn-ghost"
+        style={{ width: "100%", justifyContent: "flex-start", padding, gap: 10, alignItems: "flex-start" }}
+        onClick={() => toggleConnector(c.key)}
+        data-testid={`connector-${c.key}`}
+        title={c.description}
+      >
+        <i className={`ti ti-${c.icon}`} style={{ fontSize: 15, marginTop: 1 }} />
+        <span style={{ display: "flex", flexDirection: "column", alignItems: "flex-start", flex: 1 }}>
+          <span>{c.label}</span>
+          <span className="h-muted" style={{ fontSize: 11 }}>{c.description}</span>
+        </span>
+        <i className={`ti ${on ? "ti-toggle-right" : "ti-toggle-left"}`} style={{ fontSize: 18, color: on ? "var(--fg)" : "var(--muted)" }} aria-hidden />
+      </button>
+    )
+  }
 }

@@ -1,6 +1,7 @@
 "use client"
 
 import { useEffect, useRef, useState } from "react"
+import { useRouter } from "next/navigation"
 
 /** One row of the backend registry (`GET /models`). */
 export type ModelInfo = {
@@ -11,8 +12,13 @@ export type ModelInfo = {
   supports_reasoning: boolean
   efforts: string[]
   default_effort: string | null
+  /** Billing: not in the caller's plan; `plan_needed` names the cheapest plan that has it. */
+  locked?: boolean
+  plan_needed?: string | null
 }
-type Catalog = { default: { model: string; effort: string | null }; models: ModelInfo[] }
+type Catalog = { default: { model: string; effort: string | null }; models: ModelInfo[]; plan?: string | null }
+
+const PLAN_LABEL: Record<string, string> = { plus: "Plus", pro: "Pro" }
 
 type Props = {
   /** The tab's current choice; null = the server default. */
@@ -35,6 +41,7 @@ export function ModelPicker({ model, effort, onChange, disabled }: Props) {
   const [catalog, setCatalog] = useState<Catalog | null>(null)
   const [open, setOpen] = useState<"model" | "effort" | null>(null)
   const ref = useRef<HTMLDivElement>(null)
+  const router = useRouter()
 
   useEffect(() => {
     let alive = true
@@ -56,13 +63,20 @@ export function ModelPicker({ model, effort, onChange, disabled }: Props) {
 
   if (!catalog) return null
 
-  const currentId = model ?? catalog.default.model
-  const current = catalog.models.find((m) => m.id === currentId) ?? catalog.models[0]
+  // A remembered choice the plan no longer covers falls back to the plan's default.
+  const pickable = (id: string | null) => catalog.models.find((m) => m.id === id && !m.locked)
+  const current = pickable(model) ?? pickable(catalog.default.model) ?? catalog.models.find((m) => !m.locked) ?? catalog.models[0]
+  const currentId = current.id
   const currentEffort = current.supports_reasoning
     ? (effort && current.efforts.includes(effort) ? effort : (currentId === catalog.default.model && catalog.default.effort) || current.default_effort)
     : null
 
   const pickModel = (m: ModelInfo) => {
+    if (m.locked) {
+      setOpen(null)
+      router.push(`/billing?upgrade=${encodeURIComponent(m.plan_needed ?? "plus")}`)
+      return
+    }
     // Keep the effort if the new model accepts it; otherwise its own default.
     const e = m.supports_reasoning ? (effort && m.efforts.includes(effort) ? effort : m.default_effort) : null
     onChange(m.id, e)
@@ -88,7 +102,7 @@ export function ModelPicker({ model, effort, onChange, disabled }: Props) {
     </button>
   )
 
-  const option = (key: string, selected: boolean, onPick: () => void, main: string, hint?: string, testId?: string) => (
+  const option = (key: string, selected: boolean, onPick: () => void, main: string, hint?: string, testId?: string, badge?: string) => (
     <button
       key={key}
       type="button"
@@ -99,14 +113,23 @@ export function ModelPicker({ model, effort, onChange, disabled }: Props) {
       style={{
         display: "flex", alignItems: "center", justifyContent: "space-between", gap: 16,
         width: "100%", padding: "7px 10px", borderRadius: 8, border: 0, cursor: "pointer",
-        background: selected ? "var(--surface-hover)" : "transparent", color: "var(--fg)",
+        background: selected ? "var(--surface-hover)" : "transparent", color: badge ? "var(--muted)" : "var(--fg)",
         fontSize: 13, textAlign: "left",
       }}
       onMouseEnter={(e) => { e.currentTarget.style.background = "var(--surface-hover)" }}
       onMouseLeave={(e) => { e.currentTarget.style.background = selected ? "var(--surface-hover)" : "transparent" }}
     >
       <span>{main}</span>
-      {hint && <span style={{ fontSize: 11, color: "var(--muted)", whiteSpace: "nowrap" }}>{hint}</span>}
+      <span style={{ display: "inline-flex", alignItems: "center", gap: 8 }}>
+        {hint && <span style={{ fontSize: 11, color: "var(--muted)", whiteSpace: "nowrap" }}>{hint}</span>}
+        {badge && (
+          <span data-testid={testId ? `${testId}-locked` : undefined}
+            style={{ fontSize: 10, display: "inline-flex", alignItems: "center", gap: 3, padding: "1px 6px",
+              borderRadius: 999, border: "0.5px solid var(--chip-border)", color: "var(--fg)" }}>
+            <i className="ti ti-lock" style={{ fontSize: 10 }} />{badge}
+          </span>
+        )}
+      </span>
     </button>
   )
 
@@ -127,7 +150,8 @@ export function ModelPicker({ model, effort, onChange, disabled }: Props) {
           {open === "model"
             ? catalog.models.map((m) =>
                 option(m.id, m.id === current.id, () => pickModel(m), m.label,
-                  `${fmt(m.input_usd_per_m)} / ${fmt(m.output_usd_per_m)}`, `model-option-${m.id}`))
+                  `${fmt(m.input_usd_per_m)} / ${fmt(m.output_usd_per_m)}`, `model-option-${m.id}`,
+                  m.locked ? PLAN_LABEL[m.plan_needed ?? ""] ?? "Upgrade" : undefined))
             : current.efforts.map((e) =>
                 option(e, e === currentEffort, () => pickEffort(e), e, undefined, `effort-option-${e}`))}
           {open === "model" && (
