@@ -5,8 +5,12 @@ levels by instant word and length rules -- no extra model call, so no added
 cost or delay -- and mapped to a model the user's plan includes:
 
   quick     reminders, lists, weather, conversions, one-liners   -> cheapest, low depth
-  everyday  most requests (mail, drafting, summaries, lookups)    -> mid model, medium depth
+  everyday  most requests (reading mail, calendar, summaries)     -> cheap model, medium depth
+  write     drafts, replies, rewrites the user will send          -> mid model, medium depth
   deep      research mode, analysis, comparisons, code, long asks -> strongest allowed, high depth
+
+Most messages are "everyday", so that level runs on the cheap model: a
+calendar lookup does not need the mid model, which costs ten times as much.
 
 A model the user picks by hand always wins; "auto" is only ever a request.
 """
@@ -31,10 +35,14 @@ _QUICK = re.compile(
     r"shopping list|to-?do|note:|take a note|weather|temperature|umbrella|convert|in (usd|inr|eur|gbp)|"
     r"what time|time in|timezone|how many .{1,20} in|define|meaning of|spell|translate)\b", re.I)
 
+_WRITE = re.compile(
+    r"\b(draft|write|compose|reply|respond|rewrite|reword|rephrase|proofread|polish|cover letter|letter to|"
+    r"message to|email (him|her|them|back)|caption|announcement)\b", re.I)
+
 
 @dataclass(frozen=True)
 class AutoChoice:
-    level: str            # quick | everyday | deep
+    level: str            # quick | everyday | write | deep
     model: str
     effort: Effort | None
 
@@ -48,6 +56,8 @@ def level_for(question: str, mode: str = "default") -> str:
         return "deep"
     if _QUICK.search(q) and words <= 25:
         return "quick"
+    if _WRITE.search(q):
+        return "write"
     # short but multi-step (mail, calendar, planning, writing): not "quick"
     if words <= 6 and "?" not in q and not re.search(
             r"\b(email|mail|inbox|calendar|meeting|schedule|draft|write|plan|brief|summari[sz]e|reply)\b", q, re.I):
@@ -57,8 +67,9 @@ def level_for(question: str, mode: str = "default") -> str:
 
 def _ladder(level: str) -> list[str]:
     s = get_settings()
-    fast, balanced, best = s.auto_fast_model, s.auto_balanced_model, s.auto_best_model
-    return {"quick": [fast], "everyday": [balanced, fast], "deep": [best, balanced, fast]}[level]
+    fast, everyday, balanced, best = s.auto_fast_model, s.auto_everyday_model, s.auto_balanced_model, s.auto_best_model
+    return {"quick": [fast], "everyday": [everyday, fast], "write": [balanced, fast],
+            "deep": [best, balanced, fast]}[level]
 
 
 def _clamp(spec: ModelSpec, want: Effort, max_effort: Effort) -> Effort | None:
@@ -77,7 +88,7 @@ def _clamp(spec: ModelSpec, want: Effort, max_effort: Effort) -> Effort | None:
 def choose(question: str, mode: str = "default", *, allowed: Callable[[ModelSpec], bool] = lambda s: True,
            max_effort: Effort = "xhigh") -> AutoChoice:
     level = level_for(question, mode)
-    want: Effort = {"quick": "low", "everyday": "medium", "deep": "high"}[level]
+    want: Effort = {"quick": "low", "everyday": "medium", "write": "medium", "deep": "high"}[level]
     for model_id in _ladder(level):
         spec = get_model(model_id)
         if spec is not None and allowed(spec):

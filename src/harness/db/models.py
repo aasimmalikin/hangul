@@ -72,6 +72,18 @@ class BillingEvent(Base):
     event_name: Mapped[str] = mapped_column(String(64), nullable=False)
     received_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
 
+class ChurnFeedback(Base):
+    """Why someone opened "Cancel plan", and what they did: kept the plan,
+    switched to a cheaper one, or cancelled. The admin page summarises it."""
+    __tablename__ = "churn_feedback"
+    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    user_id: Mapped[int] = mapped_column(Integer, nullable=False, index=True)
+    plan: Mapped[str] = mapped_column(String(16), nullable=False)
+    reason: Mapped[str] = mapped_column(String(32), nullable=False)
+    detail: Mapped[str] = mapped_column(String(1000), nullable=False, default="", server_default="")
+    outcome: Mapped[str] = mapped_column(String(16), nullable=False)      # kept | downgraded | cancelled
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False, index=True)
+
 class Account(Base):
     __tablename__ = "accounts"
     id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)

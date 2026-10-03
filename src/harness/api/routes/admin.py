@@ -35,6 +35,14 @@ class RunRequest(BaseModel):
     limit: int | None = Field(default=None, ge=1, le=500)
 
 
+@router.get("/churn")
+async def churn(days: int = 90) -> dict:
+    """Why people tried to cancel, and how many stayed (the "Before you go" flow)."""
+    import asyncio
+    from harness.db.billing import churn_summary
+    return await asyncio.to_thread(churn_summary, max(1, min(days, 365)))
+
+
 @router.get("/whoami")
 async def whoami(user: dict = Depends(require_admin)) -> dict:
     """The page's first call after Google sign-in: 200 means this account is

@@ -26,3 +26,6 @@ class Tool:
     description: str
     parameter: dict[str, Any]
     handler: Callable[..., Awaitable[str]]
+    # a plan-gated stand-in (billing.entitlements._upgrade_stub): it only shows an
+    # upgrade card, so it never pauses for approval whatever its name's tier
+    upgrade_stub: bool = False

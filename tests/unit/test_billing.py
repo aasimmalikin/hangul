@@ -74,6 +74,9 @@ def billing(monkeypatch):
     state["pool_spent"] = Decimal(0)
     monkeypatch.setattr(ledger, "free_pool_spent", lambda since: state["pool_spent"])
     monkeypatch.setattr(ledger, "record_transaction", record_transaction)
+    # "messages left": no run history, so the BILLING_USD_PER_MESSAGE estimate ($0.01)
+    monkeypatch.setattr(ledger, "average_run_cost", lambda since, min_runs=50: None)
+    monkeypatch.setattr(entitlements, "_per_message", None)
     return state
 
 
@@ -171,7 +174,7 @@ def test_free_spend_is_booked_to_the_pool_and_skips_it_once_full(billing, monkey
     calls = []
     monkeypatch.setattr(ledger, "settle_run", lambda uid, cost, **kw: calls.append(kw))
     entitlements.settle("7", Decimal("0.10"), "run-1")
-    assert calls[-1]["allowance_kind"] == "free_cost" and calls[-1]["allowance"] == Decimal("0.5")
+    assert calls[-1]["allowance_kind"] == "free_cost" and calls[-1]["allowance"] == Decimal("0.25")
 
     monkeypatch.setenv("BILLING_FREE_POOL_USD", "10")
     billing["pool_spent"] = Decimal("10")
@@ -306,8 +309,11 @@ def test_billing_summary_reports_allowance_and_credits(billing):
     billing["credits"]["7"] = Decimal("1.5")
     body = _app(billing_route.router).get("/billing").json()
     assert body["plan"] == "free"
-    assert body["allowance_left_usd"] == pytest.approx(0.30)
+    assert body["allowance_left_usd"] == pytest.approx(0.05)      # $0.25 free allowance - $0.20 used
     assert body["credits_usd"] == 1.5
+    assert (body["messages_left"], body["messages_total"]) == (5, 25)   # at $0.01 a message
+    assert body["nudge"] is False          # 80% used, but bought credits cover what's next
+    assert body["trial_days"] == 7 and body["trialing"] is False
 
 
 def test_checkout_without_a_product_is_503(billing, monkeypatch):

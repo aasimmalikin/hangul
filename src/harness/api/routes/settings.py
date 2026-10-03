@@ -68,6 +68,26 @@ class TaskIn(BaseModel):
     connectors: list[str] = Field(default_factory=list, max_length=8)
     mode: str = Field(default="default", pattern=r"^(default|research)$")
     deliver_email: bool = False
+    # when the plan doesn't allow this often (Free: weekly), make it as frequent as the
+    # plan allows instead of refusing -- the one-tap morning brief and onboarding use this
+    fit_plan: bool = False
+
+
+def _fit_schedule(user_id: str, req: TaskIn) -> tuple[int | None, str | None]:
+    """The schedule to store, within the user's plan; 402 when it doesn't fit."""
+    from harness.billing import entitlements
+    from harness.billing.plans import get_plan
+    from harness.db import billing as billing_db
+    if not entitlements.billing_enabled():
+        return req.every_minutes, req.daily_at
+    plan = get_plan(billing_db.get_account(user_id).plan)
+    if tasks_db.interval_minutes(req.every_minutes, req.daily_at) >= plan.task_min_minutes:
+        return req.every_minutes, req.daily_at
+    if req.fit_plan:
+        return plan.task_min_minutes, req.daily_at
+    raise entitlements._deny(
+        "plan_required", "Daily and more frequent tasks are part of Plus. On Free a task can run once a week.",
+        plan_needed="plus")
 
 
 class TaskOut(BaseModel):
@@ -98,8 +118,9 @@ async def create_task(req: TaskIn, user: dict = Depends(get_current_user)) -> Ta
     try:
         validate_keys(req.connectors)
         tz = (await asyncio.to_thread(get_settings, user["user_id"])).timezone
+        every_minutes, daily_at = await asyncio.to_thread(_fit_schedule, user["user_id"], req)
         t = await asyncio.to_thread(tasks_db.create_task, user["user_id"], title=req.title, question=req.question,
-                                    every_minutes=req.every_minutes, daily_at=req.daily_at,
+                                    every_minutes=every_minutes, daily_at=daily_at,
                                     connectors=req.connectors, mode=req.mode, tz=tz,
                                     deliver_email=req.deliver_email)
     except ValueError as e:

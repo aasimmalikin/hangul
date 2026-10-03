@@ -101,7 +101,8 @@ class TrajectoryRecorder:
         t.pending_tool = (result.pending_tool or {}).get("name")
         t.input_tokens = result.input_tokens
         t.output_tokens = result.output_tokens
-        t.cost_usd = cost_usd(model, result.input_tokens, result.output_tokens)
+        t.cost_usd = cost_usd(model, result.input_tokens, result.output_tokens,
+                              getattr(result, "cached_input_tokens", 0))
         t.answer = result.answer
         if result.steps:
             t.steps = max(t.steps, result.steps)

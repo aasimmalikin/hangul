@@ -5,6 +5,7 @@ import { useEffect, useState } from "react"
 import { signOut, useSession } from "next-auth/react"
 import { AppHeader } from "@/components/hangul/AppHeader"
 import { SignInModal, type AuthMode } from "@/components/hangul/SignInModal"
+import { LEGAL } from "@/lib/legal"
 
 /**
  * You: everything about the account in one place -- profile & preferences,
@@ -72,6 +73,10 @@ export default function YouPage() {
         <button className="h-btn-ghost" onClick={() => signOut({ redirectTo: "/" })} style={{ alignSelf: "flex-start", marginTop: 8, gap: 6 }}>
           <i className="ti ti-logout" style={{ fontSize: 15 }} /> Sign out
         </button>
+        <p className="h-muted" style={{ fontSize: 12, margin: "8px 0 0" }} data-testid="you-legal">
+          <Link href="/terms" style={{ color: "inherit" }}>Terms</Link> · <Link href="/privacy" style={{ color: "inherit" }}>Privacy</Link> ·{" "}
+          <Link href="/refunds" style={{ color: "inherit" }}>Refunds</Link> · To delete your account, email {LEGAL.contactEmail}
+        </p>
       </div>
     </main>
   )

@@ -18,7 +18,6 @@ from harness.tools.builtin.search_docs import SEARCH_DOCS_TOOL
 from harness.tools.builtin.web_search import WEB_SEARCH_TOOL
 from harness.tools.builtin.ask_user import ASK_USER_TOOL
 from harness.tools.builtin.search_docs_session import make_search_docs_tool
-from harness.tools.builtin.filesystem_session import wrap_filesystem_tool
 from harness.tools.builtin.vault_request import build_vault_tools
 from harness.tools.builtin.daily import build_daily_tools, daily_tools_for
 from harness.connectors import tools_for, validate_keys
@@ -71,20 +70,7 @@ _policy = ToolPolicy(tiers={
     "vault_mutate": Tier.DESTRUCTIVE,    # every write pauses for approval
     "arxiv_search": Tier.SAFE,           # Research connector (read-only public API)
     "arxiv_paper": Tier.SAFE,
-    "filesystem__read_file": Tier.SAFE,
-    "filesystem__read_text_file": Tier.SAFE,
-    "filesystem__read_media_file": Tier.SAFE,
-    "filesystem__read_multiple_files": Tier.SAFE,
-    "filesystem__list_directory": Tier.SAFE,
-    "filesystem__list_directory_with_sizes": Tier.SAFE,
-    "filesystem__directory_tree": Tier.SAFE,
-    "filesystem__get_file_info": Tier.SAFE,
-    "filesystem__search_files": Tier.SAFE,
-    "filesystem__list_allowed_directories": Tier.SAFE,
-    "filesystem__write_file": Tier.DESTRUCTIVE,
-    "filesystem__edit_file": Tier.DESTRUCTIVE,
-    "filesystem__create_directory": Tier.DESTRUCTIVE,
-    "filesystem__move_file": Tier.DESTRUCTIVE,
+    "my_files": Tier.SAFE,               # list / read the user's own folder (basename only)
     "recall": Tier.SAFE,
     "remember": Tier.SAFE,
     "recall_episodes": Tier.SAFE,
@@ -348,6 +334,14 @@ async def _persist_turn(conversation_id: str, run_id: str, question: str) -> Non
 
 
 async def _build_and_run(req: AskRequest, user_id: str, on_event=None) -> RunOutcome:
+    """One question, with a cost meter open around it (billing/meter.py), so
+    searches, embeddings and summaries it causes are charged with its model cost."""
+    from harness.billing import meter
+    async with meter.metering(user_id):
+        return await _run_question(req, user_id, on_event)
+
+
+async def _run_question(req: AskRequest, user_id: str, on_event=None) -> RunOutcome:
     security = get_guard()
     if security.is_throttled(user_id):
         # repeat offender: too many injection-like messages in the window
@@ -435,9 +429,6 @@ async def _build_and_run(req: AskRequest, user_id: str, on_event=None) -> RunOut
         session_registry.registry(CALCULATOR_TOOL)
         session_registry.registry(WEB_SEARCH_TOOL)
         session_registry.registry(ASK_USER_TOOL)
-        for t in _registry.list():
-            if t.name.startswith("filesystem__"):
-                session_registry.registry(wrap_filesystem_tool(t, user_id))
         for t in await build_vault_tools(user_id, run.run_id):
             session_registry.registry(t)
         for t in await daily_tools_for(user_id, prefs.timezone if prefs else "UTC", run.run_id):
@@ -463,22 +454,9 @@ async def _build_and_run(req: AskRequest, user_id: str, on_event=None) -> RunOut
     # the plan decides which of these tools are real and which are upgrade cards
     await entitlements.gate_registry(user_id, session_registry)
 
-    session_dir = (Path("data/sessions") / user_id).resolve()
-    session_dir.mkdir(parents=True, exist_ok=True)
-    
-
-    session_folder_note = (
-         "\n\n=== CRITICAL FILE-PATH RULE (follow exactly) ===\n"
-        f"The user's folder is EXACTLY this absolute path: {session_dir}\n"
-        "This folder ALREADY EXISTS. For ANY file operation on the user's files "
-        "(write, read, list, edit), you MUST use this exact absolute path.\n"
-        f"To create a file named notes.txt, call write_file with path='{session_dir}/notes.txt'.\n"
-        "You are FORBIDDEN from using a bare filename like 'notes.txt' or an invented "
-        f"path like '/mnt/session/'. Always prefix with '{session_dir}/'.\n"
-        "Do NOT call create_directory — the folder already exists.\n"
-        "=== END RULE ==="
-    )
-    prompt_text = prompt_version.text + session_folder_note
+    # the user's folder (create_file, my_files, uploads); tools take bare file names
+    (Path("data/sessions") / user_id).resolve().mkdir(parents=True, exist_ok=True)
+    prompt_text = prompt_version.text
 
     # Sync SQLAlchemy call against a remote DB: run it off the event loop so
     # it cannot stall other requests or the SSE flush while it waits.
@@ -619,7 +597,12 @@ async def _build_and_run(req: AskRequest, user_id: str, on_event=None) -> RunOut
     _trace_store.add(trace, model)
 
     summary = trace.summary()
-    run_cost = cost_usd(model, summary["input_tokens"], summary["output_tokens"])
+    run_cost = cost_usd(model, summary["input_tokens"], summary["output_tokens"],
+                        summary.get("cached_input_tokens", 0))
+    # plus what the run caused besides its own tokens (searches, embeddings, summaries)
+    from harness.billing import meter
+    if (m := meter.current()) is not None:
+        run_cost = round(run_cost + float(m.extra), 6)
 
     # Ledger, answer cache and episodic memory are bookkeeping: nothing the
     # caller receives depends on them, but together they are ~7 serial DB
@@ -660,9 +643,6 @@ async def ask(req: AskRequest, user: dict = Depends(get_current_user)) -> AskRes
         session_registry.registry(CALCULATOR_TOOL)
         session_registry.registry(WEB_SEARCH_TOOL)
         session_registry.registry(ASK_USER_TOOL)
-        for t in _registry.list():
-            if t.name.startswith("filesystem__"):
-                session_registry.registry(wrap_filesystem_tool(t, user_id))
         for t in await build_vault_tools(user_id, None):
             session_registry.registry(t)
         for t in build_daily_tools(user_id):

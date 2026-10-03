@@ -15,6 +15,14 @@ import { deviceTimeZone } from "@/lib/timezone"
  */
 
 type Prefs = { display_name: string; instructions: string; tone: string; timezone: string; language: string; timezone_auto?: boolean; city?: string; tones?: string[] }
+const WEEK_MINUTES = 7 * 24 * 60
+
+/** "daily at 08:00", "weekly at 08:00" (daily_at + a week), "every 60 min". */
+function scheduleLabel(t: { every_minutes: number | null; daily_at: string | null }): string {
+  if (t.daily_at) return t.every_minutes === WEEK_MINUTES ? `weekly at ${t.daily_at}` : `daily at ${t.daily_at}`
+  return t.every_minutes === WEEK_MINUTES ? "weekly" : `every ${t.every_minutes} min`
+}
+
 type Task = { id: number; title: string; question: string; every_minutes: number | null; daily_at: string | null; connectors: string[]; mode: string; enabled: boolean; next_run_at: string | null; last_run_at: string | null; last_status: string; last_run_id: string | null; last_answer: string; deliver_email?: boolean }
 
 const mono = { fontFamily: "var(--font-geist-mono)" } as const
@@ -110,7 +118,8 @@ export default function SettingsPage() {
     await api("tasks", {
       method: "POST",
       body: JSON.stringify({
-        title: "Morning brief", daily_at: "08:00", connectors: google, mode: "default", deliver_email: true,
+        // fit_plan: on Free the brief is weekly instead of refused (daily is Plus)
+        title: "Morning brief", daily_at: "08:00", connectors: google, mode: "default", deliver_email: true, fit_plan: true,
         question: "Give me my morning brief for today, short and with headings: the weather where I live (use what " +
           "you remember about my city), today's calendar events, my reminders and to-do items, and any important " +
           "unread emails from the last day. Skip any section you can't access.",
@@ -207,7 +216,7 @@ export default function SettingsPage() {
                 <li key={t.id} style={{ border: "0.5px solid var(--surface-border)", borderRadius: 12, padding: "10px 12px", fontSize: 13 }} data-testid={`task-${t.id}`}>
                   <div style={{ display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap" }}>
                     <strong>{t.title}</strong>
-                    <span className="h-muted" style={{ fontSize: 12 }}>{t.daily_at ? `daily at ${t.daily_at}` : `every ${t.every_minutes} min`}{t.connectors.length ? ` · ${t.connectors.join(", ")}` : ""}{t.mode === "research" ? " · research" : ""}{t.deliver_email ? " · emailed" : ""}</span>
+                    <span className="h-muted" style={{ fontSize: 12 }}>{scheduleLabel(t)}{t.connectors.length ? ` · ${t.connectors.join(", ")}` : ""}{t.mode === "research" ? " · research" : ""}{t.deliver_email ? " · emailed" : ""}</span>
                     <span className="h-muted" style={{ ...mono, fontSize: 11, marginLeft: "auto" }}>{t.enabled ? `next ${when(t.next_run_at)}` : "paused"} · last: {t.last_status}</span>
                   </div>
                   <div className="h-muted" style={{ fontSize: 12, marginTop: 4 }}>{t.question}</div>

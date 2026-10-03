@@ -5,6 +5,25 @@ import json
 from harness.logging import log
 
 
+# model -> what to send as reasoning_effort alongside function tools, learnt
+# from OpenAI's refusal: "none" when it asks for that, None = omit the field.
+# Remembered so each later call skips the refused request.
+_EFFORT_WITH_TOOLS: dict[str, str | None] = {}
+
+
+def _apply_effort_fallback(kwargs: dict, fallback: str | None) -> dict:
+    kwargs = {k: v for k, v in kwargs.items() if k != "reasoning_effort"}
+    if fallback is not None:
+        kwargs["reasoning_effort"] = fallback
+    return kwargs
+
+
+def cached_tokens(usage) -> int:
+    """Input tokens OpenAI served from its prompt cache (0 when not reported)."""
+    details = getattr(usage, "prompt_tokens_details", None)
+    return int(getattr(details, "cached_tokens", 0) or 0)
+
+
 class OpenAIProvider:
     def __init__(self, api_key: str, model: str = "gpt-4o",
                  reasoning_effort: str | None = None,
@@ -33,19 +52,31 @@ class OpenAIProvider:
         return kwargs
 
     async def _create(self, kwargs: dict):
-        """chat.completions.create, retried once without ``reasoning_effort``
-        when the API refuses the combination (OpenAI rejects effort + function
-        tools for some models on /v1/chat/completions; the Responses API would
-        be the full fix). The run keeps working at the model's default effort."""
+        """chat.completions.create, retried once when the API refuses
+        ``reasoning_effort`` together with function tools (OpenAI does this for
+        some models on /v1/chat/completions; the Responses API would be the
+        full fix). Some models want the field dropped (they then use their
+        default effort); others, like gpt-5.6-luna, refuse their default too and
+        ask for ``reasoning_effort="none"``. What worked is remembered per
+        model, so only the first call pays for the refused request."""
         from openai import BadRequestError
+        model = kwargs.get("model", "")
+        if kwargs.get("tools") and model in _EFFORT_WITH_TOOLS:
+            kwargs = _apply_effort_fallback(kwargs, _EFFORT_WITH_TOOLS[model])
         try:
             return await self.client.chat.completions.create(**kwargs)
         except BadRequestError as e:
-            if "reasoning_effort" in str(e) and "reasoning_effort" in kwargs:
-                log.warning("reasoning_effort not accepted with tools; retrying without",
-                            model=kwargs.get("model"), effort=kwargs["reasoning_effort"])
-                kwargs = {k: v for k, v in kwargs.items() if k != "reasoning_effort"}
-                return await self.client.chat.completions.create(**kwargs)
+            msg = str(e)
+            asks_none = "'none'" in msg and kwargs.get("reasoning_effort") != "none"
+            # (an omitted field is refused too when the model's own default is not "none")
+            if "reasoning_effort" in msg and ("reasoning_effort" in kwargs or asks_none):
+                fallback = "none" if asks_none else None
+                log.warning("reasoning_effort not accepted with tools; retrying",
+                            model=model, effort=kwargs.get("reasoning_effort"), fallback=fallback or "omitted")
+                response = await self.client.chat.completions.create(**_apply_effort_fallback(kwargs, fallback))
+                if kwargs.get("tools"):
+                    _EFFORT_WITH_TOOLS[model] = fallback
+                return response
             raise
 
     async def chat(self, messages: list[dict], tools: list[dict],
@@ -67,6 +98,7 @@ class OpenAIProvider:
             tool_calls=calls,
             input_tokens=getattr(usage, "prompt_tokens", 0),
             output_tokens=getattr(usage, "completion_tokens", 0),
+            cached_input_tokens=cached_tokens(usage),
         )
 
     async def chat_stream(self, messages: list[dict], tools: list[dict],
@@ -90,12 +122,13 @@ class OpenAIProvider:
 
         text_parts: list[str] = []
         tool_fragments: dict[int, dict] = {}
-        input_tokens = output_tokens = 0
+        input_tokens = output_tokens = cached_input = 0
 
         async for chunk in stream:
             if chunk.usage:
                 input_tokens = getattr(chunk.usage, "prompt_tokens", 0)
                 output_tokens = getattr(chunk.usage, "completion_tokens", 0)
+                cached_input = cached_tokens(chunk.usage)
 
             if not chunk.choices:
                 continue
@@ -130,4 +163,5 @@ class OpenAIProvider:
             tool_calls=calls,
             input_tokens=input_tokens,
             output_tokens=output_tokens,
+            cached_input_tokens=cached_input,
         ))

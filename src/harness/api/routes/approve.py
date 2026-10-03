@@ -10,6 +10,7 @@ from harness.logging import log
 from harness.providers import provider_for
 from harness.providers.registry import budget_for, get_model
 from harness.billing import entitlements
+from harness.billing import meter as billing_meter
 from decimal import Decimal
 from harness.prompts.registry import get_prompt
 from harness.api.session import get_session_id
@@ -27,7 +28,6 @@ from harness.tools.builtin.calculator import CALCULATOR_TOOL
 from harness.tools.builtin.web_search import WEB_SEARCH_TOOL
 from harness.tools.builtin.ask_user import ASK_USER_TOOL
 from harness.tools.builtin.search_docs_session import make_search_docs_tool
-from harness.tools.builtin.filesystem_session import wrap_filesystem_tool
 from harness.tools.builtin.vault_request import build_vault_tools
 from harness.tools.builtin.daily import daily_tools_for
 from harness.db.settings import get_settings as user_prefs
@@ -49,9 +49,6 @@ async def _build_session_registry(user_id: str, thread_id: str, connectors: list
     reg.registry(CALCULATOR_TOOL)
     reg.registry(WEB_SEARCH_TOOL)
     reg.registry(ASK_USER_TOOL)
-    for t in _registry.list():
-        if t.name.startswith("filesystem__"):
-            reg.registry(wrap_filesystem_tool(t, user_id))
     for t in await build_vault_tools(user_id, thread_id):
         reg.registry(t)
     try:
@@ -88,6 +85,8 @@ async def approve(req: ApproveRequest, user: dict = Depends(get_current_user)) -
     # The plan check comes BEFORE the claim: refusing after it would leave the
     # run with its pending action taken and nothing to resume. A user who has
     # since downgraded gets the 402 and can approve again after upgrading.
+    # cost meter for the resumed run; the request's own task context ends with it
+    billing_meter._current.set(billing_meter.Meter(user_id=user["user_id"], thread_id=req.approval_id))
     peek = await asyncio.to_thread(_store.load, req.approval_id)
     if peek is not None and peek.user_id == user["user_id"]:
         # a model that has left the registry resumes on the plan's default
@@ -128,15 +127,6 @@ async def approve(req: ApproveRequest, user: dict = Depends(get_current_user)) -
     else:
         try:
             args = dict(pending["arguments"])
-            # FORCE the path inside this session's folder, whatever the agent proposed
-            if "path" in args and pending["name"].startswith("filesystem__"):
-                from pathlib import Path
-                session_dir = (Path("data/sessions") / user["user_id"]).resolve()
-                session_dir.mkdir(parents=True, exist_ok=True)
-                filename = Path(args["path"]).name        # keep only the filename part
-                args["path"] = str(session_dir / filename)
-                log.info("forced path", original=pending["arguments"].get("path"), forced=args["path"])
-
             tool = session_registry.get(pending["name"])
             result = await guarded_dispatch(tool, args, _policy, _audit, approved=True)
             content = result.content
@@ -192,7 +182,10 @@ async def approve(req: ApproveRequest, user: dict = Depends(get_current_user)) -
 
     _trace_store.add(trace, model)
     summary = trace.summary()
-    run_cost = cost_usd(model, summary["input_tokens"], summary["output_tokens"])
+    run_cost = cost_usd(model, summary["input_tokens"], summary["output_tokens"],
+                        summary.get("cached_input_tokens", 0))
+    if (m := billing_meter.current()) is not None:          # searches / embeddings during the resumed run
+        run_cost = round(run_cost + float(m.extra), 6)
     if run_cost > 0:
         async def _charge():
             try:

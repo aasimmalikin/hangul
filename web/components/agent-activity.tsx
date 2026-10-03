@@ -31,6 +31,8 @@ const TOOL_LABELS: Record<string, Labels> = {
   search_docs: { pending: "Preparing a document search", running: "Searching your documents", done: "Searched your documents", awaiting: "Wants to search your documents" },
   calculator: { pending: "Setting up a calculation", running: "Calculating", done: "Calculated", awaiting: "Wants to calculate" },
   ask_user: { pending: "Preparing a question for you", running: "Waiting on you", done: "Asked you", awaiting: "Has a question for you" },
+  my_files: { pending: "Preparing to look at your files", running: "Looking at your files", done: "Looked at your files", awaiting: "Wants to look at your files" },
+  // older chats still show the MCP filesystem tools they used
   filesystem__write_file: { pending: "Drafting a file", running: "Writing a file", done: "Wrote a file", awaiting: "Wants to write a file" },
   filesystem__edit_file: { pending: "Drafting an edit", running: "Editing a file", done: "Edited a file", awaiting: "Wants to edit a file" },
   filesystem__create_directory: { pending: "Preparing a folder", running: "Creating a folder", done: "Created a folder", awaiting: "Wants to create a folder" },

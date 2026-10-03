@@ -3,6 +3,7 @@
 import { Suspense, useCallback, useEffect, useState } from "react"
 import { useSearchParams } from "next/navigation"
 import { useSession } from "next-auth/react"
+import { CancelFlow } from "@/components/hangul/CancelFlow"
 import { AppHeader } from "@/components/hangul/AppHeader"
 import { SignInModal, type AuthMode } from "@/components/hangul/SignInModal"
 
@@ -26,6 +27,11 @@ type Billing = {
   credits_usd?: number
   free_pool_exhausted?: boolean
   has_portal?: boolean
+  messages_left?: number
+  messages_total?: number
+  trialing?: boolean
+  trial_ends_at?: string | null
+  trial_days?: number
   plans: PlanInfo[]
 }
 
@@ -56,6 +62,8 @@ function BillingInner() {
   const [billing, setBilling] = useState<Billing | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [busy, setBusy] = useState<string | null>(null)
+  const [cancelling, setCancelling] = useState(false)
+  const [notice, setNotice] = useState<string | null>(null)
 
   const load = useCallback(async () => {
     try {
@@ -86,11 +94,24 @@ function BillingInner() {
   }
   const checkout = (product: "plus" | "pro" | "topup") => redirectTo(product, "/api/billing/checkout", { product })
   const openPortal = () => redirectTo("portal", "/api/billing/portal")
+  const resume = async () => {
+    setBusy("resume"); setError(null)
+    try {
+      const res = await fetch("/api/billing/resume", { method: "POST" })
+      const data = await res.json().catch(() => ({}))
+      if (!res.ok) throw new Error(typeof data.detail === "string" ? data.detail : `Request failed (${res.status})`)
+      setNotice("You're staying — your plan will renew as usual.")
+      await load()
+    } catch (e) { setError((e as Error).message) } finally { setBusy(null) }
+  }
 
   const b = billing
   const allowance = b?.allowance_usd ?? 0
   const left = b?.allowance_left_usd ?? 0
   const usedPct = allowance > 0 ? Math.min(100, Math.round(((allowance - left) / allowance) * 100)) : 0
+  // dollars per message, from the backend's estimate; used to show each plan as "about N messages"
+  const perMessage = allowance > 0 && b?.messages_total ? allowance / b.messages_total : 0.01
+  const ending = b?.status === "cancelling" || b?.status === "trial_cancelling"
   const rank = (id: string) => b?.plans.findIndex((p) => p.id === id) ?? 0
 
   return (
@@ -120,12 +141,15 @@ function BillingInner() {
 
         {b?.enabled && (
           <Section title={`Current plan: ${b.plan_label ?? b.plan}`}
-            hint={b.status === "cancelled" && b.ends_at ? `Cancelled — stays active until ${day(b.ends_at)}.`
+            hint={b.trialing && b.status !== "trial_cancelling" ? `Free trial — ends ${day(b.trial_ends_at) ?? "soon"}, then $${b.plans.find((p) => p.id === b.plan)?.price_usd_month ?? 20}/month unless you cancel.`
+              : ending && b.ends_at ? `Cancelled — stays active until ${day(b.ends_at)}.`
               : b.renews_at ? `Renews ${day(b.renews_at)}.` : b.plan === "free" ? "Allowance resets on the 1st of each month." : undefined}>
             <div data-testid="allowance">
               <div className="flex" style={{ justifyContent: "space-between", fontSize: 13 }}>
-                <span>Included usage this period</span>
-                <span className="h-muted">{usd(left)} of {usd(allowance)} left</span>
+                <span>{b.trialing ? "Included in your trial" : "Included usage this period"}</span>
+                <span data-testid="messages-left">
+                  {b.messages_total ? <>About <strong>{b.messages_left ?? 0}</strong> of {b.messages_total} messages left</> : `${usd(left)} of ${usd(allowance)} left`}
+                </span>
               </div>
               <div style={{ height: 6, borderRadius: 999, background: "var(--surface-hover)", marginTop: 6, overflow: "hidden" }}>
                 <div style={{ width: `${usedPct}%`, height: "100%", background: usedPct >= 90 ? "var(--warn)" : "var(--fg)" }} />
@@ -144,7 +168,22 @@ function BillingInner() {
                 )}
               </div>
             </div>
+            {notice && <div className="h-surface" role="status" style={{ padding: "8px 12px", fontSize: 13 }} data-testid="billing-notice">{notice}</div>}
+            {b.plan !== "free" && b.has_portal && (ending ? (
+              <div className="flex" style={{ alignItems: "center", gap: 10, fontSize: 13, flexWrap: "wrap" }} data-testid="plan-ending">
+                <span style={{ flex: 1 }}>Your {b.plan_label ?? b.plan} plan ends on {day(b.ends_at) ?? "the end of this period"}. Changed your mind?</span>
+                <button className="h-btn-solid" disabled={busy !== null} onClick={() => void resume()} data-testid="resume-plan">Keep my plan</button>
+              </div>
+            ) : (
+              <button className="h-btn-ghost" onClick={() => setCancelling(true)} data-testid="cancel-plan"
+                style={{ alignSelf: "flex-start", fontSize: 12, color: "var(--muted)", padding: "2px 4px" }}>Cancel plan</button>
+            ))}
           </Section>
+        )}
+        {cancelling && b && (
+          <CancelFlow plan={b.plan} planLabel={b.plan_label ?? b.plan} endsAt={b.renews_at ?? b.ends_at ?? null}
+            onClose={() => setCancelling(false)}
+            onDone={(msg) => { setCancelling(false); setNotice(msg); void load() }} />
         )}
 
         {b && (
@@ -164,16 +203,23 @@ function BillingInner() {
                     {p.model_tiers.map((t) => <li key={t}>{TIER_TEXT[t] ?? t}</li>)}
                     <li>Effort up to {p.max_effort}</li>
                     <li>{p.research_allowed ? "Deep research mode" : "No deep research"}</li>
-                    <li>{usd(p.monthly_allowance_usd)} of model usage included</li>
+                    <li>About {Math.floor(p.monthly_allowance_usd / perMessage).toLocaleString()} messages a month</li>
                   </ul>
                   <div style={{ marginTop: "auto" }}>
                     {current ? (
                       <span className="h-muted" style={{ fontSize: 12 }}>Your plan</span>
                     ) : upgrade && (p.id === "plus" || p.id === "pro") ? (
-                      <button className="h-btn-solid" style={{ width: "100%" }} onClick={() => checkout(p.id as "plus" | "pro")}
-                        disabled={busy !== null} data-testid={`upgrade-${p.id}`}>
-                        {busy === p.id ? "Opening…" : `Upgrade to ${p.label}`}
-                      </button>
+                      <>
+                        <button className="h-btn-solid" style={{ width: "100%" }} onClick={() => checkout(p.id as "plus" | "pro")}
+                          disabled={busy !== null} data-testid={`upgrade-${p.id}`}>
+                          {busy === p.id ? "Opening…" : p.id === "plus" && b.trial_days ? `Start ${b.trial_days}-day free trial` : `Upgrade to ${p.label}`}
+                        </button>
+                        {p.id === "plus" && b.trial_days ? (
+                          <p className="h-muted" style={{ fontSize: 11, margin: "6px 0 0" }} data-testid="trial-note">
+                            Card needed. Nothing is charged until the trial ends; cancel any time before then.
+                          </p>
+                        ) : null}
+                      </>
                     ) : null}
                   </div>
                 </div>
@@ -183,7 +229,7 @@ function BillingInner() {
         )}
         {b?.enabled && (
           <p className="h-muted" style={{ fontSize: 11, margin: 0 }}>
-            Payments are handled by Dodo Payments, our merchant of record. Changes can take a few seconds to show after checkout — <button className="h-btn-ghost" style={{ fontSize: 11, padding: "0 4px" }} onClick={() => void load()}>refresh</button>.
+            Payments are handled by Dodo Payments, our merchant of record. See the <a href="/refunds" style={{ color: "inherit" }}>Refund Policy</a>. Changes can take a few seconds to show after checkout — <button className="h-btn-ghost" style={{ fontSize: 11, padding: "0 4px" }} onClick={() => void load()}>refresh</button>.
           </p>
         )}
       </div>

@@ -212,6 +212,10 @@ export function SignInModal({
             </button>
           </>
         )}
+        <p className="h-muted" style={{ fontSize: 11, margin: "16px 0 0", textAlign: "center" }} data-testid="signin-legal">
+          By continuing you agree to the <a href="/terms" target="_blank" rel="noopener" style={{ color: "inherit", textDecoration: "underline" }}>Terms</a>{" "}
+          and <a href="/privacy" target="_blank" rel="noopener" style={{ color: "inherit", textDecoration: "underline" }}>Privacy Policy</a>.
+        </p>
       </div>
     </div>
   );

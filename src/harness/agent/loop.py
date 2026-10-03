@@ -26,7 +26,7 @@ from harness.obs.tracing import Trace
 _pending_saves: set[asyncio.Task] = set()
 
 
-RETRIEVAL_TOOLS = {"search_docs", "filesystem__read_text_file", "filesystem__read_file"}
+RETRIEVAL_TOOLS = {"search_docs", "my_files"}
 
 PREVIEW_CHARS = 240
 
@@ -43,6 +43,7 @@ class AgentResult(BaseModel):
     stopped_reason: str
     input_tokens: int
     output_tokens: int
+    cached_input_tokens: int = 0
     retrieved_context: str = ""
     tools_used: list[str] = Field(default_factory=list)
     safety_blocked: list[str] = Field(default_factory=list)
@@ -195,7 +196,7 @@ async def run_agent(
             emit("security", **ev.as_dict())
 
     tools = [to_openai_tool(t) for t in registry.list()]
-    total_in = total_out = 0
+    total_in = total_out = total_cached = 0
     retrieved: list[str] = []
     tools_used: list[str] = []
     safety_blocked: list[str] = []
@@ -281,7 +282,7 @@ async def run_agent(
                 return AgentResult(
                     answer=f"Stopped: {reason}.", steps=step - 1,
                     stopped_reason="budget_exceeded",
-                    input_tokens=total_in, output_tokens=total_out,
+                    input_tokens=total_in, output_tokens=total_out, cached_input_tokens=total_cached,
                     retrieved_context="\n\n".join(retrieved),
                     tools_used=tools_used, safety_blocked=safety_blocked,
                     budget_used=_budget_snapshot(), resumed_from_step=resumed_from,
@@ -325,9 +326,12 @@ async def run_agent(
                     turn = await provider.chat(messages, tools, tool_choice=tc_choice)
             sp.attributes["gen_ai.usage.input_tokens"] = turn.input_tokens
             sp.attributes["gen_ai.usage.output_tokens"] = turn.output_tokens
+            cached_in = getattr(turn, "cached_input_tokens", 0) or 0
+            sp.attributes["gen_ai.usage.cached_input_tokens"] = cached_in
 
             total_in += turn.input_tokens
             total_out += turn.output_tokens
+            total_cached += cached_in
             budget.add(steps=1, tokens=turn.input_tokens + turn.output_tokens)
 
             if not turn.tool_calls:
@@ -345,7 +349,7 @@ async def run_agent(
                 return AgentResult(
                     answer=answer, steps=step, stopped_reason="answered",
                     security_events=sec.public() if sec is not None else [],
-                    input_tokens=total_in, output_tokens=total_out,
+                    input_tokens=total_in, output_tokens=total_out, cached_input_tokens=total_cached,
                     retrieved_context="\n\n".join(retrieved),
                     tools_used=tools_used, safety_blocked=safety_blocked,
                     budget_used=_budget_snapshot(), resumed_from_step=resumed_from,
@@ -373,7 +377,8 @@ async def run_agent(
             for i, tc in enumerate(turn.tool_calls):
                 is_approved = (approved_action is not None
                                and approved_action.get("tool_call_id") == tc.id)
-                if policy.decide(tc.name) == Decision.NEEDS_APPROVAL and not is_approved:
+                stub = any(t.name == tc.name and t.upgrade_stub for t in registry.list())
+                if policy.decide(tc.name) == Decision.NEEDS_APPROVAL and not is_approved and not stub:
                     pending_idx = i
                     break
                 # Layer 5: a tainted context turns consequential calls into approvals
@@ -417,7 +422,7 @@ async def run_agent(
                 return AgentResult(
                     answer=f"The agent wants to run '{p.name}'. Your approval is needed.",
                     steps=step, stopped_reason="pending_approval",
-                    input_tokens=total_in, output_tokens=total_out,
+                    input_tokens=total_in, output_tokens=total_out, cached_input_tokens=total_cached,
                     retrieved_context="\n\n".join(retrieved),
                     tools_used=tools_used, safety_blocked=[p.name],
                     budget_used=_budget_snapshot(), resumed_from_step=resumed_from,
@@ -453,7 +458,7 @@ async def run_agent(
     return AgentResult(
         answer="Stopped before finishing: reached the step limit.",
         steps=max_steps, stopped_reason="max_steps",
-        input_tokens=total_in, output_tokens=total_out,
+        input_tokens=total_in, output_tokens=total_out, cached_input_tokens=total_cached,
         retrieved_context="\n\n".join(retrieved),
         tools_used=tools_used, safety_blocked=safety_blocked,
         budget_used=_budget_snapshot(), resumed_from_step=resumed_from,

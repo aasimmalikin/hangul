@@ -7,7 +7,7 @@ heading; spreadsheets take ``sheets`` (rows, first row = header).
 
 Files land in the user's own folder (``data/sessions/<user>``) under a fresh
 name -- an existing file is never overwritten, which is why this is tier SAFE
-while ``filesystem__write_file`` needs approval. The chat shows a download
+and there is no tool that edits or deletes a file. The chat shows a download
 card (``GET /files/<name>``). Plan-gated: Plus and up (billing/plans.py).
 """
 
@@ -34,8 +34,15 @@ def user_folder(user_id: str) -> Path:
     return d
 
 
+def _slug(title: str, ext: str) -> str:
+    # a title that already ends in the extension ("notes.txt") keeps its name, not "notes-txt"
+    if title.lower().endswith(f".{ext}"):
+        title = title[: -len(ext) - 1]
+    return re.sub(r"[^A-Za-z0-9]+", "-", title).strip("-").lower()[:60] or "document"
+
+
 def fresh_name(folder: Path, title: str, ext: str) -> str:
-    slug = re.sub(r"[^A-Za-z0-9]+", "-", title).strip("-").lower()[:60] or "document"
+    slug = _slug(title, ext)
     name, n = f"{slug}.{ext}", 2
     while (folder / name).exists():
         name, n = f"{slug}-{n}.{ext}", n + 1
@@ -316,14 +323,19 @@ def make_create_file_tool(user_id: str) -> Tool:
         name = fresh_name(folder, title, fmt)
         await asyncio.to_thread((folder / name).write_bytes, data)
         size_kb = max(1, round(len(data) / 1024))
-        return ToolOutput(f"Created {name} ({size_kb} KB). The user can download it from the card shown in the chat.",
+        renamed = "" if name == f"{_slug(title, fmt)}.{fmt}" else (
+            f" A file called {_slug(title, fmt)}.{fmt} already existed and is never overwritten, so this one is "
+            f"{name}; tell the user that name.")
+        return ToolOutput(f"Created {name} ({size_kb} KB).{renamed} The user can download it from the card shown "
+                          "in the chat.",
                           {"kind": "file", "name": name, "format": fmt, "size": len(data), "title": title})
 
     return Tool(
         name="create_file",
         description=(
-            "Create a downloadable file for the user: pdf, docx (Word), pptx (slides), xlsx (Excel), csv, md or "
-            "txt. For documents and slides pass `content` as Markdown (# headings, - bullets, **bold**, | tables |; "
+            "Create or save a new file in the user's folder (they can download it): pdf, docx (Word), pptx (slides), "
+            "xlsx (Excel), csv, md or txt -- this is also how to save text to a file such as notes.txt. "
+            "For documents and slides pass `content` as Markdown (# headings, - bullets, **bold**, | tables |; "
             "in slides every # heading starts a new slide). For xlsx/csv pass `sheets`: [{name, rows}] with the "
             "first row as the header (numbers as numbers). Use when the user asks for a file, report, document, "
             "spreadsheet, slides or 'something I can download/send/print'. Write the full content yourself."),

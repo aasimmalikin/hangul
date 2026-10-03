@@ -47,7 +47,9 @@ async def ask_image(data: bytes, mime: str, question: str, *, user_id: str | Non
         resp = await client.chat.completions.create(**kwargs)
     text = (resp.choices[0].message.content or "").strip()
     if user_id and resp.usage:
-        cost = cost_usd(model, resp.usage.prompt_tokens, resp.usage.completion_tokens)
+        from harness.providers.openai_provider import cached_tokens
+        cost = cost_usd(model, resp.usage.prompt_tokens, resp.usage.completion_tokens,
+                        cached_tokens(resp.usage))
         if cost > 0:
             try:
                 from harness.billing import entitlements

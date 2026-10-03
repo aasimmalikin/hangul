@@ -32,6 +32,12 @@ class OpenAIInjectionClassifier:
             response_format={"type": "json_object"},
             max_tokens=120,
         )
+        if resp.usage:
+            from harness.billing import meter
+            from harness.obs.tracing import cost_usd
+            from harness.providers.openai_provider import cached_tokens
+            meter.add(cost_usd(self._model, resp.usage.prompt_tokens, resp.usage.completion_tokens,
+                               cached_tokens(resp.usage)), "security_screen")
         raw = resp.choices[0].message.content or "{}"
         try:
             data = json.loads(raw)

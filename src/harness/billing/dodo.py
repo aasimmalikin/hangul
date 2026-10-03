@@ -60,8 +60,10 @@ def _headers() -> dict:
     return {"Authorization": f"Bearer {key}", "Content-Type": "application/json"}
 
 
-async def create_checkout(product: str, user_id: str, email: str | None) -> str:
-    """A checkout URL for ``product``; raises BillingNotConfigured."""
+async def create_checkout(product: str, user_id: str, email: str | None, *, trial_days: int = 0) -> str:
+    """A checkout URL for ``product``; raises BillingNotConfigured. With
+    ``trial_days`` the subscription starts as a trial: Dodo authorises the
+    card for $0 now and takes the first real charge when the trial ends."""
     s = get_settings()
     pid = product_id_for(product)
     if not pid:
@@ -72,6 +74,9 @@ async def create_checkout(product: str, user_id: str, email: str | None) -> str:
         # copied onto the payment / subscription, so the webhook knows the user
         "metadata": {"user_id": str(user_id), "product": product},
     }
+    if trial_days > 0 and product in ("plus", "pro"):
+        body["subscription_data"] = {"trial_period_days": int(trial_days)}
+        body["metadata"]["trial"] = "1"           # copied onto the subscription: the webhook marks it trialing
     if email:
         body["customer"] = {"email": email}
     async with httpx.AsyncClient(timeout=15) as client:
@@ -90,6 +95,31 @@ async def portal_link(customer_id: str) -> str:
                               params={"return_url": get_settings().billing_return_url}, headers=_headers())
     r.raise_for_status()
     return r.json()["link"]
+
+
+async def _subscription(method: str, path: str, body: dict) -> dict:
+    async with httpx.AsyncClient(timeout=15) as client:
+        r = await client.request(method, f"{api_base()}/subscriptions/{path}", json=body, headers=_headers())
+    r.raise_for_status()
+    return r.json() if r.content else {}
+
+
+async def set_cancel_at_period_end(subscription_id: str, cancel: bool, comment: str = "") -> dict:
+    """Cancel at the end of the paid period (the plan stays until then), or
+    undo that. Dodo then sends subscription.updated, which the webhook applies."""
+    body: dict = {"cancel_at_next_billing_date": cancel}
+    if cancel and comment:
+        body["cancellation_comment"] = comment[:500]
+    return await _subscription("PATCH", subscription_id, body)
+
+
+async def change_plan(subscription_id: str, product: str) -> dict:
+    """Switch to another plan now, crediting the unused part of the current one."""
+    pid = product_id_for(product)
+    if not pid:
+        raise BillingNotConfigured(f"No Dodo product configured for '{product}'.")
+    return await _subscription("POST", f"{subscription_id}/change-plan",
+                               {"product_id": pid, "quantity": 1, "proration_billing_mode": "prorated_immediately"})
 
 
 def verify_signature(raw: bytes, webhook_id: str | None, timestamp: str | None,
@@ -160,10 +190,15 @@ def apply_event(payload: dict) -> str:
         plan = product if product in ("plus", "pro") and status in ACTIVE_STATUSES else "free"
         cancelling = bool(data.get("cancel_at_next_billing_date")) and plan != "free"
         before = billing_db.get_account(user_id)
+        # a trial runs from subscription.active until the first real charge (subscription.renewed)
+        trial = (plan != "free" and kind != "subscription.renewed"
+                 and str((data.get("metadata") or {}).get("trial", "")) == "1"
+                 and (before.plan == "free" or before.plan_status in ("trialing", "trial_cancelling")))
         customer = data.get("customer") or {}
         fields = dict(
             plan=plan,
-            plan_status="cancelling" if cancelling else status,
+            plan_status=(("trial_cancelling" if cancelling else "trialing") if trial
+                         else "cancelling" if cancelling else status),
             plan_renews_at=None if cancelling else _ts(data.get("next_billing_date")),
             plan_ends_at=_ts(data.get("expires_at")) or (_ts(data.get("next_billing_date")) if cancelling else None),
             billing_customer_id=customer.get("customer_id") or before.billing_customer_id,
@@ -172,6 +207,9 @@ def apply_event(payload: dict) -> str:
         if plan != before.plan:
             # a new plan starts a fresh allowance period
             fields["plan_period_start"] = datetime.now(timezone.utc) if plan != "free" else None
+        elif kind == "subscription.renewed" and before.plan_status in ("trialing", "trial_cancelling"):
+            # the trial converted: the first paid period starts now, with the full allowance
+            fields["plan_period_start"] = datetime.now(timezone.utc)
         elif kind == "subscription.renewed":
             fields["plan_period_start"] = _ts(data.get("previous_billing_date")) or datetime.now(timezone.utc)
         billing_db.update_account(user_id, **fields)

@@ -28,7 +28,7 @@ CONCERN_TOOLS: dict[str, tuple[str, ...]] = {
     "docs": ("search_docs", "calculator", "recall", "recall_episodes", "view_image"),
     "web": ("web_search", "read_webpage", "search_docs", "calculator"),   # docs-first is fine
     "compute": ("calculator", "convert"),
-    "files": ("filesystem__*", "search_docs", "create_file", "analyze_data", "view_image"),
+    "files": ("my_files", "search_docs", "create_file", "analyze_data", "view_image"),
     "external": ("vault_request", "vault_mutate"),
     "memory": ("recall", "remember", "recall_episodes"),
     "research": ("arxiv_*", "search_docs", "read_webpage"),       # Research connector
@@ -126,7 +126,7 @@ def grade_hallucination_deterministic(traj: Trajectory, registry_schemas: dict[s
     return round(1 - bad / len(traj.calls), 3)
 
 
-JUDGE_RESULT_CHARS = 4000   # per tool result shown to the judge
+JUDGE_RESULT_CHARS = 16000  # per tool result shown to the judge
 
 HALLUCINATION_RUBRIC = (
     "You are auditing an AI agent's final answer against the exact list of tool calls it made. "

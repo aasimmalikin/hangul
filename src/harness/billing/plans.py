@@ -12,6 +12,7 @@ from harness.config import get_settings
 from harness.providers.registry import Effort, ModelSpec, Tier, list_models
 
 EFFORT_ORDER: tuple[Effort, ...] = ("minimal", "low", "medium", "high", "xhigh")
+WEEK_MINUTES = 7 * 24 * 60
 
 
 @dataclass(frozen=True)
@@ -22,6 +23,8 @@ class Plan:
     model_tiers: tuple[Tier, ...]
     max_effort: Effort
     research_allowed: bool
+    # scheduled tasks may run at most this often (Free: weekly; the daily brief is Plus)
+    task_min_minutes: int = 15
 
     @property
     def monthly_allowance_usd(self) -> float:
@@ -40,12 +43,12 @@ class Plan:
     def to_dict(self) -> dict:
         return {"id": self.id, "label": self.label, "price_usd_month": self.price_usd_month,
                 "model_tiers": list(self.model_tiers), "max_effort": self.max_effort,
-                "research_allowed": self.research_allowed,
+                "research_allowed": self.research_allowed, "task_min_minutes": self.task_min_minutes,
                 "monthly_allowance_usd": self.monthly_allowance_usd}
 
 
 PLANS: dict[str, Plan] = {p.id: p for p in (
-    Plan("free", "Free", 0, ("basic",), "medium", research_allowed=False),
+    Plan("free", "Free", 0, ("basic",), "medium", research_allowed=False, task_min_minutes=WEEK_MINUTES),
     Plan("plus", "Plus", 20, ("basic", "advanced"), "xhigh", research_allowed=True),
     Plan("pro", "Pro", 100, ("basic", "advanced", "frontier"), "xhigh", research_allowed=True),
 )}
@@ -59,6 +62,15 @@ GATED_TOOLS: dict[str, tuple[str, str]] = {
     "analyze_data": ("plus", "Spreadsheet analysis and charts"),
     "maps_search": ("plus", "Maps and places"),
     "travel_time": ("plus", "Travel times and directions"),
+    # Google: Free reads and summarises; acting on the user's behalf is Plus
+    "gmail__send_*": ("plus", "Sending email"),
+    "gmail__create_draft": ("plus", "Drafting email replies"),
+    "calendar__create_event": ("plus", "Adding calendar events"),
+    "calendar__update_event": ("plus", "Changing calendar events"),
+    "calendar__delete_event": ("plus", "Deleting calendar events"),
+    "sheets__append_rows": ("plus", "Writing to Google Sheets"),
+    "sheets__create_spreadsheet": ("plus", "Creating Google Sheets"),
+    "docs__append_text": ("plus", "Writing to Google Docs"),
     "generate_image": ("pro", "Image generation"),
     "github__*": ("pro", "The GitHub connector"),
     "notion__*": ("pro", "The Notion connector"),

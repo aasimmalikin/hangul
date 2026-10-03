@@ -100,3 +100,38 @@ def release_event(event_id: str) -> None:
         if row is not None:
             s.delete(row)
             s.commit()
+
+
+def record_churn(user_id: str, *, plan: str, reason: str, detail: str, outcome: str) -> None:
+    from harness.db.models import ChurnFeedback
+    uid = _uid(user_id)
+    if uid is None:
+        return
+    with SessionLocal() as s:
+        s.add(ChurnFeedback(user_id=uid, plan=plan, reason=reason[:32], detail=(detail or "")[:1000], outcome=outcome))
+        s.commit()
+
+
+def churn_summary(days: int = 90) -> dict:
+    """Counts by reason and by outcome over the last ``days``, plus recent comments."""
+    from datetime import UTC, timedelta
+    from sqlalchemy import func as sfunc
+    from harness.db.models import ChurnFeedback
+    since = datetime.now(UTC) - timedelta(days=days)
+    with SessionLocal() as s:
+        q = select(ChurnFeedback.reason, ChurnFeedback.outcome, sfunc.count()).where(ChurnFeedback.created_at >= since) \
+            .group_by(ChurnFeedback.reason, ChurnFeedback.outcome)
+        rows = s.execute(q).all()
+        recent = s.execute(select(ChurnFeedback).where(ChurnFeedback.created_at >= since, ChurnFeedback.detail != "")
+                           .order_by(ChurnFeedback.created_at.desc()).limit(20)).scalars().all()
+    by_reason: dict[str, dict[str, int]] = {}
+    outcomes: dict[str, int] = {}
+    for reason, outcome, n in rows:
+        by_reason.setdefault(reason, {})[outcome] = n
+        outcomes[outcome] = outcomes.get(outcome, 0) + n
+    total = sum(outcomes.values())
+    saved = outcomes.get("kept", 0) + outcomes.get("downgraded", 0)
+    return {"days": days, "total": total, "outcomes": outcomes, "saved_rate": round(saved / total, 3) if total else None,
+            "by_reason": by_reason,
+            "comments": [{"reason": r.reason, "outcome": r.outcome, "plan": r.plan, "detail": r.detail,
+                          "at": r.created_at.isoformat() if r.created_at else None} for r in recent]}

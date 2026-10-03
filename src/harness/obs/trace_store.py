@@ -7,7 +7,7 @@ class TraceStore:
     
     def add(self, trace:Trace, model:str)->None:
         s = trace.summary()
-        s["cost_usd"] = cost_usd(model, s["input_tokens"], s["output_tokens"])
+        s["cost_usd"] = cost_usd(model, s["input_tokens"], s["output_tokens"], s.get("cached_input_tokens", 0))
         self._traces.append(s)
     
     def recent(self, n:int = 20)-> list[dict]:

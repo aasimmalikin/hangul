@@ -75,6 +75,21 @@ def free_pool_spent(since: datetime) -> Decimal:
         return -_sum(session, None, ("free_cost",), since)
 
 
+def average_run_cost(since: datetime, min_runs: int = 50) -> Decimal | None:
+    """Average cost of one run (all users) since ``since``, or None with fewer
+    than ``min_runs`` runs. A run settled across allowance and credits is two
+    rows with one thread_id, so rows are summed per thread first."""
+    with SessionLocal() as session:
+        per_run = (select(func.sum(Transaction.amount).label("total"))
+                   .where(Transaction.kind.in_(("run_cost", "free_cost", "credit_spend")),
+                          Transaction.created_at >= since, Transaction.thread_id.is_not(None))
+                   .group_by(Transaction.thread_id).subquery())
+        n, avg = session.execute(select(func.count(), func.avg(per_run.c.total))).one()
+    if not n or n < min_runs or avg is None:
+        return None
+    return -Decimal(avg)
+
+
 def credit_balance(user_id: str) -> Decimal:
     with SessionLocal() as session:
         return _sum(session, user_id, ("topup", "credit_spend"))

@@ -36,6 +36,9 @@ async def web_search(query: str, max_results: int = 3) -> str:
         return UNAVAILABLE.format(why=type(e).__name__)
     if resp.status != 200:
         return UNAVAILABLE.format(why=f"HTTP {resp.status}")
+    from harness.billing import meter
+    from harness.config import get_settings
+    meter.add(get_settings().web_search_usd, "web_search")   # the search was made: it costs a credit
     try:
         return _format(json.loads(resp.body).get("results", []))
     except (json.JSONDecodeError, AttributeError):

@@ -33,7 +33,7 @@ def _source_of(name: str) -> str:
         return "the open web (untrusted third-party pages)"
     if name.startswith("arxiv_"):
         return "arXiv (third-party paper metadata and abstracts)"
-    if name.startswith("filesystem__"):
+    if name == "my_files" or name.startswith("filesystem__"):
         return "a file in the user's workspace"
     if name.startswith("vault_"):
         return "a third-party API response"

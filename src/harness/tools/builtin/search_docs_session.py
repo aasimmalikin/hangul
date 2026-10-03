@@ -17,8 +17,7 @@ log = logging.getLogger(__name__)
 
 DESCRIPTION = (
     "Search the user's document library for passages relevant to a "
-    "query. This is the only way to reach that library -- the "
-    "filesystem tools cannot see it. Use it for any question about "
+    "query. Use it for any question about "
     "what the documents say, including when the user names a "
     "document by title. Cite the [source] shown with each passage."
 )

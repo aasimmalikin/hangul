@@ -13,6 +13,20 @@ from harness.logging import log
 POLL_S = 60
 
 
+def _weekly_only(user_id: str) -> bool:
+    """A plan that allows tasks only weekly (Free) slows a daily task down
+    rather than stopping it, so a user who downgrades keeps a weekly brief."""
+    from harness.billing import entitlements
+    from harness.billing.plans import WEEK_MINUTES, get_plan
+    from harness.db import billing as billing_db
+    if not entitlements.billing_enabled():
+        return False
+    try:
+        return get_plan(billing_db.get_account(user_id).plan).task_min_minutes >= WEEK_MINUTES
+    except Exception:  # noqa: BLE001 - a DB blip keeps the stored schedule
+        return False
+
+
 async def run_task(task, *, tz: str) -> None:
     from harness.api.concurrency import run_slot
     from harness.api.routes.ask import AskRequest, _build_and_run
@@ -20,7 +34,7 @@ async def run_task(task, *, tz: str) -> None:
     from harness.db.episodes import store_episode
 
     user_id = str(task.user_id)
-    tasks_db.mark_started(task.id, tz)
+    tasks_db.mark_started(task.id, tz, weekly=_weekly_only(user_id))
     try:
         req = AskRequest(question=task.question, connectors=list(task.connectors), mode=task.mode)
         async with run_slot(user_id):

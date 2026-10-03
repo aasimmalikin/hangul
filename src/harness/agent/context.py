@@ -148,12 +148,17 @@ def validate(messages: list[dict]) -> str | None:
 async def compact(*, prior_summary: str, dropped: list[ConversationMessage]) -> str:
     """Fold the messages leaving the window into one summary.
 
-    Uses the configured default model rather than the run's: this is
-    bookkeeping, and a reasoning model with a high effort would cost more than
-    the turn it is making room for. A failure returns the previous summary --
-    losing the older context is bad, failing the user's question is worse.
+    Uses ``summary_model`` (a cheap model at low effort), never the run's:
+    this is bookkeeping, and a strong reasoning model would cost more than the
+    turn it is making room for. Its cost goes on the run's meter. A failure
+    returns the previous summary -- losing the older context is bad, failing
+    the user's question is worse.
     """
+    from harness.billing import meter
+    from harness.config import get_settings
+    from harness.obs.tracing import cost_usd
     from harness.providers import get_provider
+    from harness.providers.registry import get_model
 
     lines: list[str] = []
     for m in dropped:
@@ -166,11 +171,19 @@ async def compact(*, prior_summary: str, dropped: list[ConversationMessage]) -> 
         body = f"Previous summary:\n{prior_summary}\n\nNewly dropped:\n{body}"
 
     try:
-        turn = await get_provider().chat(
+        spec = get_model(get_settings().summary_model)
+        base = get_provider()
+        # the shared client, bound to the cheap summary model at low effort
+        provider = (base.bound(spec.id, "low" if "low" in spec.efforts else None)
+                    if spec is not None and hasattr(base, "bound") else base)
+        turn = await provider.chat(
             [{"role": "system", "content": _SUMMARY_PROMPT},
              {"role": "user", "content": body}],
             [],
         )
+        meter.add(cost_usd(getattr(provider, "model", get_settings().summary_model), getattr(turn, "input_tokens", 0) or 0,
+                           getattr(turn, "output_tokens", 0) or 0,
+                           getattr(turn, "cached_input_tokens", 0) or 0), "summary")
         text = (turn.text or "").strip()
         return text or prior_summary
     except Exception as e:  # noqa: BLE001

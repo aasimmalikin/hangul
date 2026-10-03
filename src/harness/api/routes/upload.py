@@ -33,6 +33,13 @@ def _safe_session_dir(user_id: str)->Path:
 
 @router.post("/upload")
 async def upload(file:UploadFile = File(...), user: dict = Depends(get_current_user)):
+    """Index one file. Its embedding cost is metered and charged to the uploader."""
+    from harness.billing import meter
+    async with meter.metering(user["user_id"], settle_on_exit=True):
+        return await _upload(file, user)
+
+
+async def _upload(file: UploadFile, user: dict):
     data = b""
     while chunk:= await file.read(1024*1024):
         data+=chunk

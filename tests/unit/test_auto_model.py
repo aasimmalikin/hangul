@@ -17,7 +17,8 @@ from harness.providers import router
     ("remind me to call mom at 7", "quick"), ("weather tomorrow", "quick"), ("100 usd in inr", "quick"),
     ("add milk to my shopping list", "quick"), ("hi", "quick"),
     ("summarise my inbox", "everyday"), ("plan my day", "everyday"),
-    ("draft a reply to Priya about the invoice", "everyday"),
+    ("draft a reply to Priya about the invoice", "write"), ("what's on my calendar tomorrow?", "everyday"),
+    ("rewrite this so it sounds friendlier", "write"),
     ("compare the iPhone 17 and Pixel 11 for photography", "deep"),
     ("analyse my bank statement csv", "deep"), ("why does my python script fail", "deep"),
 ])
@@ -35,7 +36,9 @@ def test_research_mode_and_long_requests_are_deep():
     ("plus", "compare A and B in depth", ("gpt-5.6-terra", "high")),
     ("pro", "compare A and B in depth", ("gpt-5.6-sol", "high")),
     ("pro", "remind me to stretch", ("gpt-5.6-luna", "low")),            # quick stays cheap, even on Pro
-    ("plus", "summarise my inbox", ("gpt-5.6-terra", "medium")),
+    ("plus", "summarise my inbox", ("gpt-5.6-luna", "medium")),           # reading mail: the cheap model
+    ("plus", "draft a reply to Priya about the invoice", ("gpt-5.6-terra", "medium")),  # writing: the mid model
+    ("free", "draft a reply to Priya about the invoice", ("gpt-5.6-luna", "medium")),
 ])
 def test_choice_respects_the_plan(plan, q, expected):
     p = PLANS[plan]

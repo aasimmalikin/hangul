@@ -28,6 +28,7 @@ import { ChatsPanel } from "@/components/hangul/ChatsPanel"
 import { useConnectivity } from "@/components/hangul/useConnectivity"
 import { parseApiFailure, failureFromResponse, isBillingFailure, type ApiFailure } from "@/lib/apiError"
 import { UpgradeCard } from "@/components/hangul/UpgradeCard"
+import { UsageNudge } from "@/components/hangul/UsageNudge"
 import { deviceTimeZone } from "@/lib/timezone"
 
 type Approval = { runId: string; toolCallId?: string | null; tool: string; arguments: Record<string, unknown> }
@@ -613,6 +614,13 @@ function ChatInner() {
   }, [userId, conversationId])
 
   const streaming = status === "submitted" || status === "streaming"
+  // bumped when an answer finishes, so the usage nudge re-reads what's left
+  const [answersDone, setAnswersDone] = useState(0)
+  const wasStreaming = useRef(false)
+  useEffect(() => {
+    if (wasStreaming.current && !streaming) setAnswersDone((n) => n + 1)
+    wasStreaming.current = streaming
+  }, [streaming])
   // Save on every change, including mid-answer: if the user navigates away
   // while the agent is still talking, the question (and whatever streamed so
   // far) is there when they come back, flagged as cut short with a Retry.
@@ -1051,6 +1059,7 @@ function ChatInner() {
           {showThinking && <ActivityGroup items={[{ kind: "thinking", key: "pre" }]} live />}
 
           {billingFailure && <UpgradeCard failure={billingFailure} onDismiss={() => { setNotice(null); clearError() }} />}
+          {!billingFailure && !streaming && <UsageNudge refreshKey={answersDone} />}
           {!billingFailure && (notice || (interrupted && messages.length > 0)) && (
             <Card tone="error" testId="notice-card">
               <p className="text-sm" style={{ margin: 0 }}>

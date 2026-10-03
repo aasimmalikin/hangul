@@ -47,12 +47,16 @@ class Trace:
             "tool_calls": len(tool_spans),
             "input_tokens": sum(s.attributes.get("gen_ai.usage.input_tokens", 0)for s in model_spans),
             "output_tokens": sum(s.attributes.get("gen_ai.usage.output_tokens", 0)for s in model_spans),
+            "cached_input_tokens": sum(s.attributes.get("gen_ai.usage.cached_input_tokens", 0) for s in model_spans),
             "errors": [s.name for s in self.spans if s.status == "error"]
 
         }
 
-def cost_usd(model: str, input_tokens: int, output_tokens: int) -> float:
-    """Dollar cost of a run, priced from providers.registry (unknown model → 0)."""
+def cost_usd(model: str, input_tokens: int, output_tokens: int, cached_input_tokens: int = 0) -> float:
+    """Dollar cost of a run, priced from providers.registry (unknown model → 0).
+
+    ``cached_input_tokens`` is the part of ``input_tokens`` OpenAI served from
+    its prompt cache; it is billed at the model's cached rate, not the full one."""
     # Imported here: registry pulls in config, and tracing must stay import-light.
     from harness.providers.registry import get_model
     from harness.logging import log
@@ -61,7 +65,9 @@ def cost_usd(model: str, input_tokens: int, output_tokens: int) -> float:
     if spec is None:
         log.warning("no pricing for model; cost recorded as 0", model=model)
         return 0.0
-    return round(input_tokens / 1_000_000 * spec.input_usd_per_m
+    cached = min(max(cached_input_tokens, 0), input_tokens)
+    return round((input_tokens - cached) / 1_000_000 * spec.input_usd_per_m
+                 + cached / 1_000_000 * spec.cached_rate
                  + output_tokens / 1_000_000 * spec.output_usd_per_m, 6)
 
 

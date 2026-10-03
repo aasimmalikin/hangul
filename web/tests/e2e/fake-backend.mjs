@@ -34,7 +34,7 @@ import crypto from "node:crypto"
 const PORT = Number(process.env.FAKE_BACKEND_PORT ?? 8765)
 const SECRET = process.env.FASTAPI_JWT_SECRET ?? "e2e-service-secret"
 
-const state = { down: false, approves: {}, executed: {}, uploads: [], asks: [], inFlight: {}, memory: {}, episodes: {}, conversations: {}, convMessages: {}, adminCalls: [], evalRuns: {}, prefs: {}, tasks: {}, google: {}, checkouts: [], todos: {}, reminders: {}, notes: {}, deviceTz: {}, transcripts: [], transcribed: [], spoken: [], apps: {} }
+const state = { down: false, approves: {}, executed: {}, uploads: [], asks: [], inFlight: {}, memory: {}, episodes: {}, conversations: {}, convMessages: {}, adminCalls: [], evalRuns: {}, prefs: {}, tasks: {}, google: {}, checkouts: [], todos: {}, reminders: {}, notes: {}, deviceTz: {}, transcripts: [], transcribed: [], spoken: [], apps: {}, billing: {}, churn: [] }
 
 function verify(req) {
   const h = req.headers.authorization ?? ""
@@ -408,6 +408,15 @@ const server = http.createServer(async (req, res) => {
   if (url.pathname === "/__state") return json(res, 200, state)
   // Test hook: plant a server-owned conversation (and optionally its transcript)
   // for a user, with a chosen timestamp -- what the rail reads.
+  if (url.pathname === "/__billing" && req.method === "POST") {
+    // put a user on a paid plan for the cancel-flow tests; `extra` overrides any GET /billing field
+    // (messages_left, nudge, trial_days, trialing… for 26-free-vs-paid.spec.ts)
+    const b = JSON.parse((await readBody(req)).toString() || "{}")
+    const plan = b.plan ? { plan: b.plan, plan_label: b.plan[0].toUpperCase() + b.plan.slice(1), status: "active",
+                            renews_at: "2026-11-03T00:00:00Z", ends_at: null } : {}
+    state.billing[b.user] = { ...plan, ...(b.extra ?? {}) }
+    return json(res, 200, { ok: true })
+  }
   if (url.pathname === "/__onboarding" && req.method === "POST") {
     const b = JSON.parse((await readBody(req)).toString() || "{}")
     state.prefs[b.user] = { ...(state.prefs[b.user] ?? {}), onboarded: false }
@@ -444,7 +453,7 @@ const server = http.createServer(async (req, res) => {
     rows.push({ id: ++episodeSeq, thread_id: b.thread_id ?? `seed-${episodeSeq}`, title: b.title, summary: b.summary ?? `Q: ${b.title}\nA: Reply to: ${b.title}`, created_at: at, updated_at: at, active: true })
     return json(res, 200, { ok: true })
   }
-  if (url.pathname === "/__reset") { Object.assign(state, { down: false, approves: {}, executed: {}, uploads: [], asks: [], inFlight: {}, memory: {}, episodes: {}, conversations: {}, convMessages: {}, adminCalls: [], evalRuns: {}, prefs: {}, tasks: {}, google: {}, checkouts: [], todos: {}, reminders: {}, notes: {}, deviceTz: {}, transcripts: [], transcribed: [], spoken: [], apps: {} }); convSeq = 0; return json(res, 200, { ok: true }) }
+  if (url.pathname === "/__reset") { Object.assign(state, { down: false, approves: {}, executed: {}, uploads: [], asks: [], inFlight: {}, memory: {}, episodes: {}, conversations: {}, convMessages: {}, adminCalls: [], evalRuns: {}, prefs: {}, tasks: {}, google: {}, checkouts: [], todos: {}, reminders: {}, notes: {}, deviceTz: {}, transcripts: [], transcribed: [], spoken: [], apps: {}, billing: {}, churn: [] }); convSeq = 0; return json(res, 200, { ok: true }) }
   if (url.pathname === "/healthz") return state.down ? json(res, 503, { status: "down" }) : json(res, 200, { status: "ok" })
   if (url.pathname === "/connectors") return json(res, 200, [
     { key: "arxiv", label: "Research", description: "Search and read arXiv papers", kind: "builtin", icon: "book-2", per_user: false, auth: null, servers: [] },
@@ -534,12 +543,28 @@ const server = http.createServer(async (req, res) => {
     return json(res, 200, {
       enabled: true, plan: "free", plan_label: "Free", status: null, renews_at: null, ends_at: null,
       allowance_usd: 0.5, allowance_left_usd: 0.2, credits_usd: 1.5, has_portal: true,
+      ...(state.billing[user.sub] ?? {}),
       plans: [
         { id: "free", label: "Free", price_usd_month: 0, model_tiers: ["basic"], max_effort: "medium", research_allowed: false, monthly_allowance_usd: 0.5 },
         { id: "plus", label: "Plus", price_usd_month: 20, model_tiers: ["basic", "advanced"], max_effort: "xhigh", research_allowed: true, monthly_allowance_usd: 8 },
         { id: "pro", label: "Pro", price_usd_month: 100, model_tiers: ["basic", "advanced", "frontier"], max_effort: "xhigh", research_allowed: true, monthly_allowance_usd: 40 },
       ],
     })
+  }
+  if (url.pathname === "/billing/leave" && req.method === "POST") {
+    const b = JSON.parse((await readBody(req)).toString() || "{}")
+    const acct = state.billing[user.sub] ?? {}
+    if (!acct.plan || acct.plan === "free") return json(res, 409, { detail: "There's no paid plan to change." })
+    const outcome = { keep: "kept", downgrade: "downgraded", cancel: "cancelled" }[b.action]
+    state.churn.push({ user: user.sub, plan: acct.plan, reason: b.reason, detail: b.detail ?? "", outcome })
+    if (b.action === "downgrade") Object.assign(acct, { plan: "plus", plan_label: "Plus" })
+    if (b.action === "cancel") Object.assign(acct, { status: "cancelling", ends_at: acct.renews_at, renews_at: null })
+    return json(res, 200, { outcome, plan: acct.plan, ends_at: acct.ends_at ?? null })
+  }
+  if (url.pathname === "/billing/resume" && req.method === "POST") {
+    const acct = state.billing[user.sub] ?? {}
+    Object.assign(acct, { status: "active", renews_at: acct.ends_at, ends_at: null })
+    return json(res, 200, { plan: acct.plan, status: "active" })
   }
   if (url.pathname === "/billing/checkout" && req.method === "POST") {
     const b = JSON.parse((await readBody(req)).toString() || "{}")

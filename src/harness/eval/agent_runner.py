@@ -27,7 +27,8 @@ from harness.security import get_guard
 from harness.tools.base import Tool
 from harness.tools.builtin.ask_user import ASK_USER_TOOL
 from harness.tools.builtin.calculator import CALCULATOR_TOOL
-from harness.tools.builtin.filesystem_session import wrap_filesystem_tool
+from harness.tools.builtin.files import make_create_file_tool
+from harness.tools.builtin.my_files import make_my_files_tool
 from harness.tools.builtin.search_docs import SEARCH_DOCS_TOOL
 from harness.tools.builtin.vault_request import build_vault_tools
 from harness.tools.builtin.web_search import WEB_SEARCH_TOOL
@@ -77,9 +78,8 @@ async def full_registry() -> ToolRegistry:
     reg.registry(CALCULATOR_TOOL)
     reg.registry(WEB_SEARCH_TOOL)
     reg.registry(ASK_USER_TOOL)
-    for t in _registry.list():
-        if t.name.startswith("filesystem__"):
-            reg.registry(wrap_filesystem_tool(t, EVAL_USER_ID))
+    reg.registry(make_my_files_tool(EVAL_USER_ID))
+    reg.registry(make_create_file_tool(EVAL_USER_ID))
     for t in await build_vault_tools(EVAL_USER_ID, None):
         reg.registry(t)
     return reg

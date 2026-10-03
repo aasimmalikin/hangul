@@ -10,7 +10,7 @@ import { deviceTimeZone } from "@/lib/timezone"
  * useful on day one.
  *   1. What should I call you? (+ city; the timezone is detected)
  *   2. Connect Google? (Gmail + Calendar make the brief and reminders shine)
- *   3. A morning brief every day at 8:00?
+ *   3. A morning brief every day at 8:00? (weekly on the Free plan; daily is Plus)
  * Shown once: finishing or skipping calls POST /api/settings/onboarded. The
  * current step survives the Google sign-in round trip (sessionStorage).
  */
@@ -34,6 +34,7 @@ export function Onboarding() {
   const [city, setCity] = useState("")
   const [google, setGoogle] = useState(false)
   const [busy, setBusy] = useState(false)
+  const [weeklyOnly, setWeeklyOnly] = useState(false)     // Free plan with billing on: the brief is weekly
 
   useEffect(() => {
     let alive = true
@@ -47,6 +48,9 @@ export function Onboarding() {
       setOpen(true)
     }).catch(() => {})
     void loadIntegrations().then((i) => { if (alive) setGoogle(Boolean(i?.google.connected)) })
+    void fetch("/api/billing", { cache: "no-store" }).then((r) => (r.ok ? r.json() : null))
+      .then((b: { enabled?: boolean; plan?: string } | null) => { if (alive) setWeeklyOnly(Boolean(b?.enabled && b.plan === "free")) })
+      .catch(() => {})
     return () => { alive = false }
     // runs once per page load; the session name is only a default
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -84,7 +88,8 @@ export function Onboarding() {
     await fetch("/api/tasks", {
       method: "POST", headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
-        title: "Morning brief", daily_at: "08:00", connectors: google ? ["gmail", "calendar"] : [], mode: "default", deliver_email: true,
+        // fit_plan: on Free the brief is weekly instead of refused (daily is Plus)
+        title: "Morning brief", daily_at: "08:00", connectors: google ? ["gmail", "calendar"] : [], mode: "default", deliver_email: true, fit_plan: true,
         question: "Give me my morning brief for today, short and with headings: the weather where I live, today's calendar " +
           "events, my reminders and to-do items, and any important unread emails from the last day. Skip any section you can't access.",
       }),
@@ -138,9 +143,10 @@ export function Onboarding() {
             <i className="ti ti-sunrise" style={{ fontSize: 30 }} />
             <h2 className="h-display" style={{ fontSize: 20, margin: 0 }}>A morning brief?</h2>
             <p className="h-muted" style={{ fontSize: 13, margin: 0 }}>
-              Every day at 8:00 I&apos;ll email you the weather, your day&apos;s events, reminders{google ? " and important mail" : ""}.
+              {weeklyOnly ? "Once a week" : "Every day"} at 8:00 I&apos;ll email you the weather, your day&apos;s events, reminders{google ? " and important mail" : ""}.
             </p>
-            <button className="h-btn-solid" onClick={() => void morningBrief()} disabled={busy} data-testid="onboarding-brief">Yes, every morning</button>
+            {weeklyOnly && <p className="h-muted" style={{ fontSize: 12, margin: 0 }} data-testid="onboarding-brief-weekly">On Free it comes once a week. Plus sends it every morning.</p>}
+            <button className="h-btn-solid" onClick={() => void morningBrief()} disabled={busy} data-testid="onboarding-brief">{weeklyOnly ? "Yes, weekly" : "Yes, every morning"}</button>
             <button className="h-btn-ghost" onClick={() => void finish()} disabled={busy}>Not now</button>
           </div>
         )}

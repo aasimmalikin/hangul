@@ -37,7 +37,7 @@ test.describe("phase 4", () => {
   test("connect GitHub at /vault, then switch it on in the chat", async ({ page }) => {
     await page.goto("/chat")
     await page.getByRole("button", { name: "Add" }).click()
-    await page.getByTestId("menu-connectors").hover()
+    await page.getByTestId("menu-connectors").click()        // click, not hover: the touch path, and steady under load
     await expect(page.getByTestId("connector-github")).toContainText("Connect your account first")
 
     await page.goto("/vault")
@@ -52,7 +52,7 @@ test.describe("phase 4", () => {
 
     await page.goto("/chat")
     await page.getByRole("button", { name: "Add" }).click()
-    await page.getByTestId("menu-connectors").hover()
+    await page.getByTestId("menu-connectors").click()        // click, not hover: the touch path, and steady under load
     await page.getByTestId("connector-github").click()
     await expect(page.getByTestId("connector-github")).toHaveAttribute("aria-checked", "true")
   })

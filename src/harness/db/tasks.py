@@ -10,6 +10,7 @@ from harness.db.base import SessionLocal
 from harness.db.models import ScheduledTask
 
 MIN_EVERY_MINUTES = 15
+WEEK_MINUTES = 7 * 24 * 60   # with daily_at: "weekly at HH:MM" (the Free plan's brief)
 MAX_TASKS_PER_USER = 20
 
 
@@ -44,9 +45,22 @@ def _to(row: ScheduledTask) -> Task:
                 created_at=row.created_at, deliver_email=bool(getattr(row, "deliver_email", False)))
 
 
-def compute_next_run(every_minutes: int | None, daily_at: str | None, tz: str, after: datetime | None = None) -> datetime:
+def interval_minutes(every_minutes: int | None, daily_at: str | None) -> int:
+    """How often a schedule runs, for plan checks."""
+    if daily_at:
+        return WEEK_MINUTES if every_minutes == WEEK_MINUTES else 24 * 60
+    return every_minutes or 24 * 60
+
+
+def compute_next_run(every_minutes: int | None, daily_at: str | None, tz: str, after: datetime | None = None,
+                     *, ran: bool = False) -> datetime:
+    """Next run time. ``ran`` = called as a run starts, so a weekly task skips
+    ahead a week (when created or retimed it runs at the next HH:MM)."""
     now = after or datetime.now(UTC)
-    if every_minutes:
+    weekly = bool(daily_at) and every_minutes == WEEK_MINUTES
+    if weekly:
+        now = now + timedelta(days=6) if ran else now
+    elif every_minutes:
         return now + timedelta(minutes=max(MIN_EVERY_MINUTES, every_minutes))
     hh, mm = (int(x) for x in (daily_at or "09:00").split(":"))
     zone = ZoneInfo(tz or "UTC")
@@ -126,15 +140,21 @@ def due_tasks(now: datetime | None = None, limit: int = 20) -> list[Task]:
         return [_to(r) for r in rows]
 
 
-def mark_started(task_id: int, tz: str) -> None:
-    """Advance next_run_at before running so a slow run is never picked twice."""
+def mark_started(task_id: int, tz: str, *, weekly: bool = False) -> None:
+    """Advance next_run_at before running so a slow run is never picked twice.
+    ``weekly`` slows a more frequent task to once a week (a plan that no
+    longer includes it, e.g. after a downgrade to Free)."""
     with SessionLocal() as s:
         row = s.get(ScheduledTask, task_id)
         if row is None:
             return
         row.last_run_at = datetime.now(UTC)
         row.last_status = "running"
-        row.next_run_at = compute_next_run(row.every_minutes, row.daily_at, tz)
+        if weekly and interval_minutes(row.every_minutes, row.daily_at) < WEEK_MINUTES:
+            row.next_run_at = (compute_next_run(WEEK_MINUTES, row.daily_at, tz, ran=True) if row.daily_at
+                               else datetime.now(UTC) + timedelta(minutes=WEEK_MINUTES))
+        else:
+            row.next_run_at = compute_next_run(row.every_minutes, row.daily_at, tz, ran=True)
         s.commit()
 
 
@@ -157,6 +177,6 @@ def retime_daily(user_id: str, tz: str) -> int:
                                                      ScheduledTask.daily_at.is_not(None),
                                                      ScheduledTask.enabled.is_(True))).scalars().all()
         for row in rows:
-            row.next_run_at = compute_next_run(None, row.daily_at, tz)
+            row.next_run_at = compute_next_run(row.every_minutes, row.daily_at, tz)
         s.commit()
         return len(rows)

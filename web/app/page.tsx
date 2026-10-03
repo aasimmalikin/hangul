@@ -1,6 +1,7 @@
 "use client"
 
 import { useState } from "react"
+import Link from "next/link"
 import { useRouter } from "next/navigation"
 import { useSession } from "next-auth/react"
 import { useTheme } from "@/components/ThemeProvider"
@@ -83,6 +84,10 @@ export default function Landing() {
             <p className="h-muted" style={{ fontSize: 14, margin: "0 0 24px", textAlign: "center", maxWidth: 460 }}>
               Reminders, email, calendar, documents and more — just ask, or talk.
             </p>
+            <nav className="h-muted" aria-label="Legal" data-testid="landing-legal"
+              style={{ position: "fixed", bottom: 14, left: 0, right: 0, textAlign: "center", fontSize: 12 }}>
+              <Link href="/terms" style={{ color: "inherit" }}>Terms</Link> · <Link href="/privacy" style={{ color: "inherit" }}>Privacy</Link> · <Link href="/refunds" style={{ color: "inherit" }}>Refunds</Link>
+            </nav>
           </>
         )}
 

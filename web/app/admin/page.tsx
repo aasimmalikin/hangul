@@ -73,6 +73,13 @@ const fmt = (v: unknown) => typeof v === "number" ? (Number.isInteger(v) ? Strin
 const pct = (v?: number) => v === undefined ? "—" : `${Math.round(v * 100)}%`
 const scoreColor = (v: number) => v >= 0.8 ? "var(--fg)" : v >= 0.5 ? "var(--muted)" : "var(--err)"
 
+type Churn = {
+  days: number; total: number; saved_rate: number | null
+  outcomes: Record<string, number>
+  by_reason: Record<string, Record<string, number>>
+  comments: Array<{ reason: string; outcome: string; plan: string; detail: string; at: string | null }>
+}
+
 function Section({ title, hint, children, right }: { title: string; hint?: string; children: React.ReactNode; right?: React.ReactNode }) {
   return (
     <section className="h-surface" style={{ padding: "18px 20px", display: "flex", flexDirection: "column", gap: 12 }}>
@@ -139,6 +146,7 @@ export default function AdminPage() {
   const [report, setReport] = useState<Report | null>(null)
   const [overview, setOverview] = useState<Overview | null>(null)
   const [security, setSecurity] = useState<SecuritySummary | null>(null)
+  const [churn, setChurn] = useState<Churn | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [busy, setBusy] = useState(false)
   const [limit, setLimit] = useState<number | "">("")
@@ -150,6 +158,8 @@ export default function AdminPage() {
         api<SecuritySummary>("security"),
       ])
       setCatalog(c); setSummary(s); setRuns(r); setOverview(o); setSecurity(sec); setError(null)
+      // churn is optional (no billing yet = nothing to show); never fail the page over it
+      setChurn(await api<Churn>("churn").catch(() => null))
     } catch (e) {
       const err = e as Error & { status?: number; code?: string }
       // the gate can close mid-session (sign-in aged out, allowlist changed): re-run it
@@ -360,6 +370,33 @@ export default function AdminPage() {
                 </div>
               </Section>
             )}
+
+            <Section title="Why people cancel" hint="From the “Before you go” screen, last 90 days: the reason they gave and whether they stayed.">
+              {!churn || churn.total === 0 ? (
+                <p className="h-muted" style={{ fontSize: 13, margin: 0 }} data-testid="churn-empty">Nobody has opened Cancel plan yet.</p>
+              ) : (
+                <div style={{ display: "flex", flexDirection: "column", gap: 10, fontSize: 13 }} data-testid="churn">
+                  <div>
+                    <b>{churn.total}</b> tried to cancel · <b>{churn.outcomes.kept ?? 0}</b> kept their plan ·{" "}
+                    <b>{churn.outcomes.downgraded ?? 0}</b> switched down · <b>{churn.outcomes.cancelled ?? 0}</b> cancelled
+                    {churn.saved_rate != null && <> · <b>{Math.round(churn.saved_rate * 100)}%</b> saved</>}
+                  </div>
+                  <table style={{ borderCollapse: "collapse", width: "100%" }}>
+                    <thead><tr className="h-muted" style={{ textAlign: "left" }}><th>Reason</th><th>Kept</th><th>Switched</th><th>Cancelled</th></tr></thead>
+                    <tbody>
+                      {Object.entries(churn.by_reason).map(([reason, o]) => (
+                        <tr key={reason}><td>{reason.replace(/_/g, " ")}</td><td>{o.kept ?? 0}</td><td>{o.downgraded ?? 0}</td><td>{o.cancelled ?? 0}</td></tr>
+                      ))}
+                    </tbody>
+                  </table>
+                  {churn.comments.length > 0 && (
+                    <ul style={{ margin: 0, paddingLeft: 18 }}>
+                      {churn.comments.map((c, i) => <li key={i}><span className="h-muted">{c.reason.replace(/_/g, " ")} · {c.outcome}:</span> {c.detail}</li>)}
+                    </ul>
+                  )}
+                </div>
+              )}
+            </Section>
 
             <Section title="Prompt-injection defence" hint={`Events from every layer (input screen, tool-result screen, action guard, output guard, uploads). Model screen: ${security?.config.llm_screen ? "on" : "off"} · throttle after ${security?.config.offender_limit ?? "?"} flagged inputs.`}>
               {!security || security.total === 0 ? (

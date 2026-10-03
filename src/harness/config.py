@@ -10,11 +10,16 @@ class Settings(BaseSettings):
     log_level: str = "INFO"
     openai_api_key: str | None = None
     model: str = "gpt-5.5"           # default; must be a key of providers.registry.MODELS
-    # "Auto" (providers/router.py): the model for quick / everyday / deep messages,
+    # "Auto" (providers/router.py): the model for quick / everyday / write / deep messages,
     # each falling back down the ladder to what the user's plan includes
     auto_fast_model: str = "gpt-5.6-luna"
-    auto_balanced_model: str = "gpt-5.6-terra"
+    auto_everyday_model: str = "gpt-5.6-luna"     # lookups, summaries, reading mail and calendar
+    auto_balanced_model: str = "gpt-5.6-terra"    # writing: drafts and replies the user will send
     auto_best_model: str = "gpt-5.6-sol"
+    # costs besides model tokens (billing/meter.py), charged to the user who caused them
+    embedding_usd_per_m: float = 0.02         # text-embedding-3-small, per 1M tokens
+    web_search_usd: float = 0.008             # one Tavily basic search (pay-as-you-go credit)
+    summary_model: str = "gpt-5.6-luna"       # conversation compaction: bookkeeping, so the cheap model
     default_effort: str = "medium"   # default reasoning effort when the request sets none
     tavily_api_key: str | None = None
     database_url: str = "postgresql+psycopg://agentic:agentic@localhost:5432/hangul_harness"
@@ -79,9 +84,14 @@ class Settings(BaseSettings):
     billing_return_url: str = "http://localhost:3000/billing"   # where checkout sends the buyer back
     # Allowances and credits are dollars of MODEL cost (registry prices), not
     # what the user pays; the gap is the margin for tools, embeddings, tax.
-    billing_allowance_free: float = 0.50       # per calendar month
+    billing_allowance_free: float = 0.25       # per calendar month
     billing_allowance_plus: float = 8.00       # per billing period
     billing_allowance_pro: float = 40.00
+    billing_trial_days: int = 7                # Plus trial at checkout (0 = no trial); card authorised up front
+    billing_allowance_trial: float = 2.00      # allowance while trialling, before the first real charge
+    # "about N messages left": the allowance divided by the average cost of a run
+    # over the last 30 days, or by this when there are too few runs to average
+    billing_usd_per_message: float = 0.01
     billing_topup_credit_usd: float = 5.00     # credit granted per top-up purchase
     # Cap on what ALL free users together may spend per UTC month (dollars of
     # model cost). Protects the prepaid OpenAI balance that paying users rely

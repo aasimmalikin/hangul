@@ -12,12 +12,13 @@ from harness.tools.builtin.data import make_analyze_data_tool
 from harness.tools.builtin.files import make_create_file_tool
 from harness.tools.builtin.images import make_generate_image_tool
 from harness.tools.builtin.maps import MAPS_SEARCH_TOOL, TRAVEL_TIME_TOOL
+from harness.tools.builtin.my_files import make_my_files_tool
 from harness.tools.builtin.personal import make_lists_tool, make_notes_tool, make_reminders_tool
 from harness.tools.builtin.view_image import make_view_image_tool
 from harness.tools.builtin.weather import WEATHER_TOOL
 from harness.tools.builtin.web_reader import WEB_READER_TOOL
 
-DAILY_TOOL_NAMES = ("reminders", "lists", "notes", "read_webpage", "weather", "convert", "world_clock", "view_image",
+DAILY_TOOL_NAMES = ("reminders", "lists", "notes", "my_files", "read_webpage", "weather", "convert", "world_clock", "view_image",
                     "create_file", "analyze_data", "maps_search", "travel_time", "generate_image")
 
 
@@ -27,6 +28,7 @@ def build_daily_tools(user_id: str, tz: str = "UTC", thread_id: str | None = Non
         make_reminders_tool(user_id, tz),
         make_lists_tool(user_id),
         make_notes_tool(user_id),
+        make_my_files_tool(user_id),
         WEB_READER_TOOL,
         WEATHER_TOOL,
         CONVERT_TOOL,

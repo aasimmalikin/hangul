@@ -40,6 +40,7 @@ class Standing:
     # free plan only: the shared monthly budget is used up, so the allowance
     # cannot be drawn on -- bought credits still can
     pool_exhausted: bool = False
+    allowance: Decimal = Decimal("0")       # this period's full allowance (the trial's while trialling)
 
     @property
     def usable_allowance(self) -> Decimal:
@@ -48,6 +49,42 @@ class Standing:
     @property
     def can_spend(self) -> bool:
         return self.usable_allowance + self.credits > 0
+
+
+# plan_status while a Plus trial runs (before the first real charge); the
+# allowance is billing_allowance_trial instead of the plan's
+TRIAL_STATUSES = ("trialing", "trial_cancelling")
+
+
+def allowance_for(account: billing_db.Account, plan: Plan) -> Decimal:
+    if plan.id != "free" and account.plan_status in TRIAL_STATUSES:
+        return Decimal(str(get_settings().billing_allowance_trial))
+    return Decimal(str(plan.monthly_allowance_usd))
+
+
+_per_message: tuple[float, Decimal] | None = None     # (fetched at, $) -- cached for 10 minutes
+
+
+def usd_per_message() -> Decimal:
+    """What one message costs on average: the last 14 days' runs, else the setting."""
+    import time
+    global _per_message
+    if _per_message is not None and time.monotonic() - _per_message[0] < 600:
+        return _per_message[1]
+    from datetime import timedelta
+    try:
+        avg = ledger.average_run_cost(datetime.now(timezone.utc) - timedelta(days=14))
+    except Exception:  # noqa: BLE001 - an estimate must never fail a page
+        avg = None
+    value = avg if avg and avg > 0 else Decimal(str(get_settings().billing_usd_per_message))
+    _per_message = (time.monotonic(), value)
+    return value
+
+
+def messages_for(usd: Decimal | float) -> int:
+    """About how many messages ``usd`` of allowance buys."""
+    per = usd_per_message()
+    return max(int(Decimal(str(usd)) / per), 0) if per > 0 else 0
 
 
 def billing_enabled() -> bool:
@@ -84,9 +121,9 @@ def standing(user_id: str) -> Standing:
         credits = ledger.credit_balance(user_id)
     except ValueError:              # non-numeric subject: no ledger rows
         used, credits = Decimal("0"), Decimal("0")
-    allowance = Decimal(str(plan.monthly_allowance_usd))
+    allowance = allowance_for(account, plan)
     pool_out = plan.id == "free" and free_pool_exhausted()
-    return Standing(plan, account, since, allowance - used, credits, pool_exhausted=pool_out)
+    return Standing(plan, account, since, allowance - used, credits, pool_exhausted=pool_out, allowance=allowance)
 
 
 def _deny(reason: str, detail: str, **extra) -> HTTPException:
@@ -214,7 +251,8 @@ def _upgrade_stub(tool, plan_needed: str, feature: str):
             f"upgrade (the card below has the button); do not try to work around it.",
             {"kind": "upgrade", "feature": feature, "plan": plan_needed, "plan_label": label})
 
-    return Tool(name=tool.name, description=tool.description, parameter=tool.parameter, handler=needs_plan)
+    return Tool(name=tool.name, description=tool.description, parameter=tool.parameter, handler=needs_plan,
+                upgrade_stub=True)
 
 
 def gate_tools(user_id: str, tools: list) -> list:
@@ -252,6 +290,6 @@ def settle(user_id: str, cost: Decimal, thread_id: str | None) -> None:
     plan = get_plan(account.plan)
     free = plan.id == "free"
     # once the free pool is spent, a free user's run is paid from credits only
-    allowance = Decimal("0") if free and free_pool_exhausted() else Decimal(str(plan.monthly_allowance_usd))
+    allowance = Decimal("0") if free and free_pool_exhausted() else allowance_for(account, plan)
     ledger.settle_run(user_id, cost, allowance=allowance, since=period_start(account),
                       thread_id=thread_id, allowance_kind="free_cost" if free else "run_cost")

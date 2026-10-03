@@ -5,8 +5,10 @@ they cost, and how "effort" maps both to OpenAI's `reasoning_effort` value
 and to the agent loop's step/token budget. `cost_usd` in obs/tracing.py and
 `GET /models` both read from here.
 
-Prices are $ per 1M tokens (input, output), standard tier, no cached-input
-discount. VERIFY against https://developers.openai.com/api/docs/pricing
+Prices are $ per 1M tokens (input, output), standard tier. Input that OpenAI
+serves from its prompt cache (the repeated system prompt and tool list) is
+billed at ``cached_input_usd_per_m`` -- a tenth of the input price for the
+GPT-5 families, a quarter for GPT-4.1. VERIFY against https://developers.openai.com/api/docs/pricing
 before deploying -- the table was drafted from that page on 2026-09-18.
 """
 
@@ -24,6 +26,10 @@ _EFFORTS_5_4_PLUS: tuple[Effort, ...] = ("low", "medium", "high", "xhigh")
 _EFFORTS_5_X: tuple[Effort, ...] = ("minimal", "low", "medium", "high")
 
 
+# Cached input as a share of the input price (GPT-5 families). VERIFY per model.
+CACHED_SHARE = 0.10
+
+
 @dataclass(frozen=True)
 class ModelSpec:
     id: str                     # OpenAI model id, sent verbatim to the API
@@ -34,10 +40,18 @@ class ModelSpec:
     efforts: tuple[Effort, ...] = ()   # values the API accepts; () for non-reasoning models
     default_effort: Effort | None = None
     tier: Tier = "basic"
+    cached_input_usd_per_m: float | None = None   # None = CACHED_SHARE of the input price
+
+    @property
+    def cached_rate(self) -> float:
+        if self.cached_input_usd_per_m is not None:
+            return self.cached_input_usd_per_m
+        return self.input_usd_per_m * CACHED_SHARE
 
     def to_dict(self) -> dict:
         d = asdict(self)
         d["efforts"] = list(self.efforts)
+        d["cached_input_usd_per_m"] = self.cached_rate
         return d
 
 
@@ -66,8 +80,10 @@ def _reasoning(id: str, label: str, pin: float, pout: float,
                      efforts=efforts, default_effort="medium", tier=tier)
 
 
-def _plain(id: str, label: str, pin: float, pout: float, tier: Tier = "basic") -> ModelSpec:
-    return ModelSpec(id, label, pin, pout, supports_reasoning=False, tier=tier)
+def _plain(id: str, label: str, pin: float, pout: float, tier: Tier = "basic",
+           cached: float | None = None) -> ModelSpec:
+    return ModelSpec(id, label, pin, pout, supports_reasoning=False, tier=tier,
+                     cached_input_usd_per_m=cached)
 
 
 # Insertion order is the order the UI lists them.
@@ -84,8 +100,8 @@ _SPECS: list[ModelSpec] = [
     _reasoning("gpt-5.1", "GPT-5.1", 1.25, 10.00, _EFFORTS_5_X, tier="advanced"),
     _reasoning("gpt-5-mini", "GPT-5 mini", 0.25, 2.00, _EFFORTS_5_X),
     _reasoning("gpt-5-nano", "GPT-5 nano", 0.05, 0.40, _EFFORTS_5_X),
-    _plain("gpt-4.1", "GPT-4.1", 2.00, 8.00, tier="advanced"),
-    _plain("gpt-4.1-mini", "GPT-4.1 mini", 0.40, 1.60),
+    _plain("gpt-4.1", "GPT-4.1", 2.00, 8.00, tier="advanced", cached=0.50),
+    _plain("gpt-4.1-mini", "GPT-4.1 mini", 0.40, 1.60, cached=0.10),
 ]
 
 MODELS: dict[str, ModelSpec] = {s.id: s for s in _SPECS}
