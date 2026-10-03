@@ -39,9 +39,15 @@ export const GOOGLE_WORKSPACE_SCOPES = [
   "https://www.googleapis.com/auth/calendar",
   "https://www.googleapis.com/auth/drive.readonly", "https://www.googleapis.com/auth/drive.file",
   "https://www.googleapis.com/auth/documents",
+  "https://www.googleapis.com/auth/spreadsheets", "https://www.googleapis.com/auth/drive.metadata.readonly",
+  "https://www.googleapis.com/auth/contacts.readonly", "https://www.googleapis.com/auth/contacts.other.readonly",
 ].join(" ")
 
-export type Integrations = { google: { connected: boolean; products: string[]; scopes: string[] } }
+export type Integrations = {
+  google: { connected: boolean; products: string[]; scopes: string[] }
+  /** GitHub / Notion / Slack tokens saved in the vault */
+  apps?: Partial<Record<"github" | "notion" | "slack", boolean>>
+}
 
 /** What the signed-in user has connected; null when signed out or unreachable. */
 export async function loadIntegrations(): Promise<Integrations | null> {

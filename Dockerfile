@@ -30,7 +30,8 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 WORKDIR /app
 
 # Node is needed for the MCP filesystem server (npx @modelcontextprotocol/server-filesystem)
-RUN apt-get update && apt-get install -y --no-install-recommends nodejs npm \
+# fonts-dejavu-core: a Unicode font for generated PDFs (create_file: ₹, accents, Greek, Cyrillic)
+RUN apt-get update && apt-get install -y --no-install-recommends nodejs npm fonts-dejavu-core \
     && rm -rf /var/lib/apt/lists/*
 
 # Copy the ready-made venv from the builder (no build tools shipped)

@@ -18,6 +18,8 @@ class Settings:
     timezone: str = "UTC"
     language: str = ""
     timezone_auto: bool = True
+    city: str = ""
+    onboarded: bool = False
 
     def as_dict(self) -> dict:
         return asdict(self)
@@ -28,7 +30,8 @@ def _row_to(row: UserSettings | None) -> Settings:
         return Settings()
     return Settings(display_name=row.display_name, instructions=row.instructions, tone=row.tone,
                     timezone=row.timezone, language=row.language,
-                    timezone_auto=bool(row.timezone_auto) if row.timezone_auto is not None else True)
+                    timezone_auto=bool(row.timezone_auto) if row.timezone_auto is not None else True,
+                    city=getattr(row, "city", "") or "", onboarded=bool(getattr(row, "onboarded", False)))
 
 
 def get_settings(user_id: str) -> Settings:
@@ -75,9 +78,22 @@ def save_settings(user_id: str, values: Settings) -> Settings:
         row.tone = values.tone
         row.timezone = values.timezone
         row.timezone_auto = values.timezone_auto
+        row.city = values.city.strip()[:80]
+        row.onboarded = bool(row.onboarded) or values.onboarded
         row.language = values.language.strip()[:16]
         s.commit()
         return _row_to(row)
+
+
+def mark_onboarded(user_id: str) -> None:
+    """The first-run walkthrough is done (or skipped); never show it again."""
+    with SessionLocal() as s:
+        row = s.get(UserSettings, int(user_id))
+        if row is None:
+            row = UserSettings(user_id=int(user_id))
+            s.add(row)
+        row.onboarded = True
+        s.commit()
 
 
 def adopt_device_timezone(user_id: str, tz: str | None) -> Settings:
@@ -124,6 +140,8 @@ def prompt_block(st: Settings, now: datetime | None = None) -> str:
         lines.append(f"Timezone: {st.timezone} (local time now: {local.strftime('%A %Y-%m-%d %H:%M')})")
     except (ZoneInfoNotFoundError, ValueError, KeyError):
         pass
+    if st.city:
+        lines.append(f"Home city: {st.city} (use it for weather, places and 'near me' unless they say otherwise)")
     if st.language:
         lines.append(f"Preferred language: {st.language}")
     lines.append(f"Tone: {TONE_TEXT.get(st.tone, TONE_TEXT['balanced'])}")

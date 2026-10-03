@@ -28,6 +28,8 @@ async def run_task(task, *, tz: str) -> None:
         r = outcome.result
         status = "needs_approval" if r.pending_tool else "done"
         tasks_db.mark_finished(task.id, status=status, run_id=outcome.run.run_id, answer=r.answer)
+        if task.deliver_email and r.answer:
+            await email_result(task, r.answer, needs_approval=bool(r.pending_tool))
         with contextlib.suppress(Exception):
             # the result shows up in the Chats rail like any conversation
             await store_episode(user_id, outcome.run.run_id, r.answer[:1500], title=f"⏰ {task.title}")
@@ -41,6 +43,23 @@ async def run_task(task, *, tz: str) -> None:
     except Exception as e:  # noqa: BLE001 - one bad task must not stop the scheduler
         tasks_db.mark_finished(task.id, status="failed", run_id=None, answer=f"{type(e).__name__}: {e}")
         log.warning("scheduled task failed", task=task.id, error=str(e))
+
+
+async def email_result(task, answer: str, *, needs_approval: bool = False) -> bool:
+    """Send a scheduled task's answer (e.g. the morning brief) to the user's own
+    address. Failures are logged; the result is still in the Chats rail."""
+    from harness import notify
+    if not notify.email_enabled():
+        return False
+    try:
+        to = await asyncio.to_thread(notify.user_email, task.user_id)
+        if not to:
+            return False
+        subject, text, html = notify.task_email(task.title, answer, needs_approval=needs_approval)
+        return await notify.send_email(to, subject, text, html)
+    except Exception as e:  # noqa: BLE001
+        log.warning("task email failed", task=task.id, error=str(e))
+        return False
 
 
 async def fire_reminders() -> int:

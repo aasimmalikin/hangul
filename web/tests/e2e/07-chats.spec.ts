@@ -32,12 +32,12 @@ test.describe("chats rail", () => {
     // first chat, from a landing-page prompt
     await page.goto("/")
     await expect(page.getByTestId("chats-panel")).toContainText("No chats yet")
-    await page.getByRole("button", { name: "Draft a note" }).click()
-    await expectReply(page, "Reply to: Draft a note")
+    await page.getByRole("button", { name: "Search my documents" }).click()
+    await expectReply(page, "Reply to: Search my documents")
     // …listed on /chat as soon as the run ends, titled by the first question
     const items = page.getByTestId("chats-item")
     await expect(items).toHaveCount(1)
-    await expect(items.first()).toContainText("Draft a note")
+    await expect(items.first()).toContainText("Search my documents")
 
     // a follow-up continues the SAME conversation: one entry, and the second
     // ask carries the conversation id the first run created.
@@ -52,20 +52,20 @@ test.describe("chats rail", () => {
     expect(mineAsks[1].conversation_id).toBe(mine[0].id)       // follow-up continues it
     // the server owns the transcript, so both turns are in it
     const transcript = state.convMessages[mine[0].id].map((m) => m.content)
-    expect(transcript).toContain("Draft a note")
+    expect(transcript).toContain("Search my documents")
     expect(transcript).toContain("and add a title")
 
     // back on the landing page: the chat is in the rail
     await page.goto("/")
     await expect(page.getByTestId("chats-item")).toHaveCount(1)
-    await expect(page.getByTestId("chats-item").first()).toContainText("Draft a note")
+    await expect(page.getByTestId("chats-item").first()).toContainText("Search my documents")
 
     // second conversation → two entries, newest first
-    await page.getByRole("button", { name: "Check the web" }).click()
-    await expectReply(page, "Reply to: Check the web")
+    await page.getByRole("button", { name: "Plan my day" }).click()
+    await expectReply(page, "Reply to: Plan my day")
     await expect(page.getByTestId("chats-item")).toHaveCount(2)
-    await expect(page.getByTestId("chats-item").first()).toContainText("Check the web")
-    await expect(page.getByTestId("chats-item").last()).toContainText("Draft a note")
+    await expect(page.getByTestId("chats-item").first()).toContainText("Plan my day")
+    await expect(page.getByTestId("chats-item").last()).toContainText("Search my documents")
     await page.goto("/")
     await expect(page.getByTestId("chats-item")).toHaveCount(2)
 
@@ -266,7 +266,7 @@ test.describe("chats rail", () => {
     const panel = page.getByTestId("chats-panel")
     await expect(panel).toBeVisible()
     await expect(panel).toContainText("Chats")
-    await expect(page.getByPlaceholder("Ask anything…")).toBeVisible()
+    await expect(page.getByPlaceholder("Ask Hangul anything…")).toBeVisible()
     const mark = page.locator("header").getByLabel("Hangul", { exact: true }).first()
     await expect(mark).toBeVisible()
     await expect(mark).toContainText("Hangul")

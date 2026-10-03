@@ -52,6 +52,32 @@ PLANS: dict[str, Plan] = {p.id: p for p in (
 
 FREE = PLANS["free"]
 
+# Tools that need a paid plan: name or fnmatch pattern -> (cheapest plan,
+# what the user sees). Everything else is available on every plan.
+GATED_TOOLS: dict[str, tuple[str, str]] = {
+    "create_file": ("plus", "Creating files (PDF, Word, Excel, slides)"),
+    "analyze_data": ("plus", "Spreadsheet analysis and charts"),
+    "maps_search": ("plus", "Maps and places"),
+    "travel_time": ("plus", "Travel times and directions"),
+    "generate_image": ("pro", "Image generation"),
+    "github__*": ("pro", "The GitHub connector"),
+    "notion__*": ("pro", "The Notion connector"),
+    "slack__*": ("pro", "The Slack connector"),
+}
+
+_RANK = {p: i for i, p in enumerate(PLANS)}
+
+
+def gate_for(tool_name: str) -> tuple[str, str] | None:
+    import fnmatch
+    return GATED_TOOLS.get(tool_name) or next(
+        (v for k, v in GATED_TOOLS.items() if "*" in k and fnmatch.fnmatch(tool_name, k)), None)
+
+
+def plan_allows_tool(plan: Plan, tool_name: str) -> bool:
+    need = gate_for(tool_name)
+    return need is None or _RANK[plan.id] >= _RANK[need[0]]
+
 
 def get_plan(plan_id: str | None) -> Plan:
     return PLANS.get(plan_id or "free", FREE)

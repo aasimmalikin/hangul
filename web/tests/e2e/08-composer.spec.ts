@@ -40,7 +40,7 @@ test.describe("composer wraps and grows", () => {
     await page.goto("/")
     const w = (await page.getByTestId("landing-composer-box").boundingBox())!.width
     expect(w).toBeGreaterThanOrEqual(600)
-    expect(w).toBeLessThanOrEqual(640)
+    expect(w).toBeLessThanOrEqual(760)               // signed in: as wide as the Today cards above it
   })
 
   test("Shift+Enter adds a line, Enter sends — on both pages", async ({ page }) => {

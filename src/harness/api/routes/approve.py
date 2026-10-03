@@ -29,7 +29,7 @@ from harness.tools.builtin.ask_user import ASK_USER_TOOL
 from harness.tools.builtin.search_docs_session import make_search_docs_tool
 from harness.tools.builtin.filesystem_session import wrap_filesystem_tool
 from harness.tools.builtin.vault_request import build_vault_tools
-from harness.tools.builtin.daily import build_daily_tools
+from harness.tools.builtin.daily import daily_tools_for
 from harness.db.settings import get_settings as user_prefs
 from harness.connectors import tools_for
 from harness.security import get_guard
@@ -58,7 +58,7 @@ async def _build_session_registry(user_id: str, thread_id: str, connectors: list
         tz = (await asyncio.to_thread(user_prefs, user_id)).timezone
     except Exception:  # noqa: BLE001 - the default timezone is fine for a resume
         tz = "UTC"
-    for t in build_daily_tools(user_id, tz, thread_id):
+    for t in await daily_tools_for(user_id, tz, thread_id):
         reg.registry(t)
     if connectors:
         from harness.api.routes.ask import prepare_connectors
@@ -66,6 +66,7 @@ async def _build_session_registry(user_id: str, thread_id: str, connectors: list
         await prepare_connectors(list(connectors), user_id)
         for t in tools_for(list(connectors), _registry.list(), user_id=user_id, manager=mcp_current())[0]:
             reg.registry(t)
+    await entitlements.gate_registry(user_id, reg)
     return reg
 
 

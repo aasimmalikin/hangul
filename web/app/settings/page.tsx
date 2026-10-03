@@ -14,8 +14,8 @@ import { deviceTimeZone } from "@/lib/timezone"
  * Chats rail as "⏰ <title>" conversations.
  */
 
-type Prefs = { display_name: string; instructions: string; tone: string; timezone: string; language: string; timezone_auto?: boolean; tones?: string[] }
-type Task = { id: number; title: string; question: string; every_minutes: number | null; daily_at: string | null; connectors: string[]; mode: string; enabled: boolean; next_run_at: string | null; last_run_at: string | null; last_status: string; last_run_id: string | null; last_answer: string }
+type Prefs = { display_name: string; instructions: string; tone: string; timezone: string; language: string; timezone_auto?: boolean; city?: string; tones?: string[] }
+type Task = { id: number; title: string; question: string; every_minutes: number | null; daily_at: string | null; connectors: string[]; mode: string; enabled: boolean; next_run_at: string | null; last_run_at: string | null; last_status: string; last_run_id: string | null; last_answer: string; deliver_email?: boolean }
 
 const mono = { fontFamily: "var(--font-geist-mono)" } as const
 
@@ -63,6 +63,7 @@ export default function SettingsPage() {
   const [every, setEvery] = useState(60)
   const [taskConnectors, setTaskConnectors] = useState<string[]>([])
   const [research, setResearch] = useState(false)
+  const [emailMe, setEmailMe] = useState(false)
 
   const reload = useCallback(async () => {
     try {
@@ -96,23 +97,37 @@ export default function SettingsPage() {
     await api("tasks", {
       method: "POST",
       body: JSON.stringify({
-        title, question, connectors: taskConnectors, mode: research ? "research" : "default",
+        title, question, connectors: taskConnectors, mode: research ? "research" : "default", deliver_email: emailMe,
         ...(schedule === "daily" ? { daily_at: dailyAt } : { every_minutes: every }),
       }),
     })
     setTitle(""); setQuestion("")
   })
 
+  // One tap: a daily 08:00 brief, emailed, using whichever Google products exist.
+  const addMorningBrief = () => run(async () => {
+    const google = connectors.map((c) => c.key).filter((k) => k === "gmail" || k === "calendar")
+    await api("tasks", {
+      method: "POST",
+      body: JSON.stringify({
+        title: "Morning brief", daily_at: "08:00", connectors: google, mode: "default", deliver_email: true,
+        question: "Give me my morning brief for today, short and with headings: the weather where I live (use what " +
+          "you remember about my city), today's calendar events, my reminders and to-do items, and any important " +
+          "unread emails from the last day. Skip any section you can't access.",
+      }),
+    })
+  })
+
   const browserTz = typeof Intl !== "undefined" ? Intl.DateTimeFormat().resolvedOptions().timeZone : "UTC"
 
   return (
-    <main style={{ minHeight: "100vh", display: "flex", flexDirection: "column" }}>
+    <main className="h-has-bottom-nav" style={{ minHeight: "100vh", display: "flex", flexDirection: "column" }}>
       <AppHeader onSignIn={() => setSignIn({ open: true, mode: "signin" })} onSignUp={() => setSignIn({ open: true, mode: "signup" })} />
       <SignInModal open={signInOpen} mode={signIn.mode} onClose={() => { setGateDismissed(true); setSignIn((s) => ({ ...s, open: false })) }} callbackUrl="/settings" reason="Sign in to personalise the assistant." />
 
       <div style={{ width: "100%", maxWidth: 760, margin: "0 auto", padding: "8px 16px 40px", display: "flex", flexDirection: "column", gap: 16, boxSizing: "border-box" }}>
         <div>
-          <h1 className="h-display" style={{ fontSize: 26, margin: "8px 0 4px" }}>Personalisation & tasks</h1>
+          <h1 className="h-display" style={{ fontSize: 26, margin: "8px 0 4px" }}>Profile & preferences</h1>
           <p className="h-muted" style={{ fontSize: 13, margin: 0 }}>What the assistant knows about how you like to work, and what it does for you while you are away.</p>
         </div>
         {error && <div className="h-surface" style={{ padding: 12, fontSize: 13, color: "var(--err)" }} role="alert">{error}</div>}
@@ -138,6 +153,7 @@ export default function SettingsPage() {
               </div>
               <datalist id="tz-suggest"><option value={browserTz} /><option value="UTC" /></datalist>
               <input className="h-input" placeholder="Preferred language (optional)" value={prefs.language} onChange={(e) => setPrefs({ ...prefs, language: e.target.value })} maxLength={16} aria-label="Language" />
+              <input className="h-input" placeholder="Your city (for weather and places near you)" value={prefs.city ?? ""} onChange={(e) => setPrefs({ ...prefs, city: e.target.value })} maxLength={80} aria-label="City" />
               <textarea className="h-input" rows={4} placeholder="Custom instructions — e.g. 'I run a small clinic; prefer plain language and always give dates in DD/MM.'" value={prefs.instructions} onChange={(e) => setPrefs({ ...prefs, instructions: e.target.value })} maxLength={2000} style={{ gridColumn: "1 / -1", resize: "vertical" }} aria-label="Custom instructions" />
               <div style={{ gridColumn: "1 / -1", display: "flex", gap: 10, alignItems: "center", justifyContent: "flex-end" }}>
                 {saved && <span className="h-muted" style={{ fontSize: 12 }} data-testid="prefs-saved">Saved</span>}
@@ -147,7 +163,16 @@ export default function SettingsPage() {
           </Section>
         )}
 
-        <Section title="Scheduled tasks" hint="A question the assistant asks for you on a schedule, with the connectors you pick. Answers appear in your chats; anything needing approval waits for you.">
+        <Section title="Scheduled tasks" hint="A question the assistant asks for you on a schedule, with the connectors you pick. Answers appear in your chats (and your inbox, if you choose); anything needing approval waits for you.">
+          {prefs && !tasks.some((t) => t.title === "Morning brief") && (
+            <div className="h-surface" style={{ padding: "10px 12px", display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" }} data-testid="brief-offer">
+              <i className="ti ti-sunrise" style={{ fontSize: 18 }} />
+              <span style={{ fontSize: 13, flex: 1, minWidth: 200 }}>
+                <b>Morning brief</b> — every day at 8:00, an email with your weather, calendar, reminders and important mail.
+              </span>
+              <button className="h-btn-solid" type="button" disabled={busy} onClick={() => void addMorningBrief()}>Set it up</button>
+            </div>
+          )}
           <form onSubmit={(e) => { e.preventDefault(); void addTask() }} style={{ display: "grid", gap: 8, gridTemplateColumns: "1fr 1fr" }} data-testid="task-form">
             <input className="h-input" placeholder="Title, e.g. Morning brief" value={title} onChange={(e) => setTitle(e.target.value)} maxLength={120} required aria-label="Task title" />
             <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
@@ -169,6 +194,9 @@ export default function SettingsPage() {
               <label className="h-muted" style={{ fontSize: 12, display: "flex", gap: 6, alignItems: "center" }}>
                 <input type="checkbox" checked={research} onChange={(e) => setResearch(e.target.checked)} /> deep research
               </label>
+              <label className="h-muted" style={{ fontSize: 12, display: "flex", gap: 6, alignItems: "center" }}>
+                <input type="checkbox" checked={emailMe} onChange={(e) => setEmailMe(e.target.checked)} aria-label="Email me the result" /> email me the result
+              </label>
               <button className="h-btn-solid" type="submit" disabled={busy || !title || !question} style={{ marginLeft: "auto" }}>Add task</button>
             </div>
           </form>
@@ -179,7 +207,7 @@ export default function SettingsPage() {
                 <li key={t.id} style={{ border: "0.5px solid var(--surface-border)", borderRadius: 12, padding: "10px 12px", fontSize: 13 }} data-testid={`task-${t.id}`}>
                   <div style={{ display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap" }}>
                     <strong>{t.title}</strong>
-                    <span className="h-muted" style={{ fontSize: 12 }}>{t.daily_at ? `daily at ${t.daily_at}` : `every ${t.every_minutes} min`}{t.connectors.length ? ` · ${t.connectors.join(", ")}` : ""}{t.mode === "research" ? " · research" : ""}</span>
+                    <span className="h-muted" style={{ fontSize: 12 }}>{t.daily_at ? `daily at ${t.daily_at}` : `every ${t.every_minutes} min`}{t.connectors.length ? ` · ${t.connectors.join(", ")}` : ""}{t.mode === "research" ? " · research" : ""}{t.deliver_email ? " · emailed" : ""}</span>
                     <span className="h-muted" style={{ ...mono, fontSize: 11, marginLeft: "auto" }}>{t.enabled ? `next ${when(t.next_run_at)}` : "paused"} · last: {t.last_status}</span>
                   </div>
                   <div className="h-muted" style={{ fontSize: 12, marginTop: 4 }}>{t.question}</div>

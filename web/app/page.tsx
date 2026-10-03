@@ -13,8 +13,17 @@ import { AttachmentChips } from "@/components/hangul/AttachmentChips"
 import { ConnectorChips } from "@/components/hangul/ConnectorChips"
 import { useConnectorSelection, useResearchMode } from "@/lib/connectors"
 import { ChatsPanel } from "@/components/hangul/ChatsPanel"
+import { TodayBrief } from "@/components/hangul/TodayBrief"
+import { InstallTip } from "@/components/hangul/InstallTip"
+import { Onboarding } from "@/components/hangul/Onboarding"
 
-const PROMPTS = ["Search my documents", "Check the web", "Draft a note"]
+// One tap from the home screen: `send` asks right away, otherwise it fills the box to finish.
+const PROMPTS: Array<{ label: string; text: string; send: boolean; icon: string }> = [
+  { label: "Plan my day", text: "Plan my day: what's on my calendar, what's due, and what should I focus on?", send: true, icon: "sun" },
+  { label: "Remind me…", text: "Remind me to ", send: false, icon: "alarm" },
+  { label: "Search my documents", text: "Search my documents", send: true, icon: "file-search" },
+  { label: "Make a document", text: "Make a PDF of ", send: false, icon: "file-type-pdf" },
+]
 // How tall the composer grows before it scrolls: ~8 lines at 22px.
 const MAX_COMPOSER_PX = 200
 
@@ -49,21 +58,36 @@ export default function Landing() {
   }
 
   return (
-    <main style={{ height: "100vh", display: "flex", flexDirection: "column" }}>
+    <main className="h-has-bottom-nav" style={{ height: "100vh", display: "flex", flexDirection: "column", boxSizing: "border-box" }}>
       {/* Same wordmark as every other page; plain (not a link) because this is home. */}
       <AppHeader wordmarkHref={null} onSignIn={() => askToSignIn()} onSignUp={askToSignUp} />
 
       <div style={{ flex: 1, display: "flex", minHeight: 0 }}>
       {/* Same rail as /chat: the user's conversations, visible right after sign-in. */}
       {status === "authenticated" && <ChatsPanel onUnauthorized={() => askToSignIn("Your session has expired. Sign in again.")} onOpen={(id) => router.push(`/chat?c=${id}`)} />}
-      <div style={{ flex: 1, minWidth: 0, overflowY: "auto", display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", padding: "0 20px 80px" }}>
-        <div style={{ filter: theme === "dark" ? "drop-shadow(0 0 10px rgba(242,243,245,0.18))" : "none" }}>
-          <HangulSigil size={52} />
-        </div>
-        <p className="h-display" style={{ fontSize: 25, margin: "22px 0 26px" }}>What should we evaluate?</p>
+      <div style={{ flex: 1, minWidth: 0, overflowY: "auto", display: "flex", flexDirection: "column", alignItems: "center",
+        justifyContent: status === "authenticated" ? "flex-start" : "center",
+        padding: status === "authenticated" ? "24px 20px 80px" : "0 20px 80px" }}>
+        {status === "authenticated" ? (
+          /* Signed in: the day first -- what's next, what's due, what's waiting -- then the box to ask. */
+          <div style={{ width: "100%", maxWidth: 760, marginBottom: 18 }}>
+            <TodayBrief onAsk={(t) => onSubmit(t)} />
+            <div style={{ marginTop: 10 }}><InstallTip /></div>
+          </div>
+        ) : (
+          <>
+            <div style={{ filter: theme === "dark" ? "drop-shadow(0 0 10px rgba(242,243,245,0.18))" : "none" }}>
+              <HangulSigil size={52} />
+            </div>
+            <p className="h-display" style={{ fontSize: 25, margin: "22px 0 8px" }}>Your personal AI assistant</p>
+            <p className="h-muted" style={{ fontSize: 14, margin: "0 0 24px", textAlign: "center", maxWidth: 460 }}>
+              Reminders, email, calendar, documents and more — just ask, or talk.
+            </p>
+          </>
+        )}
 
         {/* Wide enough to write a real question in (was 460); still centred and clear of the rail. */}
-        <div style={{ width: "100%", maxWidth: 640 }} data-testid="landing-composer-box">
+        <div style={{ width: "100%", maxWidth: status === "authenticated" ? 760 : 640 }} data-testid="landing-composer-box">
           <AttachmentChips attachments={attachments} uploading={uploading} error={uploadError} style={{ marginBottom: 8 }} />
           <div className="h-surface" style={{ padding: "10px 12px 10px 10px", display: "flex", alignItems: "flex-end", gap: 10 }}>
             <AttachMenu
@@ -83,7 +107,7 @@ export default function Landing() {
               onKeyDown={(e) => {
                 if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); onSubmit() }
               }}
-              placeholder={attachments.length ? "Ask about your document…" : "Ask anything…"}
+              placeholder={attachments.length ? "Ask about your document…" : "Ask Hangul anything…"}
               rows={1}
               data-testid="landing-composer"
               style={{
@@ -119,11 +143,16 @@ export default function Landing() {
           </button>
           <ConnectorChips keys={connectors} onChange={setConnectors} />
           {PROMPTS.map((p) => (
-            <button key={p} className="h-chip" onClick={() => onSubmit(p)}>{p}</button>
+            <button key={p.label} className="h-chip" style={{ display: "inline-flex", alignItems: "center", gap: 5 }}
+              onClick={() => (p.send ? onSubmit(p.text) : setInput(p.text))}>
+              <i className={`ti ti-${p.icon}`} style={{ fontSize: 12 }} />{p.label}
+            </button>
           ))}
         </div>
       </div>
       </div>
+
+      {status === "authenticated" && <Onboarding />}
 
       <SignInModal
         open={signIn.open}

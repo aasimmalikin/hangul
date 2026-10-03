@@ -1,6 +1,7 @@
 from harness.connectors.arxiv import make_arxiv_tools
 from harness.connectors.base import Connector
 from harness.connectors.google_rest import make_google_tools
+from harness.connectors.work_apps import APP_FACTORIES
 from harness.policy.tiers import Tier
 from harness.tools.base import Tool
 
@@ -18,12 +19,19 @@ GOOGLE_PRODUCT_INSTRUCTIONS: dict[str, str] = {
               "are about to send before calling it. Never forward or quote mail to third parties unasked. "
               "Gmail search syntax works in gmail__search_messages (newer_than:1d, from:, is:unread, subject:)."),
     "calendar": ("The Google Calendar connector is ON: calendar__* tools act on the user's own calendar. List "
-                 "events freely; creating an event pauses for their approval -- say what you are about to "
-                 "create before calling it."),
+                 "events and find free time freely (calendar__find_free_time, in the user's timezone); creating, "
+                 "moving or deleting an event pauses for their approval -- say what you are about to change "
+                 "before calling it."),
     "drive": ("The Google Drive connector is ON: drive__* tools search and read the user's own Drive files. "
               "Cite files by name and link."),
     "docs": ("The Google Docs connector is ON: docs__* tools read the user's own Google Docs by id; appending "
              "text pauses for their approval -- say what you are about to add before calling it."),
+    "sheets": ("The Google Sheets connector is ON: sheets__* tools find and read the user's own spreadsheets; "
+               "read a sheet before appending so the columns line up. Appending rows and creating spreadsheets "
+               "pause for their approval -- say what you are about to add before calling it."),
+    "contacts": ("The Google Contacts connector is ON: contacts__search looks up the user's contacts by name. Use it "
+                 "to get an email address before drafting or sending mail to someone named, and confirm the person "
+                 "if several match."),
 }
 
 
@@ -43,13 +51,35 @@ def _google_product(key: str, label: str, description: str, icon: str) -> Connec
 # The Google products are separate switches so a conversation only gets the
 # tools (and the account access) it needs. "google" is the old all-in-one key:
 # hidden from the catalogue, still accepted so existing chats and tasks work.
-GOOGLE_PRODUCTS = ("gmail", "calendar", "drive", "docs")
+GOOGLE_PRODUCTS = ("gmail", "calendar", "drive", "docs", "sheets", "contacts")
+
+WORK_APP_INSTRUCTIONS = {
+    "github": ("The GitHub connector is ON: github__* tools search and read the user's issues and pull requests "
+               "(github__my_work for their own queue). Opening issues and commenting pause for approval -- show "
+               "the text first."),
+    "notion": ("The Notion connector is ON: notion__* tools search and read pages shared with the user's Hangul "
+               "integration. Appending and creating pages pause for approval -- show the text first."),
+    "slack": ("The Slack connector is ON: slack__* tools search and read the user's Slack. Posting a message "
+              "pauses for approval -- show the exact text and channel first. Never post on the user's behalf unasked."),
+}
+
+
+def _work_app(key: str, label: str, description: str, icon: str) -> Connector:
+    return Connector(key=key, label=label, description=description, kind="builtin", tools=APP_FACTORIES[key],
+                     per_user=True, auth=f"vault:{key}", icon=icon, group="Work apps",
+                     instruction=WORK_APP_INSTRUCTIONS[key])
+
 
 BUILTIN: dict[str, Connector] = {
+    "github": _work_app("github", "GitHub", "Your issues, pull requests and reviews", "brand-github"),
+    "notion": _work_app("notion", "Notion", "Search, read and add to your Notion pages", "brand-notion"),
+    "slack": _work_app("slack", "Slack", "Search, read and post in your Slack", "brand-slack"),
     "gmail": _google_product("gmail", "Gmail", "Search, read and draft email in your Gmail", "mail"),
-    "calendar": _google_product("calendar", "Google Calendar", "See and create events on your calendar", "calendar"),
+    "calendar": _google_product("calendar", "Google Calendar", "See, find free time, create and move events", "calendar"),
     "drive": _google_product("drive", "Google Drive", "Find and read files in your Drive", "brand-google-drive"),
     "docs": _google_product("docs", "Google Docs", "Read and append to your Google Docs", "file-text"),
+    "sheets": _google_product("sheets", "Google Sheets", "Read your spreadsheets and add rows", "table"),
+    "contacts": _google_product("contacts", "Google Contacts", "Look up people's email and phone", "address-book"),
     "google": Connector(
         key="google", label="Google Workspace", description="Gmail, Calendar, Drive and Docs on your own Google account",
         kind="builtin", tools=make_google_tools, per_user=True, auth="google", icon="brand-google",

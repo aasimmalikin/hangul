@@ -1,5 +1,5 @@
 import { test, expect } from "@playwright/test"
-import { ask, backend, expectReply, freshUser, signInAs } from "./helpers"
+import { ask, backend, expectReply, freshUser, openOptions, signInAs } from "./helpers"
 
 /** Personalisation, scheduled tasks, deep research, and the Google Workspace connectors' connect state. */
 test.describe("personal agent", () => {
@@ -37,7 +37,8 @@ test.describe("personal agent", () => {
   test("deep research toggle is sent with the message and remembered", async ({ page, context, baseURL }) => {
     await signInAs(context, alice, baseURL!)
     await page.goto("/chat")
-    await page.getByTestId("research-mode").click()
+    await openOptions(page)
+    await page.getByTestId("opt-research").click()
     await expect(page.getByTestId("research-mode")).toHaveAttribute("aria-pressed", "true")
     await ask(page, "state of MoE routing")
     await expectReply(page, "Reply to: state of MoE routing")
@@ -118,5 +119,19 @@ test.describe("personal agent", () => {
     await expectReply(page, "Reply to: history of routing")
     expect((await backend("/__state")).asks.at(-1).mode).toBe("research")
     await expect(page.getByTestId("research-mode")).toHaveAttribute("aria-pressed", "true")
+  })
+
+  test("morning brief is one tap: daily at 08:00, emailed", async ({ page, context, baseURL }) => {
+    await signInAs(context, alice, baseURL!)
+    await page.goto("/settings")
+    await page.getByTestId("brief-offer").getByRole("button", { name: "Set it up" }).click()
+    const row = page.getByTestId("task-1")
+    await expect(row).toContainText("Morning brief")
+    await expect(row).toContainText("daily at 08:00")
+    await expect(row).toContainText("emailed")
+    await expect(page.getByTestId("brief-offer")).toHaveCount(0)
+    const t = (await backend("/__state")).tasks["1"]
+    expect(t).toMatchObject({ daily_at: "08:00", deliver_email: true })
+    expect(t.connectors).toEqual(expect.arrayContaining(["gmail", "calendar"]))
   })
 })

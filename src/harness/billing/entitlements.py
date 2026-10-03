@@ -114,7 +114,8 @@ def resolve_for_user(user_id: str, model: str | None, effort: str | None, *,
                      mode: str = "default",
                      fallback_model: str | None = None, fallback_effort: str | None = None,
                      check_balance: bool = True,
-                     plan_standing: Standing | None = None) -> tuple[ModelSpec, Effort | None]:
+                     plan_standing: Standing | None = None,
+                     question: str = "") -> tuple[ModelSpec, Effort | None]:
     """``resolve()`` plus the plan.
 
     ``model``/``effort`` are what the caller asked for: refused with 402 if
@@ -122,11 +123,31 @@ def resolve_for_user(user_id: str, model: str | None, effort: str | None, *,
     conversation's stored settings): a downgraded user is quietly moved to a
     model their plan covers instead of being locked out of their own chat.
     """
+    from harness.providers import router
+    auto = model == router.AUTO or (model is None and fallback_model == router.AUTO)
+
     if not billing_enabled():
+        if auto:
+            c = router.choose(question, mode)
+            return _resolve_or_422(c.model, c.effort)
         return _resolve_or_422(model or fallback_model, effort or fallback_effort)
 
     st = plan_standing or standing(user_id)
     plan = st.plan
+
+    if auto:
+        # picks only what the plan includes, at a depth it allows -- never a 402 for the model
+        if mode == "research" and not plan.research_allowed:
+            raise _deny("research_requires_plan", "Deep research needs the Plus plan.", plan_needed="plus")
+        c = router.choose(question, mode, allowed=plan.allows_model, max_effort=plan.max_effort)
+        resolved = _resolve_or_422(c.model, c.effort)
+        if check_balance and not st.can_spend:
+            if st.pool_exhausted and st.allowance_left > 0:
+                raise _deny("free_pool_exhausted", "Free capacity is full for this month. Upgrade or buy credits to keep going.",
+                            plan_needed="plus")
+            raise _deny("insufficient_balance", "You've used this period's allowance. Upgrade or buy credits to continue.",
+                        plan_needed="plus" if plan.id == "free" else None)
+        return resolved
 
     if mode == "research" and not plan.research_allowed:
         raise _deny("research_requires_plan", "Deep research needs the Plus plan.",
@@ -178,6 +199,41 @@ async def aresolve_for_user(user_id: str, model: str | None, effort: str | None,
     if not billing_enabled():
         return resolve_for_user(user_id, model, effort, **kw)
     return await asyncio.to_thread(resolve_for_user, user_id, model, effort, **kw)
+
+
+def _upgrade_stub(tool, plan_needed: str, feature: str):
+    """Same name and schema, so the model still knows the capability exists and
+    can offer it; calling it explains the plan and puts an upgrade card in the
+    chat instead of doing the work."""
+    from harness.tools.base import Tool, ToolOutput
+
+    async def needs_plan(**_kw):
+        label = get_plan(plan_needed).label
+        return ToolOutput(
+            f"{feature} is part of the {label} plan, and this user is on Free. Tell them briefly and offer the "
+            f"upgrade (the card below has the button); do not try to work around it.",
+            {"kind": "upgrade", "feature": feature, "plan": plan_needed, "plan_label": label})
+
+    return Tool(name=tool.name, description=tool.description, parameter=tool.parameter, handler=needs_plan)
+
+
+def gate_tools(user_id: str, tools: list) -> list:
+    """Swap the tools this user's plan does not include for upgrade stubs.
+    Billing off = everything is included."""
+    from harness.billing.plans import gate_for, plan_allows_tool
+    if not billing_enabled():
+        return tools
+    plan = get_plan(billing_db.get_account(user_id).plan)
+    return [t if plan_allows_tool(plan, t.name) else _upgrade_stub(t, *gate_for(t.name)) for t in tools]
+
+
+async def gate_registry(user_id: str, registry) -> None:
+    """Apply the plan to a whole run's tool registry (built-ins and connectors
+    alike): re-registering under the same name replaces the tool."""
+    if not billing_enabled():
+        return
+    for t in await asyncio.to_thread(gate_tools, user_id, registry.list()):
+        registry.registry(t)
 
 
 def allows_research(user_id: str) -> bool:

@@ -210,8 +210,10 @@ function HistoryDialog({ items, filter, onClose, onOpen }: { items: ChatItem[]; 
  * `refreshKey` is bumped by the page whenever a conversation was saved, so
  * the rail on /chat updates without a reload.
  */
-export function ChatsPanel({ refreshKey = 0, onUnauthorized, onOpen, activeId }: {
+export function ChatsPanel({ refreshKey = 0, onUnauthorized, onOpen, activeId, fullPage = false }: {
   refreshKey?: number
+  /** The Chats page (phones): the list fills the page instead of being a side rail. */
+  fullPage?: boolean
   onUnauthorized?: () => void
   /** Reopen a conversation. Omitted on pages with no chat to open into. */
   onOpen?: (id: string) => void
@@ -349,7 +351,8 @@ export function ChatsPanel({ refreshKey = 0, onUnauthorized, onOpen, activeId }:
   const setKind = (kind: "all" | "today" | "yesterday") => { setFilter({ kind }); setSettingsOpen(false) }
 
   return (
-    <aside className="h-sidebar" aria-label="Chats" data-testid="chats-panel" style={{ width }}>
+    <aside className={fullPage ? "h-sidebar h-sidebar-full" : "h-sidebar"} aria-label="Chats" data-testid="chats-panel"
+      style={{ width: fullPage ? "100%" : width }}>
       <section className="h-sidebar-panel" data-testid="chats-section">
       <div className="h-sidebar-head" style={{ display: "flex", alignItems: "center", gap: 6, padding: "12px 10px 8px 14px" }}>
         <span className="h-display" style={{ fontSize: 12 }}>Chats</span>

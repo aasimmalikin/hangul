@@ -1,12 +1,18 @@
 """Per-user integrations: what the signed-in person has connected.
 
-GET /integrations             -> {"google": {"connected": bool, "products": [...]}}
+GET /integrations             -> {"google": {"connected": bool, "products": [...]},
+                                  "apps": {"github": bool, "notion": bool, "slack": bool}}
 DELETE /integrations/google   -> forget the stored Google refresh token
+POST /integrations/apps/{app} -> save a GitHub / Notion / Slack token in the vault
+DELETE /integrations/apps/{app} -> remove it
 """
 
 import asyncio
 
-from fastapi import APIRouter, Depends
+from datetime import timedelta
+
+from fastapi import APIRouter, Depends, HTTPException
+from pydantic import BaseModel, Field
 from sqlalchemy import update
 
 from harness.api.auth import get_current_user
@@ -18,11 +24,78 @@ from harness.mcp.manager import current as mcp_current
 router = APIRouter()
 
 
+WORK_APPS = ("github", "notion", "slack")
+# one cheap read that proves a pasted token works before it is kept
+APP_CHECKS = {"github": ("/user", {}), "notion": ("/v1/users/me", {"Notion-Version": "2022-06-28"}),
+              "slack": ("/api/auth.test", {})}
+
+
+async def apps_status(user_id: str) -> dict[str, bool]:
+    from harness.vault import current as current_vault
+    vault = current_vault()
+    if vault is None:
+        return {a: False for a in WORK_APPS}
+    try:
+        consented = await vault.consented_providers(user_id)
+        creds = {c.provider for c in await vault.list_credentials(user_id) if c.user_id is not None}
+    except Exception:  # noqa: BLE001 - a status read must not fail the page
+        return {a: False for a in WORK_APPS}
+    return {a: a in consented and a in creds for a in WORK_APPS}
+
+
 @router.get("/integrations")
 async def integrations(user: dict = Depends(get_current_user)) -> dict:
     google = await google_tokens().status(user["user_id"])
     google["scopes"] = list(ALL_SCOPES)
-    return {"google": google}
+    return {"google": google, "apps": await apps_status(user["user_id"])}
+
+
+class AppToken(BaseModel):
+    token: str = Field(min_length=8, max_length=4000)
+
+
+@router.post("/integrations/apps/{app}")
+async def connect_app(app: str, req: AppToken, user: dict = Depends(get_current_user)) -> dict:
+    """Store the token (encrypted) with a standing consent. Writes still pause
+    for approval on every call (their tools are DESTRUCTIVE)."""
+    from harness.vault import current as current_vault
+    if app not in WORK_APPS:
+        raise HTTPException(status_code=404, detail="Unknown app.")
+    vault = current_vault()
+    if vault is None:
+        raise HTTPException(status_code=503, detail="The token vault isn't set up on this server (VAULT_MASTER_KEY).")
+    uid = user["user_id"]
+    token = req.token.strip()
+    for old in [c for c in await vault.list_credentials(uid) if c.provider == app and c.user_id is not None]:
+        await vault.revoke_credential(uid, old.id)              # one token per app: replace
+    rec = await vault.add_credential(user_id=uid, provider=app, secret=token, label=f"{app} (connected in Hangul)")
+    await vault.grant_consent(user_id=uid, provider=app, ttl=timedelta(days=365), allow_write=True)
+    path, headers = APP_CHECKS[app]
+    ok, why = True, ""
+    try:
+        resp = await vault.call(subject=uid, provider=app, method="GET", path=path, headers=headers)
+        body = resp.body or ""
+        if resp.status >= 400 or (app == "slack" and '"ok":false' in body.replace(" ", "")):
+            ok, why = False, f"{app.capitalize()} refused that token ({resp.status})."
+    except Exception as e:  # noqa: BLE001
+        ok, why = False, f"Couldn't check the token with {app.capitalize()} ({type(e).__name__})."
+    if not ok:
+        await vault.revoke_credential(uid, rec.id)
+        raise HTTPException(status_code=400, detail=why + " Check you copied the whole token.")
+    return {"connected": True, "app": app}
+
+
+@router.delete("/integrations/apps/{app}")
+async def disconnect_app(app: str, user: dict = Depends(get_current_user)) -> dict:
+    from harness.vault import current as current_vault
+    if app not in WORK_APPS:
+        raise HTTPException(status_code=404, detail="Unknown app.")
+    vault = current_vault()
+    n = 0
+    if vault is not None:
+        for c in [c for c in await vault.list_credentials(user["user_id"]) if c.provider == app and c.user_id is not None]:
+            n += bool(await vault.revoke_credential(user["user_id"], c.id))
+    return {"disconnected": n > 0}
 
 
 def _forget_google(user_id: str) -> int:

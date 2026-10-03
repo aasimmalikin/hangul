@@ -30,6 +30,7 @@ class Task:
     last_run_id: str | None
     last_answer: str
     created_at: datetime | None
+    deliver_email: bool = False
 
     def public(self) -> dict:
         return {k: getattr(self, k) for k in self.__dataclass_fields__ if k != "user_id"}
@@ -40,7 +41,7 @@ def _to(row: ScheduledTask) -> Task:
                 every_minutes=row.every_minutes, daily_at=row.daily_at, connectors=list(row.connectors or []),
                 mode=row.mode, enabled=row.enabled, next_run_at=row.next_run_at, last_run_at=row.last_run_at,
                 last_status=row.last_status, last_run_id=row.last_run_id, last_answer=row.last_answer,
-                created_at=row.created_at)
+                created_at=row.created_at, deliver_email=bool(getattr(row, "deliver_email", False)))
 
 
 def compute_next_run(every_minutes: int | None, daily_at: str | None, tz: str, after: datetime | None = None) -> datetime:
@@ -57,7 +58,7 @@ def compute_next_run(every_minutes: int | None, daily_at: str | None, tz: str, a
 
 
 def create_task(user_id: str, *, title: str, question: str, every_minutes: int | None, daily_at: str | None,
-                connectors: list[str], mode: str, tz: str) -> Task:
+                connectors: list[str], mode: str, tz: str, deliver_email: bool = False) -> Task:
     if not (every_minutes or daily_at):
         raise ValueError("a schedule needs every_minutes or daily_at")
     if every_minutes and every_minutes < MIN_EVERY_MINUTES:
@@ -74,7 +75,7 @@ def create_task(user_id: str, *, title: str, question: str, every_minutes: int |
             raise ValueError(f"at most {MAX_TASKS_PER_USER} scheduled tasks")
         row = ScheduledTask(user_id=int(user_id), title=title[:120], question=question[:4000],
                             every_minutes=every_minutes, daily_at=daily_at, connectors=list(connectors), mode=mode,
-                            next_run_at=compute_next_run(every_minutes, daily_at, tz))
+                            deliver_email=deliver_email, next_run_at=compute_next_run(every_minutes, daily_at, tz))
         s.add(row)
         s.commit()
         s.refresh(row)

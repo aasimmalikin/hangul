@@ -79,6 +79,7 @@ export function AttachMenu({
     if (!c.per_user) return "ok"
     if (status !== "authenticated") return "connect"
     if (integrations === null) return null
+    if (c.auth?.startsWith("vault:")) return integrations.apps?.[c.auth.slice(6) as "github" | "notion" | "slack"] ? "ok" : "connect"
     if (c.auth !== "google") return "ok"
     if (!integrations.google.connected) return "connect"
     return !c.product || integrations.google.products.includes(c.product) ? "ok" : "grant"
@@ -235,7 +236,7 @@ export function AttachMenu({
                 data-testid="menu-connectors"
               >
                 <i className="ti ti-plug" style={{ fontSize: 15 }} />
-                Connectors
+                Apps
                 {connectors.length > 0 && <span className="h-muted" style={{ fontSize: 11 }}>{connectors.length} on</span>}
                 <i className="ti ti-chevron-right" style={{ fontSize: 13, marginLeft: "auto" }} />
               </button>
@@ -243,7 +244,7 @@ export function AttachMenu({
                 <div
                   className="h-popover"
                   role="menu"
-                  aria-label="Connectors"
+                  aria-label="Apps"
                   style={{ position: "absolute", left: "100%", top: -8, marginLeft: 4, minWidth: 220, zIndex: 31 }}
                   data-testid="connectors-menu"
                 >

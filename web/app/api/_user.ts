@@ -8,7 +8,11 @@ export async function userProxy(req: Request, path: string, init: { method: "GET
   }
   const who = await requireUser()
   if (who instanceof Response) return who
-  const limited = rateLimit(`settings:${who.userId}`, 60, 60_000)
+  // One bucket per area (settings, tasks, lists, reminders, today, files…): a
+  // page view touches several of them, and one shared bucket made quick
+  // browsing trip the limit.
+  const area = path.split("/")[1] || "user"
+  const limited = rateLimit(`user:${area}:${who.userId}`, 60, 60_000)
   if (limited) return limited
   let res: Response
   try {

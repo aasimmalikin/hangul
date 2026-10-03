@@ -20,7 +20,7 @@ from harness.tools.builtin.ask_user import ASK_USER_TOOL
 from harness.tools.builtin.search_docs_session import make_search_docs_tool
 from harness.tools.builtin.filesystem_session import wrap_filesystem_tool
 from harness.tools.builtin.vault_request import build_vault_tools
-from harness.tools.builtin.daily import build_daily_tools
+from harness.tools.builtin.daily import build_daily_tools, daily_tools_for
 from harness.connectors import tools_for, validate_keys
 from harness.security import get_guard
 from harness.tools.builtin.recall import make_recall_tool
@@ -98,6 +98,11 @@ _policy = ToolPolicy(tiers={
     "convert": Tier.SAFE,
     "world_clock": Tier.SAFE,
     "view_image": Tier.SAFE,
+    "create_file": Tier.SAFE,            # writes a NEW file in the user's own folder, never overwrites
+    "analyze_data": Tier.SAFE,           # fixed pandas operations; no code execution
+    "generate_image": Tier.SAFE,         # draws into the user's own folder; metered per image
+    "maps_search": Tier.SAFE,
+    "travel_time": Tier.SAFE,
 }, patterns=[
     # Google Workspace bundle (official MCP servers): anything that sends,
     # creates, changes or deletes pauses for approval; reads run.
@@ -109,6 +114,11 @@ _policy = ToolPolicy(tiers={
     ("drive__*share*", Tier.DESTRUCTIVE), ("drive__*permission*", Tier.DESTRUCTIVE), ("drive__*move*", Tier.DESTRUCTIVE),
     ("docs__*create*", Tier.DESTRUCTIVE), ("docs__*update*", Tier.DESTRUCTIVE), ("docs__*insert*", Tier.DESTRUCTIVE),
     ("docs__*replace*", Tier.DESTRUCTIVE), ("docs__*delete*", Tier.DESTRUCTIVE), ("docs__*append*", Tier.DESTRUCTIVE),
+    ("sheets__*append*", Tier.DESTRUCTIVE), ("sheets__*create*", Tier.DESTRUCTIVE), ("sheets__*update*", Tier.DESTRUCTIVE),
+    ("sheets__*clear*", Tier.DESTRUCTIVE), ("sheets__*", Tier.SENSITIVE), ("contacts__*", Tier.SENSITIVE),
+    ("github__create*", Tier.DESTRUCTIVE), ("github__comment*", Tier.DESTRUCTIVE), ("github__*", Tier.SENSITIVE),
+    ("notion__append*", Tier.DESTRUCTIVE), ("notion__create*", Tier.DESTRUCTIVE), ("notion__*", Tier.SENSITIVE),
+    ("slack__send*", Tier.DESTRUCTIVE), ("slack__*", Tier.SENSITIVE),
     ("gmail__*", Tier.SENSITIVE), ("calendar__*", Tier.SENSITIVE), ("drive__*", Tier.SENSITIVE), ("docs__*", Tier.SENSITIVE),
 ])
 
@@ -168,6 +178,10 @@ class AskRequest(BaseModel):
     # The device's IANA timezone (from the browser). Adopted as the user's
     # timezone while it is automatic, so times are local to wherever they are.
     client_timezone: str | None = Field(default=None, max_length=64)
+    # Turn on the user's connected apps a message needs (connectors/auto.py), on
+    # top of any switched on by hand. The web app sends true unless the user
+    # turned "use my apps automatically" off.
+    connectors_auto: bool = False
 
 
 RESEARCH_INSTRUCTION = (
@@ -361,8 +375,11 @@ async def _build_and_run(req: AskRequest, user_id: str, on_event=None) -> RunOut
     spec, effort = await entitlements.aresolve_for_user(
         user_id, req.model, req.effort, mode=req.mode,
         fallback_model=conv.model if conv else None,
-        fallback_effort=conv.effort if conv else None)
+        fallback_effort=conv.effort if conv else None, question=req.question)
     model = spec.id
+    # "Auto" is remembered as "auto" on the conversation, so each turn is routed afresh
+    auto_model = req.model == "auto" or (req.model is None and bool(conv) and conv.model == "auto")
+    stored_model = "auto" if auto_model else model
     budget = budget_for(effort)
     run = RunRecord(model=model, prompt_version=prompt_version.version)
 
@@ -380,7 +397,7 @@ async def _build_and_run(req: AskRequest, user_id: str, on_event=None) -> RunOut
     if conv is None:
         try:
             new_id = await asyncio.to_thread(
-                create_conversation, user_id, model=model, effort=effort,
+                create_conversation, user_id, model=stored_model, effort=None if auto_model else effort,
                 connectors=list(req.connectors), mode=mode, docs_only=docs_only)
             conv = await asyncio.to_thread(get_conversation, new_id, user_id)
         except Exception as e:  # noqa: BLE001
@@ -423,9 +440,17 @@ async def _build_and_run(req: AskRequest, user_id: str, on_event=None) -> RunOut
                 session_registry.registry(wrap_filesystem_tool(t, user_id))
         for t in await build_vault_tools(user_id, run.run_id):
             session_registry.registry(t)
-        for t in build_daily_tools(user_id, prefs.timezone if prefs else "UTC", run.run_id):
+        for t in await daily_tools_for(user_id, prefs.timezone if prefs else "UTC", run.run_id):
             session_registry.registry(t)
-    connectors = connectors_or_422(req.connectors or (list(conv.connectors) if conv else []))
+    connectors = list(connectors_or_422(req.connectors or (list(conv.connectors) if conv else [])))
+    if req.connectors_auto and not docs_only:
+        from harness.connectors.auto import connected_apps, route
+        try:
+            for key in route(req.question, await connected_apps(user_id)):
+                if key not in connectors:
+                    connectors.append(key)        # stored with the conversation, so follow-ups keep it
+        except Exception as e:  # noqa: BLE001 - routing is a convenience; the run goes on without it
+            log.warning("auto connectors failed", error=str(e))
     if mode == "research" and not docs_only and "arxiv" not in connectors:
         connectors = [*connectors, "arxiv"]          # research always has the literature tool
     connector_note = ""
@@ -435,6 +460,9 @@ async def _build_and_run(req: AskRequest, user_id: str, on_event=None) -> RunOut
         if problems:
             connector_note += "\n" + "\n".join(problems)
     
+    # the plan decides which of these tools are real and which are upgrade cards
+    await entitlements.gate_registry(user_id, session_registry)
+
     session_dir = (Path("data/sessions") / user_id).resolve()
     session_dir.mkdir(parents=True, exist_ok=True)
     
@@ -584,8 +612,8 @@ async def _build_and_run(req: AskRequest, user_id: str, on_event=None) -> RunOut
         # with the user's next turn it would silently drop a turn, so it is
         # awaited here rather than spawned with the ledger and cache writes.
         await _persist_turn(conversation_id, run.run_id, req.question)
-        await asyncio.to_thread(bind_settings, conversation_id, model=model,
-                                effort=effort, connectors=connectors, mode=mode)
+        await asyncio.to_thread(bind_settings, conversation_id, model=stored_model,
+                                effort=None if auto_model else effort, connectors=connectors, mode=mode)
 
 
     _trace_store.add(trace, model)
@@ -624,7 +652,7 @@ async def ask(req: AskRequest, user: dict = Depends(get_current_user)) -> AskRes
     # cache-hit shortcut stays here — it's specific to the JSON route
     prompt_version = get_prompt("system_agent")
     # checked before the cache too: a cached answer is still the paid model's
-    spec, effort = await entitlements.aresolve_for_user(user_id, req.model, req.effort, mode=req.mode)
+    spec, effort = await entitlements.aresolve_for_user(user_id, req.model, req.effort, mode=req.mode, question=req.question)
     model = spec.id
     session_registry = ToolRegistry()
     session_registry.registry(make_search_docs_tool(user_id))

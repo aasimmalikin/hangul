@@ -1,7 +1,8 @@
 """The Google Workspace connector over Google's REST APIs.
 
 Google's own Workspace MCP servers need a Workspace organisation enrolled in
-the Developer Preview; the REST APIs (Gmail, Calendar, Drive, Docs) work for
+the Developer Preview; the REST APIs (Gmail, Calendar, Drive, Docs, Sheets,
+Contacts) work for
 any account that granted the scopes. Same switch in the UI, same tool
 namespaces (``gmail__*`` ...) so the policy tiers and the eval concerns apply
 unchanged. Tools are built per user: each call fetches that user's access
@@ -23,6 +24,8 @@ GMAIL = "https://gmail.googleapis.com/gmail/v1/users/me"
 CALENDAR = "https://www.googleapis.com/calendar/v3"
 DRIVE = "https://www.googleapis.com/drive/v3"
 DOCS = "https://docs.googleapis.com/v1"
+SHEETS = "https://sheets.googleapis.com/v4/spreadsheets"
+PEOPLE = "https://people.googleapis.com/v1"
 MAX_TEXT = 12_000
 
 
@@ -135,6 +138,32 @@ def _format_message(m: dict, *, body: bool = False) -> str:
     else:
         line += f"  {m.get('snippet', '')}\n"
     return line
+
+
+def free_slots(start: datetime, end: datetime, busy: list[tuple[datetime, datetime]], minutes: int,
+               day_start: str, day_end: str, tz) -> list[tuple[datetime, datetime]]:
+    """Gaps of at least ``minutes`` between busy blocks, inside the working
+    hours of each day (in ``tz``), within [start, end)."""
+    out: list[tuple[datetime, datetime]] = []
+    need = timedelta(minutes=max(5, minutes))
+    hs, ms = (int(x) for x in day_start.split(":"))
+    he, me = (int(x) for x in day_end.split(":"))
+    blocks = sorted((a.astimezone(tz), b.astimezone(tz)) for a, b in busy)
+    day = start.astimezone(tz).replace(hour=0, minute=0, second=0, microsecond=0)
+    while day < end.astimezone(tz):
+        lo = max(day.replace(hour=hs, minute=ms), start.astimezone(tz))
+        hi = min(day.replace(hour=he, minute=me), end.astimezone(tz))
+        cur = lo
+        for a, b in blocks:
+            if b <= cur or a >= hi:
+                continue
+            if a - cur >= need:
+                out.append((cur, a))
+            cur = max(cur, b)
+        if hi - cur >= need:
+            out.append((cur, hi))
+        day += timedelta(days=1)
+    return out
 
 
 def make_google_tools(user_id: str, http: httpx.AsyncClient | None = None) -> list[Tool]:
@@ -332,6 +361,130 @@ def make_google_tools(user_id: str, http: httpx.AsyncClient | None = None) -> li
         await call("docs", "POST", f"{DOCS}/documents/{document_id}:batchUpdate", json_body=body)
         return f"Appended {len(text)} characters to document {document_id}."
 
+    # ------------------------------------------------- calendar: free time, changes
+    async def calendar_find_free_time(time_min: str, time_max: str, duration_minutes: int = 30,
+                                      day_start: str = "09:00", day_end: str = "18:00",
+                                      timezone: str = "UTC", calendar_id: str = "primary") -> str | ToolOutput:
+        from zoneinfo import ZoneInfo
+        tz = ZoneInfo(timezone or "UTC")
+        r = await call("calendar", "POST", f"{CALENDAR}/freeBusy",
+                       json_body={"timeMin": time_min, "timeMax": time_max, "timeZone": timezone or "UTC",
+                                  "items": [{"id": calendar_id}]})
+        busy = [(datetime.fromisoformat(b["start"].replace("Z", "+00:00")), datetime.fromisoformat(b["end"].replace("Z", "+00:00")))
+                for b in r.json().get("calendars", {}).get(calendar_id, {}).get("busy", [])]
+        slots = free_slots(datetime.fromisoformat(time_min.replace("Z", "+00:00")),
+                           datetime.fromisoformat(time_max.replace("Z", "+00:00")), busy,
+                           int(duration_minutes or 30), day_start, day_end, tz)
+        if not slots:
+            return f"No free {duration_minutes}-minute slots between {day_start} and {day_end} in that range."
+        lines = [f"{a.strftime('%a %d %b %H:%M')}–{b.strftime('%H:%M')}" for a, b in slots[:20]]
+        return ToolOutput(f"Free slots ({timezone}, at least {duration_minutes} min):\n" + "\n".join(lines),
+                          ui={"kind": "calendar_events", "created": False, "free": True,
+                              "events": [{"summary": "Free", "start": a.isoformat(), "end": b.isoformat()} for a, b in slots[:20]]})
+
+    async def calendar_update_event(event_id: str, start: str | None = None, end: str | None = None,
+                                    summary: str | None = None, location: str | None = None,
+                                    description: str | None = None, timezone: str | None = None,
+                                    calendar_id: str = "primary") -> str | ToolOutput:
+        body: dict = {}
+        for k, v in (("summary", summary), ("location", location), ("description", description)):
+            if v is not None:
+                body[k] = v
+        for k, v in (("start", start), ("end", end)):
+            if v:
+                body[k] = {"date": v} if len(v) == 10 else {"dateTime": v, **({"timeZone": timezone} if timezone else {})}
+        if not body:
+            return "Nothing to change: give a new start/end, summary, location or description."
+        r = await call("calendar", "PATCH", f"{CALENDAR}/calendars/{calendar_id}/events/{event_id}", json_body=body)
+        e = r.json()
+        s0 = e.get("start", {}).get("dateTime") or e.get("start", {}).get("date", "")
+        e0 = e.get("end", {}).get("dateTime") or e.get("end", {}).get("date", "")
+        return ToolOutput(f"Event updated: {e.get('summary')} now {s0} → {e0}",
+                          ui={"kind": "calendar_events", "created": True,
+                              "events": [{"id": e.get("id"), "summary": e.get("summary"), "start": s0, "end": e0,
+                                          "all_day": len(s0) == 10, "location": e.get("location"), "link": e.get("htmlLink")}]})
+
+    async def calendar_delete_event(event_id: str, calendar_id: str = "primary") -> str:
+        await call("calendar", "DELETE", f"{CALENDAR}/calendars/{calendar_id}/events/{event_id}")
+        return f"Deleted event {event_id}."
+
+    # -------------------------------------------------------------- sheets
+    async def sheets_find(query: str = "", max_results: int = 10) -> str:
+        q = "mimeType='application/vnd.google-apps.spreadsheet' and trashed=false"
+        if query.strip():
+            q += " and name contains '" + query.replace("\\", "").replace("'", "\\'") + "'"
+        r = await call("sheets", "GET", f"{DRIVE}/files", params={
+            "q": q, "pageSize": max(1, min(int(max_results or 10), 25)), "orderBy": "modifiedTime desc",
+            "fields": "files(id,name,modifiedTime,webViewLink)"})
+        found = r.json().get("files", [])
+        if not found:
+            return "No spreadsheets found" + (f" matching {query!r}." if query else ".")
+        return "\n".join(f"[{f['id']}] {f['name']} (modified {f.get('modifiedTime', '')[:10]})" for f in found)
+
+    async def sheets_read(spreadsheet_id: str, range: str = "") -> str | ToolOutput:  # noqa: A002
+        if not range:
+            meta = (await call("sheets", "GET", f"{SHEETS}/{spreadsheet_id}",
+                               params={"fields": "properties.title,sheets.properties.title"})).json()
+            tabs = [t["properties"]["title"] for t in meta.get("sheets", [])]
+            range = f"'{tabs[0]}'!A1:Z200" if tabs else "A1:Z200"  # noqa: A001
+        r = await call("sheets", "GET", f"{SHEETS}/{spreadsheet_id}/values/{range}",
+                       params={"valueRenderOption": "UNFORMATTED_VALUE", "dateTimeRenderOption": "FORMATTED_STRING"})
+        rows = r.json().get("values", [])
+        if not rows:
+            return f"The range {range} is empty."
+        width = max(len(x) for x in rows)
+        rows = [[*x, *[None] * (width - len(x))] for x in rows[:200]]
+        text = "\n".join(" | ".join("" if v is None else str(v) for v in x) for x in rows)
+        return ToolOutput(f"{r.json().get('range', range)} ({len(rows)} rows):\n{text[:MAX_TEXT]}",
+                          ui={"kind": "table", "title": r.json().get("range", range), "rows": rows[:50]})
+
+    async def sheets_append_rows(spreadsheet_id: str, rows: list[list], sheet: str = "") -> str | ToolOutput:
+        target = f"'{sheet}'!A1" if sheet else "A1"
+        r = await call("sheets", "POST", f"{SHEETS}/{spreadsheet_id}/values/{target}:append",
+                       params={"valueInputOption": "USER_ENTERED", "insertDataOption": "INSERT_ROWS"},
+                       json_body={"values": rows})
+        upd = r.json().get("updates", {})
+        return ToolOutput(f"Added {upd.get('updatedRows', len(rows))} row(s) at {upd.get('updatedRange', target)}.",
+                          ui={"kind": "table", "title": f"Added to {upd.get('updatedRange', 'the sheet')}", "rows": rows[:50]})
+
+    async def sheets_create(title: str, rows: list[list] | None = None) -> str:
+        body: dict = {"properties": {"title": title}}
+        if rows:
+            body["sheets"] = [{"data": [{"rowData": [{"values": [
+                {"userEnteredValue": {"numberValue": v} if isinstance(v, (int, float)) and not isinstance(v, bool)
+                 else {"stringValue": "" if v is None else str(v)}} for v in row]} for row in rows]}]}]
+        r = await call("sheets", "POST", SHEETS, json_body=body)
+        d = r.json()
+        return f"Created spreadsheet '{title}' [{d.get('spreadsheetId')}]: {d.get('spreadsheetUrl', '')}"
+
+    # ------------------------------------------------------------ contacts
+    async def contacts_search(query: str, max_results: int = 5) -> str | ToolOutput:
+        mask = "names,emailAddresses,phoneNumbers"
+        size = max(1, min(int(max_results or 5), 10))
+        people: list[dict] = []
+        for path, field in (("people:searchContacts", "results"), ("otherContacts:search", "results")):
+            # Google wants an empty "warm-up" search before the first real one (it builds the cache)
+            await call("contacts", "GET", f"{PEOPLE}/{path}", params={"query": "", "readMask": mask, "pageSize": 1})
+            r = await call("contacts", "GET", f"{PEOPLE}/{path}", params={"query": query, "readMask": mask, "pageSize": size})
+            for res in r.json().get(field, []):
+                p = res.get("person", {})
+                emails = [e.get("value") for e in p.get("emailAddresses", []) if e.get("value")]
+                if not emails and not p.get("phoneNumbers"):
+                    continue
+                people.append({"name": (p.get("names") or [{}])[0].get("displayName") or (emails[0] if emails else ""),
+                               "emails": emails, "phones": [x.get("value") for x in p.get("phoneNumbers", []) if x.get("value")]})
+        seen, unique = set(), []
+        for p in people:
+            key = (p["emails"] or [p["name"]])[0].lower()
+            if key not in seen:
+                seen.add(key)
+                unique.append(p)
+        if not unique:
+            return f"No contact matching {query!r}. Ask the user for the email address."
+        return ToolOutput("\n".join(f"{p['name']}: {', '.join(p['emails']) or '-'}" + (f" · {', '.join(p['phones'])}" if p['phones'] else "")
+                                    for p in unique[:size]),
+                          ui={"kind": "contacts", "people": unique[:size]})
+
     obj = {"type": "object"}
     return [
         Tool(name="gmail__search_messages",
@@ -387,6 +540,58 @@ def make_google_tools(user_id: str, http: httpx.AsyncClient | None = None) -> li
         Tool(name="docs__append_text", description="Append text to the end of a Google Doc. Requires the user's approval.",
              parameter={**obj, "properties": {"document_id": {"type": "string"}, "text": {"type": "string"}}, "required": ["document_id", "text"]},
              handler=_handler("docs", docs_append_text)),
+        Tool(name="calendar__find_free_time",
+             description="Find free slots on the user's calendar between time_min and time_max (RFC3339), at least "
+                         "duration_minutes long, within day_start–day_end (HH:MM) in `timezone` (the user's). Use for "
+                         "'when am I free Thursday?' or before proposing a meeting time.",
+             parameter={**obj, "properties": {"time_min": {"type": "string"}, "time_max": {"type": "string"},
+                                              "duration_minutes": {"type": "integer"}, "day_start": {"type": "string"},
+                                              "day_end": {"type": "string"}, "timezone": {"type": "string"},
+                                              "calendar_id": {"type": "string"}},
+                        "required": ["time_min", "time_max"]},
+             handler=_handler("calendar", calendar_find_free_time)),
+        Tool(name="calendar__update_event",
+             description="Change an event (move it, rename it, change place/notes) by event id from calendar__list_events. "
+                         "Only pass the fields that change. Requires the user's approval.",
+             parameter={**obj, "properties": {"event_id": {"type": "string"}, "start": {"type": "string"}, "end": {"type": "string"},
+                                              "summary": {"type": "string"}, "location": {"type": "string"},
+                                              "description": {"type": "string"}, "timezone": {"type": "string"},
+                                              "calendar_id": {"type": "string"}},
+                        "required": ["event_id"]},
+             handler=_handler("calendar", calendar_update_event)),
+        Tool(name="calendar__delete_event",
+             description="Delete (cancel) an event by event id. Requires the user's approval.",
+             parameter={**obj, "properties": {"event_id": {"type": "string"}, "calendar_id": {"type": "string"}},
+                        "required": ["event_id"]},
+             handler=_handler("calendar", calendar_delete_event)),
+        Tool(name="sheets__find_spreadsheets",
+             description="Find the user's Google Sheets by name (newest first). Returns ids for the other sheets__ tools.",
+             parameter={**obj, "properties": {"query": {"type": "string"}, "max_results": {"type": "integer"}}},
+             handler=_handler("sheets", sheets_find)),
+        Tool(name="sheets__read_range",
+             description="Read cells from a Google Sheet. `range` in A1 notation, e.g. \"'Budget'!A1:D50\"; omit it for the first tab.",
+             parameter={**obj, "properties": {"spreadsheet_id": {"type": "string"}, "range": {"type": "string"}},
+                        "required": ["spreadsheet_id"]},
+             handler=_handler("sheets", sheets_read)),
+        Tool(name="sheets__append_rows",
+             description="Add rows to the end of a Google Sheet tab (`sheet` = tab name, default the first). Read the "
+                         "sheet first so the columns line up. Requires the user's approval.",
+             parameter={**obj, "properties": {"spreadsheet_id": {"type": "string"}, "sheet": {"type": "string"},
+                                              "rows": {"type": "array", "items": {"type": "array", "items": {}}}},
+                        "required": ["spreadsheet_id", "rows"]},
+             handler=_handler("sheets", sheets_append_rows)),
+        Tool(name="sheets__create_spreadsheet",
+             description="Create a new Google Sheet, optionally with starting rows (first row = header). Requires the user's approval.",
+             parameter={**obj, "properties": {"title": {"type": "string"},
+                                              "rows": {"type": "array", "items": {"type": "array", "items": {}}}},
+                        "required": ["title"]},
+             handler=_handler("sheets", sheets_create)),
+        Tool(name="contacts__search",
+             description="Look up people in the user's Google Contacts (and people they have emailed) by name, to get "
+                         "an email address or phone number. Use before emailing someone by name.",
+             parameter={**obj, "properties": {"query": {"type": "string"}, "max_results": {"type": "integer"}},
+                        "required": ["query"]},
+             handler=_handler("contacts", contacts_search)),
     ]
 
 

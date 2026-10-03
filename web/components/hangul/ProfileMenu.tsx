@@ -111,7 +111,7 @@ export function ProfileMenu() {
             onClick={() => setOpen(false)}
           >
             <i className="ti ti-adjustments" style={{ fontSize: 15 }} />
-            Personalisation & tasks
+            Profile & preferences
           </Link>
           <Link
             href="/lists"
@@ -120,7 +120,7 @@ export function ProfileMenu() {
             onClick={() => setOpen(false)}
           >
             <i className="ti ti-checklist" style={{ fontSize: 15 }} />
-            Lists, notes & reminders
+            My stuff
           </Link>
           <Link
             href="/billing"
@@ -138,7 +138,7 @@ export function ProfileMenu() {
             onClick={() => setOpen(false)}
           >
             <i className="ti ti-key" style={{ fontSize: 15 }} />
-            Connected services
+            Connected apps
           </Link>
           <button
             className="h-btn-ghost"

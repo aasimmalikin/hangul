@@ -22,6 +22,8 @@ class SettingsIn(BaseModel):
     timezone: str = Field(default="UTC", max_length=64)
     language: str = Field(default="", max_length=16)
     timezone_auto: bool = True
+    city: str = Field(default="", max_length=80)
+    onboarded: bool = False
 
 
 class DeviceTimezone(BaseModel):
@@ -35,6 +37,13 @@ async def device_timezone(req: DeviceTimezone, user: dict = Depends(get_current_
     from harness.db.settings import adopt_device_timezone
     st = await asyncio.to_thread(adopt_device_timezone, user["user_id"], req.timezone)
     return {"timezone": st.timezone, "timezone_auto": st.timezone_auto}
+
+
+@router.post("/settings/onboarded")
+async def onboarded(user: dict = Depends(get_current_user)) -> dict:
+    from harness.db.settings import mark_onboarded
+    await asyncio.to_thread(mark_onboarded, user["user_id"])
+    return {"onboarded": True}
 
 
 @router.get("/settings")
@@ -58,6 +67,7 @@ class TaskIn(BaseModel):
     daily_at: str | None = Field(default=None, pattern=r"^\d{2}:\d{2}$")
     connectors: list[str] = Field(default_factory=list, max_length=8)
     mode: str = Field(default="default", pattern=r"^(default|research)$")
+    deliver_email: bool = False
 
 
 class TaskOut(BaseModel):
@@ -75,6 +85,7 @@ class TaskOut(BaseModel):
     last_run_id: str | None
     last_answer: str
     created_at: datetime | None
+    deliver_email: bool = False
 
 
 @router.get("/tasks", response_model=list[TaskOut])
@@ -89,7 +100,8 @@ async def create_task(req: TaskIn, user: dict = Depends(get_current_user)) -> Ta
         tz = (await asyncio.to_thread(get_settings, user["user_id"])).timezone
         t = await asyncio.to_thread(tasks_db.create_task, user["user_id"], title=req.title, question=req.question,
                                     every_minutes=req.every_minutes, daily_at=req.daily_at,
-                                    connectors=req.connectors, mode=req.mode, tz=tz)
+                                    connectors=req.connectors, mode=req.mode, tz=tz,
+                                    deliver_email=req.deliver_email)
     except ValueError as e:
         raise HTTPException(status.HTTP_422_UNPROCESSABLE_CONTENT, str(e)) from e
     return TaskOut(**t.public())

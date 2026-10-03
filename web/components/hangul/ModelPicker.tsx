@@ -63,8 +63,10 @@ export function ModelPicker({ model, effort, onChange, disabled }: Props) {
 
   if (!catalog) return null
 
-  // A remembered choice the plan no longer covers falls back to the plan's default.
+  // No model picked = Auto (the backend chooses per message). A remembered
+  // choice the plan no longer covers falls back to Auto too.
   const pickable = (id: string | null) => catalog.models.find((m) => m.id === id && !m.locked)
+  const auto = !pickable(model)
   const current = pickable(model) ?? pickable(catalog.default.model) ?? catalog.models.find((m) => !m.locked) ?? catalog.models[0]
   const currentId = current.id
   const currentEffort = current.supports_reasoning
@@ -135,11 +137,12 @@ export function ModelPicker({ model, effort, onChange, disabled }: Props) {
 
   return (
     <div ref={ref} style={{ position: "relative", display: "inline-flex", gap: 6 }}>
-      {chip("model", "model-picker", "cpu", current.label,
-        `${fmt(current.input_usd_per_m)} in / ${fmt(current.output_usd_per_m)} out per 1M tokens`)}
-      {current.supports_reasoning && currentEffort &&
-        chip("effort", "effort-picker", "brain", `Effort: ${currentEffort}`,
-          "How hard the model thinks — higher means slower, more thorough, and more steps")}
+      {chip("model", "model-picker", auto ? "sparkles" : "cpu", auto ? "Auto" : current.label,
+        auto ? "Auto picks a quick, balanced or deep model for each message"
+             : `${fmt(current.input_usd_per_m)} in / ${fmt(current.output_usd_per_m)} out per 1M tokens`)}
+      {!auto && current.supports_reasoning && currentEffort &&
+        chip("effort", "effort-picker", "brain", `Depth: ${currentEffort}`,
+          "Speed vs. depth — deeper is slower, more thorough, and takes more steps")}
 
       {open && (
         <div
@@ -147,9 +150,11 @@ export function ModelPicker({ model, effort, onChange, disabled }: Props) {
           role="listbox"
           style={{ position: "absolute", bottom: 36, left: 0, minWidth: open === "model" ? 280 : 180, zIndex: 30 }}
         >
+          {open === "model" && option("auto", auto, () => { onChange(null, null); setOpen(null) },
+            "Auto", "best for each message", "model-option-auto")}
           {open === "model"
             ? catalog.models.map((m) =>
-                option(m.id, m.id === current.id, () => pickModel(m), m.label,
+                option(m.id, !auto && m.id === current.id, () => pickModel(m), m.label,
                   `${fmt(m.input_usd_per_m)} / ${fmt(m.output_usd_per_m)}`, `model-option-${m.id}`,
                   m.locked ? PLAN_LABEL[m.plan_needed ?? ""] ?? "Upgrade" : undefined))
             : current.efforts.map((e) =>

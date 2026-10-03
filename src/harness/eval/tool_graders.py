@@ -25,13 +25,17 @@ from harness.eval.trajectory import Trajectory
 # separation-of-concerns miss even if it "worked" (docs question answered via
 # the open web, a file written by an external API, ...).
 CONCERN_TOOLS: dict[str, tuple[str, ...]] = {
-    "docs": ("search_docs", "calculator", "recall", "recall_episodes"),
-    "web": ("web_search", "search_docs", "calculator"),           # docs-first is fine
-    "compute": ("calculator",),
-    "files": ("filesystem__*", "search_docs"),
+    "docs": ("search_docs", "calculator", "recall", "recall_episodes", "view_image"),
+    "web": ("web_search", "read_webpage", "search_docs", "calculator"),   # docs-first is fine
+    "compute": ("calculator", "convert"),
+    "files": ("filesystem__*", "search_docs", "create_file", "analyze_data", "view_image"),
     "external": ("vault_request", "vault_mutate"),
     "memory": ("recall", "remember", "recall_episodes"),
-    "research": ("arxiv_*", "search_docs"),                       # Research connector
+    "research": ("arxiv_*", "search_docs", "read_webpage"),       # Research connector
+    # everyday assistant (tools/builtin/daily.py)
+    "personal": ("reminders", "lists", "notes", "recall", "remember"),
+    "lookup": ("weather", "convert", "world_clock", "calculator", "read_webpage"),
+    "data": ("analyze_data", "create_file", "search_docs", "calculator"),
     "none": (),
 }
 # a clarification never counts against any concern

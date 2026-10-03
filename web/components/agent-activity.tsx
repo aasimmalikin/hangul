@@ -54,6 +54,30 @@ const TOOL_LABELS: Record<string, Labels> = {
   drive__get_file: { pending: "Preparing to open a file", running: "Reading a Drive file", done: "Read a Drive file", awaiting: "Wants to read a Drive file" },
   docs__get_document: { pending: "Preparing to open a doc", running: "Reading a Google Doc", done: "Read a Google Doc", awaiting: "Wants to read a Google Doc" },
   docs__append_text: { pending: "Drafting text for a doc", running: "Editing a Google Doc", done: "Edited a Google Doc", awaiting: "Wants to edit a Google Doc" },
+  calendar__find_free_time: { pending: "Preparing to check your free time", running: "Finding free time", done: "Found free time", awaiting: "Wants to check your calendar" },
+  calendar__update_event: { pending: "Drafting a change", running: "Updating an event", done: "Updated an event", awaiting: "Wants to change an event" },
+  calendar__delete_event: { pending: "Preparing to cancel an event", running: "Deleting an event", done: "Deleted an event", awaiting: "Wants to delete an event" },
+  sheets__find_spreadsheets: { pending: "Preparing a Sheets search", running: "Searching Google Sheets", done: "Searched Google Sheets", awaiting: "Wants to search Sheets" },
+  sheets__read_range: { pending: "Preparing to open a sheet", running: "Reading a Google Sheet", done: "Read a Google Sheet", awaiting: "Wants to read a sheet" },
+  sheets__append_rows: { pending: "Drafting rows", running: "Adding rows to a sheet", done: "Added rows to a sheet", awaiting: "Wants to add rows to a sheet" },
+  sheets__create_spreadsheet: { pending: "Drafting a spreadsheet", running: "Creating a Google Sheet", done: "Created a Google Sheet", awaiting: "Wants to create a spreadsheet" },
+  contacts__search: { pending: "Preparing a contact search", running: "Looking up contacts", done: "Looked up contacts", awaiting: "Wants to look up contacts" },
+  generate_image: { pending: "Planning the image", running: "Drawing your image", done: "Drew your image", awaiting: "Wants to draw an image" },
+  maps_search: { pending: "Preparing a map search", running: "Searching the map", done: "Searched the map", awaiting: "Wants to search the map" },
+  travel_time: { pending: "Preparing a route", running: "Working out the route", done: "Worked out the route", awaiting: "Wants to check a route" },
+  github__search: { pending: "Preparing a GitHub search", running: "Searching GitHub", done: "Searched GitHub", awaiting: "Wants to search GitHub" },
+  github__my_work: { pending: "Preparing your GitHub queue", running: "Checking your GitHub work", done: "Checked your GitHub work", awaiting: "Wants to check GitHub" },
+  github__get_issue: { pending: "Preparing to open an issue", running: "Reading a GitHub issue", done: "Read a GitHub issue", awaiting: "Wants to read an issue" },
+  github__create_issue: { pending: "Drafting an issue", running: "Opening an issue", done: "Opened an issue", awaiting: "Wants to open an issue" },
+  github__comment: { pending: "Drafting a comment", running: "Commenting on GitHub", done: "Commented on GitHub", awaiting: "Wants to comment on GitHub" },
+  notion__search: { pending: "Preparing a Notion search", running: "Searching Notion", done: "Searched Notion", awaiting: "Wants to search Notion" },
+  notion__read_page: { pending: "Preparing to open a page", running: "Reading a Notion page", done: "Read a Notion page", awaiting: "Wants to read a Notion page" },
+  notion__append_to_page: { pending: "Drafting text for Notion", running: "Adding to a Notion page", done: "Added to a Notion page", awaiting: "Wants to add to a Notion page" },
+  notion__create_page: { pending: "Drafting a page", running: "Creating a Notion page", done: "Created a Notion page", awaiting: "Wants to create a Notion page" },
+  slack__search_messages: { pending: "Preparing a Slack search", running: "Searching Slack", done: "Searched Slack", awaiting: "Wants to search Slack" },
+  slack__list_channels: { pending: "Preparing to list channels", running: "Listing Slack channels", done: "Listed Slack channels", awaiting: "Wants to list channels" },
+  slack__read_channel: { pending: "Preparing to open a channel", running: "Reading a Slack channel", done: "Read a Slack channel", awaiting: "Wants to read a channel" },
+  slack__send_message: { pending: "Drafting a message", running: "Posting to Slack", done: "Posted to Slack", awaiting: "Wants to post to Slack" },
   reminders: { pending: "Preparing a reminder", running: "Updating your reminders", done: "Updated your reminders", awaiting: "Wants to set a reminder" },
   lists: { pending: "Preparing your list", running: "Updating your list", done: "Updated your list", awaiting: "Wants to change your list" },
   notes: { pending: "Preparing a note", running: "Checking your notes", done: "Checked your notes", awaiting: "Wants to use your notes" },
@@ -62,11 +86,13 @@ const TOOL_LABELS: Record<string, Labels> = {
   convert: { pending: "Preparing a conversion", running: "Converting", done: "Converted", awaiting: "Wants to convert" },
   world_clock: { pending: "Preparing the world clock", running: "Checking times", done: "Checked times", awaiting: "Wants to check times" },
   view_image: { pending: "Preparing to look at an image", running: "Looking at your image", done: "Looked at your image", awaiting: "Wants to look at your image" },
+  create_file: { pending: "Drafting your file", running: "Creating your file", done: "Created your file", awaiting: "Wants to create a file" },
+  analyze_data: { pending: "Preparing the analysis", running: "Analysing your data", done: "Analysed your data", awaiting: "Wants to analyse your data" },
 }
 
 /** Human name for a tool id: "filesystem__write_file" → "write file". */
 export function toolName(tool: string): string {
-  return tool.replace(/^filesystem__/, "").replace(/^(gmail|calendar|drive|docs)__/, "$1 ").replace(/_/g, " ")
+  return tool.replace(/^filesystem__/, "").replace(/^(gmail|calendar|drive|docs|sheets|contacts|github|notion|slack)__/, "$1 ").replace(/_/g, " ")
 }
 
 export function label(a: ToolActivity): string {

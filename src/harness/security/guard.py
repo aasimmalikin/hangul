@@ -17,10 +17,12 @@ from harness.security.spotlight import wrap
 # tainted these need a human, whatever their normal tier
 OUTBOUND = ("web_search", "vault_request", "vault_mutate", "arxiv_search", "arxiv_paper", "remember",
             "gmail__create_draft", "calendar__create_event", "docs__append_text",
-            "read_webpage", "weather", "reminders")
+            "read_webpage", "weather", "reminders", "maps_search", "travel_time", "generate_image")
 SIDE_EFFECT_PREFIXES = ("filesystem__write", "filesystem__edit", "filesystem__move", "filesystem__create",
-                        "gmail__send", "gmail__create", "calendar__create", "calendar__update", "drive__upload",
-                        "drive__share", "docs__append", "docs__insert")
+                        "gmail__send", "gmail__create", "calendar__create", "calendar__update", "calendar__delete",
+                        "drive__upload", "drive__share", "docs__append", "docs__insert",
+                        "sheets__append", "sheets__create", "github__create", "github__comment",
+                        "notion__append", "notion__create", "slack__send")
 
 
 def is_consequential(name: str) -> bool:

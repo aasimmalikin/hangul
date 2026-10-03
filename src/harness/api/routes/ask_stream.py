@@ -24,7 +24,7 @@ async def ask_stream(req: AskRequest, request: Request,
     # A bad model/effort must be a real 422 -- and a plan refusal a real 402 --
     # not an `error` event on a 200 stream. The conversation's stored model is
     # not known here; _build_and_run re-checks with it.
-    await entitlements.aresolve_for_user(user_id, req.model, req.effort, mode=req.mode)
+    await entitlements.aresolve_for_user(user_id, req.model, req.effort, mode=req.mode, question=req.question)
 
     # Bridge between the agent (producing events) and the SSE generator
     # (sending them). The agent runs as a background task and pushes events

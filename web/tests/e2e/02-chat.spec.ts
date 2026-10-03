@@ -1,5 +1,5 @@
 import { test, expect } from "@playwright/test"
-import { freshUser, ask, backendState, expectReply, resetBackend, signInAs } from "./helpers"
+import { freshUser, ask, backendState, expectReply, openOptions, resetBackend, signInAs } from "./helpers"
 
 test.describe("conversation", () => {
   const me = freshUser("conversation")
@@ -35,7 +35,9 @@ test.describe("conversation", () => {
 
   test("documents-only toggle is sent with the question", async ({ page }) => {
     await page.goto("/chat")
-    await page.getByTestId("docs-only").click()
+    await openOptions(page)
+    await page.getByTestId("opt-docs-only").click()
+    // an active mode shows as a chip next to the box (tapping it turns it off)
     await expect(page.getByTestId("docs-only")).toHaveAttribute("aria-pressed", "true")
     await ask(page, "only from docs")
     await expectReply(page, "docs_only=true")
@@ -43,23 +45,35 @@ test.describe("conversation", () => {
     expect(s.asks[0].docs_only).toBe(true)
   })
 
-  test("model and effort picked in the composer are sent, and survive a refresh", async ({ page }) => {
+  test("Auto is the default; a model picked by hand is sent with its depth and survives a refresh", async ({ page }) => {
     await page.goto("/chat")
-    // Nothing chosen: the chips show the server default and nothing is sent.
-    await expect(page.getByTestId("model-picker")).toContainText("Fake Reasoner")
-    await expect(page.getByTestId("effort-picker")).toContainText("medium")
+    // Nothing chosen: Auto, no depth chip, and "auto" goes up for the backend to decide
+    await openOptions(page)
+    await expect(page.getByTestId("model-picker")).toContainText("Auto")
+    await expect(page.getByTestId("effort-picker")).toHaveCount(0)
+    await ask(page, "quick one")
+    await expectReply(page, "model=auto")
+    let s = await backendState()
+    expect(s.asks[0]).toMatchObject({ model: "auto", effort: null })
+    await expect(page.getByTestId("answered-by").last()).toHaveText("GPT-5.6 Luna")         // what Auto picked
 
+    // picking a model by hand brings its depth chip
+    await openOptions(page)
+    await page.getByTestId("model-picker").click()
+    await page.getByTestId("model-option-fake-reasoner").click()
+    await expect(page.getByTestId("effort-picker")).toContainText("medium")
     await page.getByTestId("effort-picker").click()
     await page.getByTestId("effort-option-high").click()
     await ask(page, "think hard")
     await expectReply(page, "model=fake-reasoner effort=high")
-    let s = await backendState()
-    expect(s.asks[0]).toMatchObject({ model: "fake-reasoner", effort: "high" })
+    s = await backendState()
+    expect(s.asks[1]).toMatchObject({ model: "fake-reasoner", effort: "high" })
 
     await page.reload()
+    await openOptions(page)
     await expect(page.getByTestId("effort-picker")).toContainText("high")
 
-    // A model without reasoning drops the effort chip and sends no effort.
+    // A model without reasoning drops the depth chip and sends no effort.
     await page.getByTestId("model-picker").click()
     await page.getByTestId("model-option-fake-plain").click()
     await expect(page.getByTestId("model-picker")).toContainText("Fake Plain")
@@ -67,7 +81,13 @@ test.describe("conversation", () => {
     await ask(page, "plain please")
     await expectReply(page, "model=fake-plain")
     s = await backendState()
-    expect(s.asks[1]).toMatchObject({ model: "fake-plain", effort: null })
+    expect(s.asks[2]).toMatchObject({ model: "fake-plain", effort: null })
+
+    // and back to Auto
+    await openOptions(page)
+    await page.getByTestId("model-picker").click()
+    await page.getByTestId("model-option-auto").click()
+    await expect(page.getByTestId("model-picker")).toContainText("Auto")
   })
 
   test("refresh keeps the thread and does not re-send; ?q= is consumed once", async ({ page }) => {
@@ -85,38 +105,38 @@ test.describe("conversation", () => {
   })
 
   test("each landing-page prompt starts a fresh conversation, never continuing the last one", async ({ page }) => {
-    // Draft a note → chat
+    // Plan my day → chat
     await page.goto("/")
-    await page.getByRole("button", { name: "Draft a note" }).click()
+    await page.getByRole("button", { name: "Plan my day" }).click()
     await expect(page).toHaveURL(/\/chat/)
-    await expectReply(page, "Reply to: Draft a note")
+    await expectReply(page, "Reply to: Plan my day")
     await ask(page, "and add a title")
     await expectReply(page, "Reply to: and add a title")
     await expect(page.locator(".h-prose")).toHaveCount(4)
 
     // back to the landing page, pick another prompt → only the new exchange is shown
     await page.goto("/")
-    await page.getByRole("button", { name: "Check the web" }).click()
-    await expectReply(page, "Reply to: Check the web")
-    await expect(page.locator(".h-prose")).toHaveCount(2)
-    // Scoped to the thread: the Chats rail lists "Draft a note" as past history,
-    // which is correct — what must not happen is it being in THIS conversation.
-    await expect(page.getByTestId("thread")).not.toContainText("Draft a note")
-    // and the backend got it with no history from the earlier thread
-    const asks = (await backendState()).asks
-    expect(asks.at(-1)).toMatchObject({ question: "Check the web", history: 0 })
-
-    // third prompt, same rule
-    await page.goto("/")
     await page.getByRole("button", { name: "Search my documents" }).click()
     await expectReply(page, "Reply to: Search my documents")
     await expect(page.locator(".h-prose")).toHaveCount(2)
-    await expect(page.getByTestId("thread")).not.toContainText("Check the web")
+    // Scoped to the thread: the Chats rail lists "Plan my day" as past history,
+    // which is correct — what must not happen is it being in THIS conversation.
+    await expect(page.getByTestId("thread")).not.toContainText("Plan my day")
+    // and the backend got it with no history from the earlier thread
+    const asks = (await backendState()).asks
+    expect(asks.at(-1)).toMatchObject({ question: "Search my documents", history: 0 })
+
+    // a prompt again, same rule
+    await page.goto("/")
+    await page.getByRole("button", { name: "Plan my day" }).click()
+    await expectReply(page, "Reply to: Plan my day")
+    await expect(page.locator(".h-prose")).toHaveCount(2)
+    await expect(page.getByTestId("thread")).not.toContainText("Search my documents")
 
     // a plain refresh (no ?q=) still restores the current thread
     await page.reload()
     await expect(page.locator(".h-prose")).toHaveCount(2)
-    await expect(page.locator("body")).toContainText("Search my documents")
+    await expect(page.locator("body")).toContainText("Plan my day")
   })
 
   test("back then forward restores the thread", async ({ page }) => {

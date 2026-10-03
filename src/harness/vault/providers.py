@@ -52,6 +52,18 @@ BUILTIN: dict[str, ProviderSpec] = {
         name="github", base_url="https://api.github.com", inject="bearer",
         description="GitHub REST API",
     ),
+    # Notion's search and database query are POSTs that only read
+    "notion": ProviderSpec(
+        name="notion", base_url="https://api.notion.com", inject="bearer",
+        allow_paths=("/v1/*",), read_paths=("/v1/search", "/v1/databases/*/query"),
+        description="Notion API (internal integration token)",
+    ),
+    # Slack Web API: reads are GETs; chat.postMessage etc. are POST writes
+    "slack": ProviderSpec(
+        name="slack", base_url="https://slack.com", inject="bearer",
+        allow_paths=("/api/*",),
+        description="Slack Web API (user token)",
+    ),
 }
 
 

@@ -97,7 +97,7 @@ def test_registry_and_validation():
     assert "arxiv" in keys
     assert validate_keys(["arxiv", "arxiv"]) == ["arxiv"]
     with pytest.raises(ValueError, match="unknown connector"):
-        validate_keys(["slack"])
+        validate_keys(["no-such-connector"])
     tools, note, tiers = tools_for(["arxiv"])
     assert sorted(t.name for t in tools) == ["arxiv_paper", "arxiv_search"]
     assert "arxiv_search" in note and tiers["arxiv_search"].value == "safe"

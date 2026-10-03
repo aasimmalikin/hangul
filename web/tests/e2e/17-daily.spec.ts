@@ -36,7 +36,8 @@ test.describe("daily assistant", () => {
     await expect(page.getByTestId("due-1")).toContainText("Call mom")
     await page.getByTestId("due-1").getByRole("button", { name: "Done" }).click()
     await expect(page.getByTestId("reminder-count")).toHaveCount(0)
-    expect((await backend("/__state")).reminders[me.id][0].status).toBe("done")
+    // the dismiss is sent in the background: wait for it to land
+    await expect.poll(async () => (await backend("/__state")).reminders[me.id][0].status).toBe("done")
   })
 
   test("/lists adds and shows items", async ({ page }) => {

@@ -16,6 +16,8 @@
  *   "GMAIL …"      a Gmail search card (structured ui) then a send that pauses for approval
  *   "SHOPPING …"   the `lists` tool adds to Shopping -> a live checklist card
  *   "WEATHER …"    the `weather` tool -> a weather card
+ *   "REPORT …" / "CHART …" / "LOCKED …"   create_file -> download card,
+ *                  analyze_data -> chart + table, a Free user -> upgrade card
  *   "E500 / E429 / E401 / E422"   answer with that HTTP status, no stream
  *   "PAYWALL …" / "BROKE …" / "FULL …"   402 plan refusal (plan_required /
  *                  insufficient_balance / free_pool_exhausted)
@@ -32,7 +34,7 @@ import crypto from "node:crypto"
 const PORT = Number(process.env.FAKE_BACKEND_PORT ?? 8765)
 const SECRET = process.env.FASTAPI_JWT_SECRET ?? "e2e-service-secret"
 
-const state = { down: false, approves: {}, executed: {}, uploads: [], asks: [], inFlight: {}, memory: {}, episodes: {}, conversations: {}, convMessages: {}, adminCalls: [], evalRuns: {}, prefs: {}, tasks: {}, google: {}, checkouts: [], todos: {}, reminders: {}, notes: {}, deviceTz: {}, transcripts: [], transcribed: [], spoken: [] }
+const state = { down: false, approves: {}, executed: {}, uploads: [], asks: [], inFlight: {}, memory: {}, episodes: {}, conversations: {}, convMessages: {}, adminCalls: [], evalRuns: {}, prefs: {}, tasks: {}, google: {}, checkouts: [], todos: {}, reminders: {}, notes: {}, deviceTz: {}, transcripts: [], transcribed: [], spoken: [], apps: {} }
 
 function verify(req) {
   const h = req.headers.authorization ?? ""
@@ -87,7 +89,7 @@ async function askStream(req, res, user) {
   const history = Array.isArray(body.history) ? body.history : []
   state.asks.push({ user: user.sub, question: q, history: history.length, conversation_id: body.conversation_id ?? null,
                     docs_only: body.docs_only === true, connectors: body.connectors ?? [], mode: body.mode ?? "default",
-                    model: body.model ?? null, effort: body.effort ?? null, client_timezone: body.client_timezone ?? null })
+                    model: body.model ?? null, effort: body.effort ?? null, client_timezone: body.client_timezone ?? null, connectors_auto: body.connectors_auto === true })
 
   const pw = q.match(/^(PAYWALL|BROKE|FULL)\b/)
   if (pw) return json(res, 402, { detail: PAYWALLS[pw[1]] }, { "X-Reason": PAYWALLS[pw[1]].code })
@@ -109,6 +111,8 @@ async function askStream(req, res, user) {
       return json(res, 409, { detail: "This conversation already has a run in flight." },
                   { "Retry-After": "5", "X-Reason": "conversation_busy" })
     }
+    // like bind_settings: each turn's model / effort become the conversation's
+    if (body.model !== undefined) { convRow.model = body.model ?? null; convRow.effort = body.effort ?? null }
   } else {
     convRow = newConversation(user, {
       model: body.model ?? null, effort: body.effort ?? null,
@@ -192,6 +196,34 @@ async function askStream(req, res, user) {
       return res.end()
     }
 
+    if (q.startsWith("IMAGE") || q.startsWith("ROUTE") || q.startsWith("GITHUB")) {
+      const kind = q.split(" ")[0]
+      const tool = { IMAGE: "generate_image", ROUTE: "travel_time", GITHUB: "github__my_work" }[kind]
+      const ui = kind === "IMAGE" ? { kind: "image", name: "where-my-money-went.png", prompt: "A robot with an umbrella", size: "1024x1024" }
+        : kind === "ROUTE" ? { kind: "route", origin: "Shaniwarwada", destination: "Pune Junction", mode: "foot", minutes: 35, km: 2.6,
+                               link: "https://www.google.com/maps/dir/?api=1&origin=Shaniwarwada&destination=Pune+Junction&travelmode=walking" }
+        : { kind: "issues", items: [{ repo: "acme/app", number: 12, title: "Fix login", state: "open", url: "https://github.com/acme/app/pull/12", pr: true, updated: "2026-10-01" }] }
+      send("tool_call", { id: "c1", name: tool, arguments: {}, step: 1 })
+      send("tool_result", { id: "c1", name: tool, ok: true, preview: "done", ms: 30, cached: false, ui })
+      send("text_start", { block }); send("text_delta", { block, text: "Done." }); send("text_end", { block })
+      send("done", { steps: 1, run_id: runId, cost_usd: 0.001, tools_used: [tool] })
+      return res.end()
+    }
+
+    if (q.startsWith("REPORT") || q.startsWith("CHART") || q.startsWith("LOCKED")) {
+      const kind = q.split(" ")[0]
+      const name = kind === "REPORT" ? "monthly-budget.pdf" : "where-my-money-went.png"
+      const tool = kind === "CHART" ? "analyze_data" : "create_file"
+      const ui = kind === "REPORT" ? { kind: "file", name, format: "pdf", size: 18_531, title: "Monthly budget" }
+        : kind === "CHART" ? { kind: "chart", name, title: "Where my money went", rows: [["Category", "sum_Amount"], ["Housing", 30000], ["Food", 3150]] }
+        : { kind: "upgrade", feature: "Creating files (PDF, Word, Excel, slides)", plan: "plus", plan_label: "Plus" }
+      send("tool_call", { id: "c1", name: tool, arguments: { title: "Monthly budget" }, step: 1 })
+      send("tool_result", { id: "c1", name: tool, ok: true, preview: "done", ms: 30, cached: false, ui })
+      send("text_start", { block }); send("text_delta", { block, text: kind === "LOCKED" ? "That needs Plus." : "Here it is." }); send("text_end", { block })
+      send("done", { steps: 1, run_id: runId, cost_usd: 0.001, tools_used: [tool] })
+      return res.end()
+    }
+
     if (q.startsWith("INJECT")) {
       // a poisoned document: the tool-result screen fires, the outbound call is
       // stepped up to approval, and the output guard replaces the streamed answer
@@ -237,7 +269,9 @@ async function askStream(req, res, user) {
     send("tool_call", { id: "c1", name: "search_docs", arguments: { query: q.slice(0, 40) }, step: 1 })
     await sleep(30)
     send("tool_result", { id: "c1", name: "search_docs", ok: true, preview: "…chunk…", ms: 42, cached: false })
-    send("done", { steps: 2, run_id: runId, cost_usd: 0.0021, tools_used: ["search_docs"] })
+    // "auto" stands in for the backend's choice, like providers/router.py
+    send("done", { steps: 2, run_id: runId, cost_usd: 0.0021, tools_used: ["search_docs"],
+                   model: !body.model || body.model === "auto" ? "gpt-5.6-luna" : body.model })
     res.end()
   } finally {
     req.off("close", finish)
@@ -374,6 +408,11 @@ const server = http.createServer(async (req, res) => {
   if (url.pathname === "/__state") return json(res, 200, state)
   // Test hook: plant a server-owned conversation (and optionally its transcript)
   // for a user, with a chosen timestamp -- what the rail reads.
+  if (url.pathname === "/__onboarding" && req.method === "POST") {
+    const b = JSON.parse((await readBody(req)).toString() || "{}")
+    state.prefs[b.user] = { ...(state.prefs[b.user] ?? {}), onboarded: false }
+    return json(res, 200, { ok: true })
+  }
   if (url.pathname === "/__transcripts" && req.method === "POST") {
     // what the next /voice/transcribe calls will "hear", in order
     state.transcripts.push(...(JSON.parse((await readBody(req)).toString() || "{}").texts ?? []))
@@ -405,12 +444,14 @@ const server = http.createServer(async (req, res) => {
     rows.push({ id: ++episodeSeq, thread_id: b.thread_id ?? `seed-${episodeSeq}`, title: b.title, summary: b.summary ?? `Q: ${b.title}\nA: Reply to: ${b.title}`, created_at: at, updated_at: at, active: true })
     return json(res, 200, { ok: true })
   }
-  if (url.pathname === "/__reset") { Object.assign(state, { down: false, approves: {}, executed: {}, uploads: [], asks: [], inFlight: {}, memory: {}, episodes: {}, conversations: {}, convMessages: {}, adminCalls: [], evalRuns: {}, prefs: {}, tasks: {}, google: {}, checkouts: [], todos: {}, reminders: {}, notes: {}, deviceTz: {}, transcripts: [], transcribed: [], spoken: [] }); convSeq = 0; return json(res, 200, { ok: true }) }
+  if (url.pathname === "/__reset") { Object.assign(state, { down: false, approves: {}, executed: {}, uploads: [], asks: [], inFlight: {}, memory: {}, episodes: {}, conversations: {}, convMessages: {}, adminCalls: [], evalRuns: {}, prefs: {}, tasks: {}, google: {}, checkouts: [], todos: {}, reminders: {}, notes: {}, deviceTz: {}, transcripts: [], transcribed: [], spoken: [], apps: {} }); convSeq = 0; return json(res, 200, { ok: true }) }
   if (url.pathname === "/healthz") return state.down ? json(res, 503, { status: "down" }) : json(res, 200, { status: "ok" })
   if (url.pathname === "/connectors") return json(res, 200, [
     { key: "arxiv", label: "Research", description: "Search and read arXiv papers", kind: "builtin", icon: "book-2", per_user: false, auth: null, servers: [] },
     ...[["gmail", "Gmail", "mail"], ["calendar", "Google Calendar", "calendar"], ["drive", "Google Drive", "brand-google-drive"], ["docs", "Google Docs", "file-text"]]
       .map(([key, label, icon]) => ({ key, label, description: `${label} on your own Google account`, kind: "builtin", icon, per_user: true, auth: "google", product: key, group: "Google Workspace", servers: [] })),
+    ...[["github", "GitHub", "brand-github"], ["notion", "Notion", "brand-notion"], ["slack", "Slack", "brand-slack"]]
+      .map(([key, label, icon]) => ({ key, label, description: `${label} via a token in your vault`, kind: "builtin", icon, per_user: true, auth: `vault:${key}`, product: null, group: "Work apps", servers: [] })),
   ])
   if (url.pathname === "/quality") return json(res, 200, { available: true, avg_correctness: 0.91, avg_faithfulness: 0.88, pass_rate: 0.9, cases: 20, gate_passed: true, blocking_failures: [], advisory_notes: [] })
 
@@ -540,6 +581,27 @@ const server = http.createServer(async (req, res) => {
     it.done = Boolean(JSON.parse((await readBody(req)).toString() || "{}").done)
     return json(res, 200, it)
   }
+  // ---- downloads (harness.api.routes.files)
+  if (url.pathname === "/files" && req.method === "GET") {
+    return json(res, 200, [
+      { name: "where-my-money-went.png", size: 48_000, modified: Date.now() / 1000, kind: "image" },
+      { name: "monthly-budget.pdf", size: 18_531, modified: Date.now() / 1000 - 3600, kind: "document" },
+    ])
+  }
+  const file = url.pathname.match(/^\/files\/([^/]+)$/)
+  if (file && req.method === "GET") {
+    const name = decodeURIComponent(file[1])
+    if (name === "monthly-budget.pdf") {
+      res.writeHead(200, { "Content-Type": "application/pdf", "Content-Disposition": `attachment; filename="${name}"` })
+      return res.end(Buffer.from("%PDF-1.4 fake"))
+    }
+    if (name === "where-my-money-went.png") {
+      // a real 1x1 PNG so the <img> loads
+      res.writeHead(200, { "Content-Type": "image/png", "Content-Disposition": `inline; filename="${name}"` })
+      return res.end(Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==", "base64"))
+    }
+    return json(res, 404, { detail: "No such file." })
+  }
   // ---- voice (harness.api.routes.voice)
   if (url.pathname === "/voice/transcribe" && req.method === "POST") {
     const buf = await readBody(req)
@@ -552,19 +614,40 @@ const server = http.createServer(async (req, res) => {
     res.writeHead(200, { "Content-Type": "audio/mpeg" })
     return res.end(Buffer.from("ID3fake"))          // undecodable on purpose: playback errors out instantly
   }
+  if (url.pathname === "/settings/onboarded" && req.method === "POST") {
+    state.prefs[user.sub] = { ...(state.prefs[user.sub] ?? {}), onboarded: true }
+    return json(res, 200, { onboarded: true })
+  }
   if (url.pathname === "/settings/timezone" && req.method === "POST") {
     state.deviceTz[user.sub] = JSON.parse((await readBody(req)).toString() || "{}").timezone
     return json(res, 200, { timezone: state.deviceTz[user.sub], timezone_auto: true })
   }
+  if (url.pathname === "/today" && req.method === "GET") {
+    const p = state.prefs[user.sub] ?? {}
+    return json(res, 200, {
+      greeting: "Good morning", name: (p.display_name || "Alice").split(" ")[0], date_label: "Thursday, 02 October",
+      timezone: "Asia/Kolkata", city: p.city ?? "",
+      weather: p.city ? { place: `${p.city}, India`, current: { temp: 27.4, label: "Light rain", icon: "cloud-rain" }, daily: [{ max: 29, min: 22, rain_chance: 80 }] } : null,
+      events: state.google[user.sub] ? [{ summary: "Standup", start: "2026-10-02T10:00:00+05:30", end: "2026-10-02T10:15:00+05:30" }] : null,
+      emails: state.google[user.sub] ? [{ id: "m1", from: "HDFC Bank <alerts@hdfc.example>", subject: "Statement ready" }] : null,
+      reminders: (state.reminders[user.sub] ?? []).filter((r) => r.status !== "done"),
+      todos: (state.todos[user.sub] ?? []).filter((t) => !t.done),
+      approvals: Object.entries(state.approves).filter(([, a]) => a.user === user.sub && a.pending)
+        .map(([run_id]) => ({ run_id, conversation_id: null, tool: "filesystem__write_file" })),
+      connected: state.google[user.sub] ? ["gmail", "calendar"] : [],
+    })
+  }
   if (url.pathname === "/notes" && req.method === "GET") return json(res, 200, state.notes[user.sub] ?? [])
   // ---- personalisation, scheduled tasks, integrations (per user)
   if (url.pathname === "/settings" && req.method === "GET") {
-    return json(res, 200, { display_name: "", instructions: "", tone: "balanced", timezone: "UTC", language: "", ...(state.prefs[user.sub] ?? {}), tones: ["concise", "balanced", "detailed"] })
+    // onboarded defaults to true so the walkthrough doesn't cover every other test; POST /__onboarding resets it
+    return json(res, 200, { display_name: "", instructions: "", tone: "balanced", timezone: "UTC", language: "", city: "", onboarded: true,
+                            ...(state.prefs[user.sub] ?? {}), tones: ["concise", "balanced", "detailed"] })
   }
   if (url.pathname === "/settings" && req.method === "PUT") {
     const b = JSON.parse((await readBody(req)).toString() || "{}")
     if (!["concise", "balanced", "detailed"].includes(b.tone ?? "balanced")) return json(res, 422, { detail: "bad tone" })
-    state.prefs[user.sub] = { display_name: b.display_name ?? "", instructions: b.instructions ?? "", tone: b.tone ?? "balanced", timezone: b.timezone ?? "UTC", language: b.language ?? "" }
+    state.prefs[user.sub] = { ...(state.prefs[user.sub] ?? {}), display_name: b.display_name ?? "", instructions: b.instructions ?? "", tone: b.tone ?? "balanced", timezone: b.timezone ?? "UTC", language: b.language ?? "", city: b.city ?? "" }
     return json(res, 200, state.prefs[user.sub])
   }
   const userTasks = () => Object.values(state.tasks).filter((t) => t.user === user.sub)
@@ -576,7 +659,8 @@ const server = http.createServer(async (req, res) => {
     const id = Object.keys(state.tasks).length + 1
     state.tasks[id] = { id, user: user.sub, title: b.title, question: b.question, every_minutes: b.every_minutes ?? null, daily_at: b.daily_at ?? null,
       connectors: b.connectors ?? [], mode: b.mode ?? "default", enabled: true, next_run_at: new Date(Date.now() + 3600e3).toISOString(),
-      last_run_at: null, last_status: "never", last_run_id: null, last_answer: "", created_at: new Date().toISOString() }
+      last_run_at: null, last_status: "never", last_run_id: null, last_answer: "", created_at: new Date().toISOString(),
+      deliver_email: b.deliver_email === true }
     return json(res, 201, pub(state.tasks[id]))
   }
   const trun = url.pathname.match(/^\/tasks\/(\d+)\/run$/)
@@ -603,8 +687,18 @@ const server = http.createServer(async (req, res) => {
     return json(res, 200, { deleted: Number(tdel[1]) })
   }
   if (url.pathname === "/integrations" && req.method === "GET") {
-    return json(res, 200, { google: state.google[user.sub] ?? { connected: false, products: [], scopes: [] } })
+    return json(res, 200, { google: state.google[user.sub] ?? { connected: false, products: [], scopes: [] },
+                            apps: state.apps[user.sub] ?? {} })
   }
+  const appRoute = url.pathname.match(/^\/integrations\/apps\/(github|notion|slack)$/)
+  if (appRoute && req.method === "POST") {
+    const token = String(JSON.parse((await readBody(req)).toString() || "{}").token ?? "")
+    // stands in for "checked with the service": tokens starting with "bad" are refused
+    if (token.startsWith("bad")) return json(res, 400, { detail: "GitHub refused that token (401). Check you copied the whole token." })
+    ;(state.apps[user.sub] ??= {})[appRoute[1]] = true
+    return json(res, 200, { connected: true, app: appRoute[1] })
+  }
+  if (appRoute && req.method === "DELETE") { if (state.apps[user.sub]) delete state.apps[user.sub][appRoute[1]]; return json(res, 200, { disconnected: true }) }
   if (url.pathname === "/integrations/google" && req.method === "DELETE") { delete state.google[user.sub]; return json(res, 200, { disconnected: true }) }
 
   // ---- admin: only a service token with role=admin gets in (mirrors require_admin)

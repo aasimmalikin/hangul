@@ -22,7 +22,7 @@ import { ConnectorChips } from "@/components/hangul/ConnectorChips"
 import { GmailCompose, GoogleCard, isGoogleUi } from "@/components/hangul/GoogleCards"
 import { DailyCard, isDailyUi } from "@/components/hangul/DailyCards"
 import { normalizeConnectors, readConnectors, readResearchMode, writeConnectors, writeResearchMode } from "@/lib/connectors"
-import { ModelPicker } from "@/components/hangul/ModelPicker"
+import { ComposerOptions } from "@/components/hangul/ComposerOptions"
 import { StatusBanner } from "@/components/hangul/StatusBanner"
 import { ChatsPanel } from "@/components/hangul/ChatsPanel"
 import { useConnectivity } from "@/components/hangul/useConnectivity"
@@ -376,7 +376,14 @@ const STARTERS = [
   { icon: "link", label: "Summarise a link", text: "Summarise this page: " },
   { icon: "arrows-exchange", label: "Convert", text: "How much is 100 USD in INR?" },
   { icon: "notes", label: "Take a note", text: "Note: " },
+  { icon: "file-type-pdf", label: "Make a document", text: "Make a PDF of " },
 ]
+
+/** "gpt-5.6-luna" -> "GPT-5.6 Luna" (the label under an answer). */
+function prettyModel(id: string): string {
+  return id.split("-").map((w) => (w === "gpt" ? "GPT" : /^\d/.test(w) ? w : w[0].toUpperCase() + w.slice(1)))
+    .join(" ").replace(/^GPT (\d)/, "GPT-$1")
+}
 
 /** The readable answer in an assistant message, as it would be said aloud. */
 function spokenTextOf(parts: Part[]): string {
@@ -434,7 +441,14 @@ function ChatInner() {
   // Connectors on for this conversation: restored with the thread, else from
   // the tab (the landing page may have switched some on before the first send).
   const [connectors, setConnectorsState] = useState<string[]>([])
-  const setConnectors = useCallback((next: string[]) => { setConnectorsState(next); writeConnectors(next) }, [])
+  // Set when the user switches a connector, so the conversation's stored copy
+  // arriving from the server a moment later does not switch it back.
+  const connectorsTouched = useRef(false)
+  const setConnectors = useCallback((next: string[]) => {
+    connectorsTouched.current = true
+    setConnectorsState(next)
+    writeConnectors(next)
+  }, [])
   // null = let the server pick its default model / effort.
   const [model, setModel] = useState<string | null>(null)
   const [effort, setEffort] = useState<string | null>(null)
@@ -443,11 +457,24 @@ function ChatInner() {
   const [conversationId, setConversationId] = useState<string | null>(null)
   // What every send carries alongside the text. conversationId is how the
   // server knows which transcript to load, so it has to be in here.
+  // Connected apps are turned on by what a message needs (backend
+  // connectors/auto.py) unless the user switched that off in Options.
+  const [autoApps, setAutoAppsState] = useState(true)
+  // eslint-disable-next-line react-hooks/set-state-in-effect -- a saved preference, readable only after mount
+  useEffect(() => { try { setAutoAppsState(localStorage.getItem("hangul:auto-apps") !== "off") } catch { /* private mode */ } }, [])
+  const setAutoApps = (v: boolean) => {
+    setAutoAppsState(v)
+    try { localStorage.setItem("hangul:auto-apps", v ? "on" : "off") } catch { /* private mode */ }
+  }
+  const setResearch = (on: boolean) => { setMode(on ? "research" : "default"); writeResearchMode(on) }
+
   // `timezone` is the device's, so "remind me at 7pm" and "what time is it"
   // mean the user's 7pm wherever they are (adopted unless they pinned one).
   const runOptions = useMemo(
-    () => ({ docsOnly, model, effort, connectors, mode, conversationId, timezone: deviceTimeZone() }),
-    [docsOnly, model, effort, connectors, mode, conversationId])
+    // no model picked = "auto": the backend chooses per message (providers/router.py)
+    () => ({ docsOnly, model: model ?? "auto", effort: model ? effort : null, connectors, mode, conversationId,
+             timezone: deviceTimeZone(), connectorsAuto: autoApps }),
+    [docsOnly, model, effort, connectors, mode, conversationId, autoApps])
 
   // A question handed over from the landing page (`/chat?q=`), plus any
   // documents attached there (`&doc=`, already indexed server-side). Signed-in
@@ -554,6 +581,7 @@ function ChatInner() {
     // makes a chat resumable in a tab that has never seen it — and on another
     // device, where there is no cache at all.
     if (!saved) setHydrating(true)
+    connectorsTouched.current = false
     const cachedCount = saved?.messages.length ?? 0
     let alive = true
     fetch(`/api/conversations/${target}`, { signal: AbortSignal.timeout(15_000) })
@@ -568,11 +596,11 @@ function ChatInner() {
         // shorter transcript would silently throw that away.
         if (rebuilt.length > cachedCount) setMessages(rebuilt)
         // Settings are safe to take either way — they are the conversation's.
-        setModel(detail.model ?? null)
+        setModel(detail.model && detail.model !== "auto" ? detail.model : null)
         setEffort(detail.effort ?? null)
         setDocsOnly(Boolean(detail.docs_only))
         setMode(detail.mode === "research" ? "research" : "default")
-        if (Array.isArray(detail.connectors)) setConnectorsState(normalizeConnectors(detail.connectors))
+        if (Array.isArray(detail.connectors) && !connectorsTouched.current) setConnectorsState(normalizeConnectors(detail.connectors))
       })
       .catch(() => { /* the cache (or an empty page) is what the user gets */ })
       .finally(() => { if (alive) setHydrating(false) })
@@ -760,6 +788,12 @@ function ChatInner() {
 
   // ---- voice mode: what to say, and what is waiting on the user
   const [voiceOpen, setVoiceOpen] = useState(false)
+  // the installed app's "Talk to Hangul" shortcut lands on /chat?voice=1
+  const wantsVoice = searchParams.get("voice") === "1"
+  useEffect(() => {
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- opening voice mode once the user is known
+    if (wantsVoice && authStatus === "authenticated") setVoiceOpen(true)
+  }, [wantsVoice, authStatus])
   const lastSpoken = last?.role === "assistant" ? spokenTextOf(last.parts as Part[]) : ""
   const voiceReply = last && lastSpoken ? { id: last.id, text: lastSpoken } : null
   const voicePause = ((): VoicePause | null => {
@@ -853,6 +887,11 @@ function ChatInner() {
         // the record but is not shown — an invisible marker that the run ended.
         flush(false)
         out.push(<span key={key} data-testid="run-done" hidden />)
+        // which model answered (Auto picks per message): small, for transparency
+        const run = part.data as { model?: string; restored?: boolean }
+        if (run.model && !run.restored) {
+          out.push(<span key={`${key}-m`} className="h-muted" data-testid="answered-by" style={{ fontSize: 11 }}>{prettyModel(run.model)}</span>)
+        }
         return
       }
       flush(false)
@@ -951,6 +990,7 @@ function ChatInner() {
       <AppHeader
         onSignIn={() => setSignIn({ open: true, mode: "signin" })}
         onSignUp={() => setSignIn({ open: true, mode: "signup" })}
+        bottomNav={false}
       >
         {messages.length > 0 && (
           <button className="h-btn-ghost" onClick={newChat} title="Start a new conversation">
@@ -1034,39 +1074,28 @@ function ChatInner() {
         <div style={{ maxWidth: 720, margin: "0 auto" }}>
           <div style={{ display: "flex", alignItems: "center", gap: 6, marginBottom: 8, flexWrap: "wrap" }}>
             <AttachmentChips attachments={attachments} uploading={uploading} error={uploadError} />
-            {/* Documents-only mode: the backend restricts the agent to search_docs and
-                forbids answering from its own knowledge. */}
-            <button
-              type="button"
-              className="h-chip"
-              data-testid="docs-only"
-              aria-pressed={docsOnly}
-              onClick={() => setDocsOnly((v) => !v)}
-              title="Answer only from your documents — no web, no general knowledge"
-              style={docsOnly ? { background: "var(--solid-bg)", color: "var(--solid-fg)", borderColor: "var(--solid-bg)" } : undefined}
-            >
-              <i className="ti ti-book-2" style={{ fontSize: 12, marginRight: 5 }} />
-              Documents only
-            </button>
-            <button
-              type="button"
-              className="h-chip"
-              data-testid="research-mode"
-              aria-pressed={mode === "research"}
-              onClick={() => setMode((m) => { const next = m === "research" ? "default" : "research"; writeResearchMode(next === "research"); return next })}
-              title="Deep research: plan, several searches (documents, web, arXiv), numbered citations and a sources list"
-              style={mode === "research" ? { background: "var(--solid-bg)", color: "var(--solid-fg)", borderColor: "var(--solid-bg)" } : undefined}
-            >
-              <i className="ti ti-telescope" style={{ fontSize: 12, marginRight: 5 }} />
-              Deep research
-            </button>
+            {/* Only what's on shows here (each chip turns it off); everything else lives in Options. */}
+            {docsOnly && (
+              <button type="button" className="h-chip" data-testid="docs-only" aria-pressed="true" onClick={() => setDocsOnly(false)}
+                title="Answering only from your documents — tap to turn off"
+                style={{ background: "var(--solid-bg)", color: "var(--solid-fg)", borderColor: "var(--solid-bg)" }}>
+                <i className="ti ti-book-2" style={{ fontSize: 12, marginRight: 5 }} /> Only my files <i className="ti ti-x" style={{ fontSize: 11, marginLeft: 4 }} />
+              </button>
+            )}
+            {mode === "research" && (
+              <button type="button" className="h-chip" data-testid="research-mode" aria-pressed="true" onClick={() => setResearch(false)}
+                title="Research mode is on — tap to turn off"
+                style={{ background: "var(--solid-bg)", color: "var(--solid-fg)", borderColor: "var(--solid-bg)" }}>
+                <i className="ti ti-telescope" style={{ fontSize: 12, marginRight: 5 }} /> Research mode <i className="ti ti-x" style={{ fontSize: 11, marginLeft: 4 }} />
+              </button>
+            )}
             <ConnectorChips keys={connectors} onChange={setConnectors} />
-            {/* Which model answers and how hard it thinks; both go up with every send. */}
-            <ModelPicker
-              model={model}
-              effort={effort}
-              disabled={streaming}
-              onChange={(m, e) => { setModel(m); setEffort(e) }}
+            <ComposerOptions
+              docsOnly={docsOnly} onDocsOnly={setDocsOnly}
+              research={mode === "research"} onResearch={setResearch}
+              autoApps={autoApps} onAutoApps={setAutoApps}
+              model={model} effort={effort} disabled={streaming}
+              onModel={(m, e) => { setModel(m); setEffort(e) }}
             />
           </div>
 

@@ -28,6 +28,10 @@ WORKSPACE_SCOPES: dict[str, tuple[str, ...]] = {
     "calendar": ("https://www.googleapis.com/auth/calendar",),
     "drive": ("https://www.googleapis.com/auth/drive.readonly", "https://www.googleapis.com/auth/drive.file"),
     "docs": ("https://www.googleapis.com/auth/documents",),
+    # Sheets: the spreadsheets themselves + Drive metadata (names only) to find them by name
+    "sheets": ("https://www.googleapis.com/auth/spreadsheets", "https://www.googleapis.com/auth/drive.metadata.readonly"),
+    # Contacts: saved contacts + "other contacts" (people the user has emailed); read-only
+    "contacts": ("https://www.googleapis.com/auth/contacts.readonly", "https://www.googleapis.com/auth/contacts.other.readonly"),
 }
 ALL_SCOPES: tuple[str, ...] = tuple(s for ss in WORKSPACE_SCOPES.values() for s in ss)
 

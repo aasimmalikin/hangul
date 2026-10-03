@@ -45,7 +45,11 @@ export function ReminderBell() {
   // when they pinned a timezone in Personalisation).
   useEffect(() => {
     const timezone = deviceTimeZone()
-    if (timezone) {
+    // only when it changed (a new device, or travelling), not on every page view
+    let last: string | null = null
+    try { last = sessionStorage.getItem("hangul:tz-reported") } catch { /* private mode */ }
+    if (timezone && timezone !== last) {
+      try { sessionStorage.setItem("hangul:tz-reported", timezone) } catch { /* ignore */ }
       void fetch("/api/settings/timezone", {
         method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ timezone }),
         keepalive: true,
@@ -108,7 +112,7 @@ export function ReminderBell() {
           ))}
           <Link href="/lists" className="h-btn-ghost" onClick={() => setOpen(false)}
             style={{ width: "100%", justifyContent: "center", fontSize: 12, marginTop: 4, textDecoration: "none" }}>
-            Lists, notes & reminders
+            My stuff
           </Link>
         </div>
       )}

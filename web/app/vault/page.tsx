@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useState } from "react"
 import { signIn as authSignIn, useSession } from "next-auth/react"
 import { GOOGLE_WORKSPACE_SCOPES, loadIntegrations, type Integrations } from "@/lib/connectors"
+import { WorkApps } from "@/components/hangul/WorkApps"
 import { AppHeader } from "@/components/hangul/AppHeader"
 import { SignInModal, type AuthMode } from "@/components/hangul/SignInModal"
 
@@ -131,17 +132,17 @@ export default function VaultPage() {
   const chosenConsentProvider = consentProvider || consentable[0] || ""
 
   return (
-    <main style={{ minHeight: "100vh", display: "flex", flexDirection: "column" }}>
+    <main className="h-has-bottom-nav" style={{ minHeight: "100vh", display: "flex", flexDirection: "column" }}>
       <AppHeader onSignIn={() => setSignIn({ open: true, mode: "signin" })} onSignUp={() => setSignIn({ open: true, mode: "signup" })} />
       <SignInModal open={signInOpen} mode={signIn.mode} onClose={() => { setGateDismissed(true); setSignIn((s) => ({ ...s, open: false })) }} callbackUrl="/vault" reason="Sign in to manage your connected services." />
 
       <div style={{ width: "100%", maxWidth: 760, margin: "0 auto", padding: "8px 16px 40px", display: "flex", flexDirection: "column", gap: 16, boxSizing: "border-box" }}>
         <div>
-          <h1 className="h-display" style={{ fontSize: 26, margin: "8px 0 4px" }}>Token vault</h1>
+          <h1 className="h-display" style={{ fontSize: 26, margin: "8px 0 4px" }}>Connected apps</h1>
           <p className="h-muted" style={{ fontSize: 13, margin: 0 }}>
-            The agent never sees your keys. It asks the vault for a short-lived grant and every request is
-            proxied with the real credential injected server-side. Reads run under the consent you give here;
-            every write still asks you first.
+            Connect the apps you use and just ask — Hangul turns on the right one when a message needs it.
+            Your passwords and tokens stay locked away: the assistant never sees them, and anything that sends,
+            posts or changes something always asks you first.
           </p>
         </div>
 
@@ -154,7 +155,7 @@ export default function VaultPage() {
           <div className="h-surface" style={{ padding: 12, fontSize: 13, color: "var(--err)" }} role="alert">{error}</div>
         )}
 
-        <Section title="Google Workspace" hint="Gmail, Calendar, Drive and Docs through Google's own MCP servers, on your account. Reads run when the connector is on; sending, creating, changing or deleting always asks you first.">
+        <Section title="Google Workspace" hint="Gmail, Calendar, Drive, Docs, Sheets and Contacts on your own Google account. Reads run when the connector is on; sending, creating, changing or deleting always asks you first. Connected before? Connect again to add Sheets and Contacts.">
           <div style={{ display: "flex", gap: 12, alignItems: "center", flexWrap: "wrap" }} data-testid="google-workspace">
             <i className="ti ti-brand-google" style={{ fontSize: 22 }} />
             <div style={{ flex: 1, minWidth: 200, fontSize: 13 }}>
@@ -207,6 +208,16 @@ export default function VaultPage() {
           )}
         </Section>
 
+        <Section title="Work apps" hint="GitHub, Notion and Slack (Pro). Paste a token once: it is checked, stored encrypted, and never shown to the assistant. Reading is automatic when the connector is on; posting, creating or commenting always asks you first.">
+          <WorkApps status={integrations?.apps} onChange={() => void loadIntegrations().then(setIntegrations)} />
+        </Section>
+
+        {/* The machinery behind "Connected apps": most people never need to open this. */}
+        <details data-testid="vault-advanced" style={{ display: "flex", flexDirection: "column", gap: 16 }}>
+          <summary className="h-muted" style={{ cursor: "pointer", fontSize: 13, padding: "4px 2px" }}>
+            Advanced: API keys, permissions and activity
+          </summary>
+          <div style={{ display: "flex", flexDirection: "column", gap: 16, marginTop: 12 }}>
         <Section title="Connected credentials" hint="Stored encrypted. Only the label and a fingerprint are ever shown again.">
           <form onSubmit={(e) => { e.preventDefault(); void addCredential() }} style={{ display: "grid", gap: 8, gridTemplateColumns: "1fr 1fr" }}>
             <select className="h-input" value={provider} onChange={(e) => setProvider(e.target.value)} aria-label="Provider">
@@ -296,6 +307,8 @@ export default function VaultPage() {
             </ul>
           )}
         </Section>
+          </div>
+        </details>
       </div>
     </main>
   )

@@ -295,6 +295,10 @@ class UserSettings(Base):
     # True: follow the timezone of whatever device the user is on (sent by the
     # web app); False: the user pinned `timezone` by hand in Personalisation.
     timezone_auto: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True, server_default="true")
+    # home city: the Today screen's weather, and the default for "near me"
+    city: Mapped[str] = mapped_column(String(80), nullable=False, default="", server_default="")
+    # finished (or skipped) the first-run walkthrough
+    onboarded: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False, server_default="false")
     language: Mapped[str] = mapped_column(String(16), nullable=False, default="")
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False)
 
@@ -311,6 +315,8 @@ class ScheduledTask(Base):
     daily_at: Mapped[str | None] = mapped_column(String(5), nullable=True)         # "HH:MM" in the user's timezone
     connectors: Mapped[list] = mapped_column(JSONB, nullable=False, default=list, server_default="[]")
     mode: Mapped[str] = mapped_column(String(16), nullable=False, default="default")
+    # also email each result to the user (a "daily brief"), via harness.notify
+    deliver_email: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False, server_default="false")
     enabled: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
     next_run_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True, index=True)
     last_run_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)

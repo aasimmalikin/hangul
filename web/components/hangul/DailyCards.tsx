@@ -24,8 +24,59 @@ export type DailyUi =
   | { kind: "conversion"; from: string; to: string; note?: string }
   | { kind: "world_clock"; rows: Array<{ place: string; zone: string; time: string; day: string }>; home: string; at: string | null }
   | { kind: "webpage"; url: string; title: string; host: string; excerpt: string }
+  | { kind: "file"; name: string; format: string; size: number; title?: string }
+  | { kind: "chart"; name: string; title?: string; rows: Cell[][] }
+  | { kind: "table"; title?: string; rows: Cell[][] }
+  | { kind: "upgrade"; feature: string; plan: string; plan_label: string }
+  | { kind: "contacts"; people: Array<{ name: string; emails: string[]; phones: string[] }> }
+  | { kind: "image"; name: string; prompt: string; size: string }
+  | { kind: "places"; query: string; places: Array<{ name: string; address: string; type: string; link: string }> }
+  | { kind: "route"; origin: string; destination: string; mode: string; minutes?: number; km?: number; link: string }
+  | { kind: "issues"; items: Array<{ repo: string; number: number; title: string; state: string; url: string; pr: boolean; updated: string }> }
+  | { kind: "notion_results"; items: Array<{ id: string; title: string; type: string; url: string; edited: string }> }
+  | { kind: "slack_messages"; items: Array<{ channel: string; user: string; text: string; link: string }> }
 
-const KINDS = new Set(["reminder", "reminders", "todo_list", "notes", "weather", "conversion", "world_clock", "webpage"])
+type Cell = string | number | null
+
+const KINDS = new Set(["reminder", "reminders", "todo_list", "notes", "weather", "conversion", "world_clock", "webpage",
+  "file", "chart", "table", "upgrade", "contacts", "image", "places", "route", "issues", "notion_results", "slack_messages"])
+
+const MODE_ICON: Record<string, string> = { car: "car", bike: "bike", foot: "walk" }
+const ext = { target: "_blank", rel: "noopener noreferrer nofollow" } as const
+const rowLink = { fontSize: 14, color: "var(--link)", textDecoration: "none" } as const
+
+const FILE_ICON: Record<string, string> = {
+  pdf: "file-type-pdf", docx: "file-type-doc", pptx: "presentation", xlsx: "file-spreadsheet",
+  csv: "file-type-csv", md: "markdown", txt: "file-text",
+}
+const FILE_LABEL: Record<string, string> = {
+  pdf: "PDF", docx: "Word document", pptx: "Slides", xlsx: "Excel spreadsheet", csv: "CSV", md: "Markdown", txt: "Text file",
+}
+const fileUrl = (name: string) => `/api/files/${encodeURIComponent(name)}`
+const fmtSize = (n: number) => (n < 1024 * 1024 ? `${Math.max(1, Math.round(n / 1024))} KB` : `${(n / 1024 / 1024).toFixed(1)} MB`)
+const fmtCell = (v: Cell) => (typeof v === "number" ? v.toLocaleString() : v ?? "")
+
+function DataTable({ rows }: { rows: Cell[][] }) {
+  const [head, ...body] = rows
+  if (!head) return null
+  return (
+    <div style={{ overflowX: "auto", maxHeight: 320 }}>
+      <table style={{ borderCollapse: "collapse", fontSize: 13, width: "100%" }}>
+        <thead>
+          <tr>{head.map((h, i) => <th key={i} style={{ textAlign: "left", padding: "4px 10px 4px 0", borderBottom: "0.5px solid var(--surface-border)", fontWeight: 500, whiteSpace: "nowrap" }}>{String(h)}</th>)}</tr>
+        </thead>
+        <tbody>
+          {body.map((r, ri) => (
+            <tr key={ri}>{r.map((v, ci) => (
+              <td key={ci} style={{ padding: "4px 10px 4px 0", borderBottom: "0.5px solid var(--surface-border)",
+                textAlign: typeof v === "number" ? "right" : "left", fontVariantNumeric: "tabular-nums", whiteSpace: "nowrap" }}>{fmtCell(v)}</td>
+            ))}</tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
+  )
+}
 
 export function isDailyUi(v: unknown): v is DailyUi {
   return Boolean(v && typeof v === "object" && KINDS.has(String((v as { kind?: unknown }).kind)))
@@ -153,6 +204,140 @@ export function DailyCard({ ui }: { ui: DailyUi }) {
               <span><strong>{r.time}</strong> <span className="h-muted" style={{ fontSize: 12 }}>{r.day}</span></span>
             </div>
           ))}
+        </Card>
+      )
+    case "file":
+      return (
+        <Card icon={FILE_ICON[ui.format] ?? "file"} title={FILE_LABEL[ui.format] ?? "File"} testId="card-file">
+          <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
+            <div style={{ flex: 1, minWidth: 0 }}>
+              <div style={{ fontSize: 14, fontWeight: 500, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{ui.name}</div>
+              <div className="h-muted" style={{ fontSize: 12 }}>{fmtSize(ui.size)}</div>
+            </div>
+            <a className="h-btn-solid" href={fileUrl(ui.name)} download={ui.name} data-testid="file-download" style={{ textDecoration: "none", gap: 6 }}>
+              <i className="ti ti-download" style={{ fontSize: 14 }} /> Download
+            </a>
+          </div>
+        </Card>
+      )
+    case "chart":
+      return (
+        <Card icon="chart-pie" title={ui.title || "Chart"} testId="card-chart">
+          {/* eslint-disable-next-line @next/next/no-img-element -- a private, per-user file behind the BFF */}
+          <img src={fileUrl(ui.name)} alt={ui.title || "Chart"} style={{ width: "100%", borderRadius: 8 }} />
+          <a href={fileUrl(ui.name)} download={ui.name} className="h-muted" style={{ fontSize: 12 }}>Download chart</a>
+        </Card>
+      )
+    case "table":
+      return (
+        <Card icon="table" title={ui.title || "Result"} testId="card-table">
+          <DataTable rows={ui.rows} />
+        </Card>
+      )
+    case "contacts":
+      return (
+        <Card icon="address-book" title="Contacts" testId="card-contacts">
+          {ui.people.map((p) => (
+            <div key={(p.emails[0] ?? p.name) + p.name} style={{ display: "flex", alignItems: "center", gap: 10 }}>
+              <span style={{ width: 28, height: 28, borderRadius: "50%", display: "grid", placeItems: "center", fontSize: 13,
+                background: "var(--surface-hover)", flexShrink: 0 }}>{(p.name[0] ?? "?").toUpperCase()}</span>
+              <div style={{ minWidth: 0 }}>
+                <div style={{ fontSize: 14 }}>{p.name}</div>
+                <div className="h-muted" style={{ fontSize: 12, overflow: "hidden", textOverflow: "ellipsis" }}>
+                  {[...p.emails, ...p.phones].join(" · ")}
+                </div>
+              </div>
+            </div>
+          ))}
+        </Card>
+      )
+    case "image":
+      return (
+        <Card icon="photo" title="Image" testId="card-image">
+          {/* eslint-disable-next-line @next/next/no-img-element -- a private, per-user file behind the BFF */}
+          <img src={fileUrl(ui.name)} alt={ui.prompt} style={{ width: "100%", borderRadius: 10 }} />
+          <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+            <span className="h-muted" style={{ fontSize: 12, flex: 1, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }} title={ui.prompt}>{ui.prompt}</span>
+            <a className="h-btn-ghost" href={fileUrl(ui.name)} download={ui.name} style={{ fontSize: 12, textDecoration: "none", gap: 4 }}>
+              <i className="ti ti-download" style={{ fontSize: 13 }} /> Download
+            </a>
+          </div>
+        </Card>
+      )
+    case "places":
+      return (
+        <Card icon="map-pin" title={ui.query} testId="card-places">
+          {ui.places.map((p, i) => (
+            <div key={p.address + i}>
+              <a href={p.link} {...ext} style={rowLink}>{p.name}</a>
+              {p.type && <span className="h-muted" style={{ fontSize: 11 }}> · {p.type}</span>}
+              <div className="h-muted" style={{ fontSize: 12 }}>{p.address}</div>
+            </div>
+          ))}
+          <div className="h-muted" style={{ fontSize: 10 }}>© OpenStreetMap contributors</div>
+        </Card>
+      )
+    case "route":
+      return (
+        <Card icon={MODE_ICON[ui.mode] ?? "route"} title={`${ui.origin} → ${ui.destination}`} testId="card-route">
+          {ui.minutes != null ? (
+            <div style={{ fontSize: 15 }}>
+              <strong>{ui.minutes < 60 ? `${ui.minutes} min` : `${Math.floor(ui.minutes / 60)} h ${ui.minutes % 60} min`}</strong>
+              <span className="h-muted"> · {ui.km} km · no live traffic</span>
+            </div>
+          ) : (
+            <div className="h-muted" style={{ fontSize: 13 }}>Times for this way of travelling are on Google Maps.</div>
+          )}
+          <a className="h-btn-solid" href={ui.link} {...ext} style={{ textDecoration: "none", alignSelf: "flex-start", gap: 6 }}>
+            <i className="ti ti-navigation" style={{ fontSize: 14 }} /> Open directions
+          </a>
+        </Card>
+      )
+    case "issues":
+      return (
+        <Card icon="brand-github" title="GitHub" testId="card-issues">
+          {ui.items.map((i) => (
+            <div key={i.url} style={{ display: "flex", gap: 8, alignItems: "baseline" }}>
+              <i className={`ti ${i.pr ? "ti-git-pull-request" : "ti-circle-dot"}`} style={{ fontSize: 13, color: i.state === "open" ? "var(--ok)" : "var(--muted)" }} />
+              <div style={{ minWidth: 0 }}>
+                <a href={i.url} {...ext} style={rowLink}>{i.title}</a>
+                <div className="h-muted" style={{ fontSize: 11 }}>{i.repo}#{i.number} · updated {i.updated}</div>
+              </div>
+            </div>
+          ))}
+        </Card>
+      )
+    case "notion_results":
+      return (
+        <Card icon="brand-notion" title="Notion" testId="card-notion">
+          {ui.items.map((n) => (
+            <div key={n.id}>
+              <a href={n.url} {...ext} style={rowLink}>{n.title}</a>
+              <span className="h-muted" style={{ fontSize: 11 }}> · edited {n.edited}</span>
+            </div>
+          ))}
+        </Card>
+      )
+    case "slack_messages":
+      return (
+        <Card icon="brand-slack" title="Slack" testId="card-slack">
+          {ui.items.map((m, i) => (
+            <div key={(m.link ?? "") + i} style={{ fontSize: 13 }}>
+              <span className="h-muted" style={{ fontSize: 11 }}>#{m.channel} · {m.user}</span>
+              <div>{m.link ? <a href={m.link} {...ext} style={{ color: "var(--fg)", textDecoration: "none" }}>{m.text}</a> : m.text}</div>
+            </div>
+          ))}
+        </Card>
+      )
+    case "upgrade":
+      return (
+        <Card icon="lock" title={`${ui.plan_label} feature`} testId="card-upgrade">
+          <div style={{ fontSize: 14 }}>{ui.feature} is included with {ui.plan_label}.</div>
+          <div>
+            <a className="h-btn-solid" href={`/billing?upgrade=${encodeURIComponent(ui.plan)}`} style={{ textDecoration: "none" }}>
+              Upgrade to {ui.plan_label}
+            </a>
+          </div>
         </Card>
       )
     case "webpage":

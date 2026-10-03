@@ -1,4 +1,5 @@
-import type { Metadata } from "next";
+import type { Metadata, Viewport } from "next";
+import { ServiceWorker } from "@/components/ServiceWorker";
 import { Geist, Geist_Mono, Fraunces } from "next/font/google";
 import "./globals.css";
 import { Providers } from "@/components/Providers";
@@ -22,7 +23,15 @@ const fraunces = Fraunces({
 
 export const metadata: Metadata = {
   title: "Hangul",
-  description: "An agentic assistant.",
+  description: "Your personal AI assistant: reminders, email, calendar, documents and more — just ask, or talk.",
+  // installed on a phone home screen: opens full-screen with its own icon
+  appleWebApp: { capable: true, title: "Hangul", statusBarStyle: "black-translucent" },
+  icons: { apple: "/icons/apple-touch-icon.png" },
+};
+
+export const viewport: Viewport = {
+  themeColor: "#0F0F10",
+  viewportFit: "cover",          // lets the bottom bar sit above the phone's home indicator (safe-area insets)
 };
 
 // Applies the saved theme before first paint so the page never flashes the
@@ -44,7 +53,7 @@ export default async function RootLayout({ children }: LayoutProps<"/">) {
       <head>
         <script dangerouslySetInnerHTML={{ __html: themeScript }} />
       </head>
-      <body className="min-h-full flex flex-col"><Providers session={session}>{children}</Providers></body>
+      <body className="min-h-full flex flex-col"><Providers session={session}>{children}<ServiceWorker /></Providers></body>
     </html>
   );
 }

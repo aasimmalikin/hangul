@@ -10,6 +10,11 @@ class Settings(BaseSettings):
     log_level: str = "INFO"
     openai_api_key: str | None = None
     model: str = "gpt-5.5"           # default; must be a key of providers.registry.MODELS
+    # "Auto" (providers/router.py): the model for quick / everyday / deep messages,
+    # each falling back down the ladder to what the user's plan includes
+    auto_fast_model: str = "gpt-5.6-luna"
+    auto_balanced_model: str = "gpt-5.6-terra"
+    auto_best_model: str = "gpt-5.6-sol"
     default_effort: str = "medium"   # default reasoning effort when the request sets none
     tavily_api_key: str | None = None
     database_url: str = "postgresql+psycopg://agentic:agentic@localhost:5432/hangul_harness"
@@ -50,6 +55,13 @@ class Settings(BaseSettings):
     tts_voice: str = "coral"
     stt_usd_per_minute: float = 0.003
     tts_usd_per_1k_chars: float = 0.015
+    # Image generation (tools/builtin/images.py), Pro plan. Charged per image
+    # at approximate list prices (VERIFY on OpenAI's pricing page).
+    image_model: str = "gpt-image-1"
+    image_default_quality: str = "medium"
+    # Maps (tools/builtin/maps.py): OpenStreetMap's Nominatim asks every app to
+    # identify itself with a contact address in the User-Agent.
+    maps_contact_email: str | None = None
     # Reminder emails (harness/notify.py) via Resend -- the same account the web
     # app uses for sign-in links, so AUTH_RESEND_KEY / AUTH_EMAIL_FROM work too.
     # Unset = reminders are in-app only.

@@ -1,5 +1,5 @@
 import { test, expect } from "@playwright/test"
-import { ask, backend, freshUser, resetBackend, signInAs } from "./helpers"
+import { ask, backend, freshUser, openOptions, resetBackend, signInAs } from "./helpers"
 
 /** Paid model access (harness.billing): plan refusals become an upgrade card, locked models show in the picker, /billing starts a checkout. */
 test.describe("billing", () => {
@@ -42,6 +42,7 @@ test.describe("billing", () => {
 
   test("locked models are badged and lead to the upgrade page", async ({ page }) => {
     await page.goto("/chat")
+    await openOptions(page)
     await page.getByTestId("model-picker").click()
     await expect(page.getByTestId("model-option-fake-frontier-locked")).toContainText("Pro")
     await expect(page.getByTestId("model-option-fake-plain-locked")).toHaveCount(0)

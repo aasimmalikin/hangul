@@ -39,6 +39,7 @@ export function useConnectivity(): Connectivity {
   const recheck = useCallback(async () => {
     try {
       const res = await fetch("/api/health", { cache: "no-store", signal: AbortSignal.timeout(5_000) })
+      await res.text().catch(() => "")     // read the body so the request completes (an unread one stays "in flight")
       const ok = res.ok
       setBackendOk(ok)
       return ok

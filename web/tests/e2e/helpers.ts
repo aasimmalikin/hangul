@@ -79,3 +79,9 @@ export async function expectReply(page: Page, containing: string | RegExp) {
   // the run is over once its (hidden) end marker is in the message
   await expect(page.getByTestId("run-done").last()).toBeAttached()
 }
+
+/** Open the composer's Options popover (model, Only my files, Research mode, auto apps). */
+export async function openOptions(page: Page) {
+  const expanded = await page.getByTestId("composer-options").getAttribute("aria-expanded")
+  if (expanded !== "true") await page.getByTestId("composer-options").click()
+}

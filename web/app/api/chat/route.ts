@@ -52,7 +52,7 @@ export async function POST(req: Request) {
   const limited = rateLimit(`chat:${userId}`, 60, 60_000)
   if (limited) return limited
 
-  let body: { messages?: IncomingMessage[]; docsOnly?: unknown; model?: unknown; effort?: unknown; connectors?: unknown; mode?: unknown; conversationId?: unknown; timezone?: unknown }
+  let body: { messages?: IncomingMessage[]; docsOnly?: unknown; model?: unknown; effort?: unknown; connectors?: unknown; mode?: unknown; conversationId?: unknown; timezone?: unknown; connectorsAuto?: unknown }
   try {
     body = await req.json()
   } catch {
@@ -103,7 +103,7 @@ export async function POST(req: Request) {
       headers: { "Content-Type": "application/json", Accept: "text/event-stream" },
       body: JSON.stringify({ question, history, conversation_id: conversationId,
                              docs_only: body.docsOnly === true, model, effort, connectors, mode,
-                             client_timezone: timeZoneOrUndefined(body.timezone) }),
+                             client_timezone: timeZoneOrUndefined(body.timezone), connectors_auto: body.connectorsAuto === true }),
     }, { timeoutMs: STREAM_TOTAL_MS, signal: req.signal })
   } catch (e) {
     if (e instanceof UpstreamError) return jsonError(e.status, e.code, e.message)

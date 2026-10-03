@@ -4,6 +4,7 @@ import { useSession } from "next-auth/react"
 import { Wordmark } from "@/components/Wordmark"
 import { ProfileMenu } from "@/components/hangul/ProfileMenu"
 import { ReminderBell } from "@/components/hangul/ReminderBell"
+import { BottomNav, MainNavTabs } from "@/components/hangul/MainNav"
 import { ThemeMenu } from "@/components/hangul/ThemeMenu"
 
 /**
@@ -22,12 +23,15 @@ export function AppHeader({
   onSignIn,
   onSignUp,
   children,
+  bottomNav = true,
 }: {
   showWordmark?: boolean
   wordmarkHref?: string | null
   onSignIn: () => void
   onSignUp?: () => void
   children?: React.ReactNode
+  /** Phones: the Today / Chats / My stuff / You bar (off inside a conversation). */
+  bottomNav?: boolean
 }) {
   const { status } = useSession()
 
@@ -40,8 +44,10 @@ export function AppHeader({
     >
       <div style={{ display: "flex", alignItems: "center", gap: 12, flex: 1, minWidth: 0 }}>
         {showWordmark && <Wordmark href={wordmarkHref} />}
+        {status === "authenticated" && <MainNavTabs />}
         {children}
       </div>
+      {status === "authenticated" && bottomNav && <BottomNav />}
 
       {status === "loading" ? (
         <span style={{ width: 32, height: 32 }} />

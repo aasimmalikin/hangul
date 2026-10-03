@@ -15,6 +15,14 @@ import { SignInModal, type AuthMode } from "@/components/hangul/SignInModal"
 type Item = { id: number; list_name: string; text: string; done: boolean }
 type Reminder = { id: number; text: string; due_at: string; status: string }
 type NoteRow = { id: number; text: string; created_at: string }
+type FileRow = { name: string; size: number; modified: number; kind: string }
+
+const FILE_ICON: Record<string, string> = {
+  document: "file-text", slides: "presentation", spreadsheet: "file-spreadsheet", text: "file-text",
+  image: "photo", audio: "microphone", file: "file",
+}
+const fileUrl = (n: string) => `/api/files/${encodeURIComponent(n)}`
+const size = (n: number) => (n < 1024 * 1024 ? `${Math.max(1, Math.round(n / 1024))} KB` : `${(n / 1024 / 1024).toFixed(1)} MB`)
 
 async function api<T>(path: string, init?: RequestInit): Promise<T> {
   const res = await fetch(`/api/${path}`, { ...init, cache: "no-store", headers: { "Content-Type": "application/json", ...(init?.headers ?? {}) } })
@@ -47,6 +55,7 @@ export default function ListsPage() {
   const [lists, setLists] = useState<Record<string, Item[]>>({})
   const [reminders, setReminders] = useState<Reminder[]>([])
   const [notes, setNotes] = useState<NoteRow[]>([])
+  const [files, setFiles] = useState<FileRow[]>([])
   const [query, setQuery] = useState("")
   const [newItem, setNewItem] = useState("")
   const [newList, setNewList] = useState("To-do")
@@ -54,12 +63,13 @@ export default function ListsPage() {
 
   const reload = useCallback(async () => {
     try {
-      const [l, r, n] = await Promise.all([
+      const [l, r, n, f] = await Promise.all([
         api<{ lists: Record<string, Item[]> }>("lists"),
         api<Reminder[]>("reminders?scope=open"),
         api<NoteRow[]>("notes"),
+        api<FileRow[]>("files").catch(() => [] as FileRow[]),
       ])
-      setLists(l.lists); setReminders(r); setNotes(n); setError(null)
+      setLists(l.lists); setReminders(r); setNotes(n); setFiles(f); setError(null)
     } catch (e) { setError((e as Error).message) }
   }, [])
 
@@ -81,13 +91,13 @@ export default function ListsPage() {
   const names = Object.keys(lists)
 
   return (
-    <main style={{ minHeight: "100vh", display: "flex", flexDirection: "column" }}>
+    <main className="h-has-bottom-nav" style={{ minHeight: "100vh", display: "flex", flexDirection: "column" }}>
       <AppHeader onSignIn={() => setSignIn({ open: true, mode: "signin" })} onSignUp={() => setSignIn({ open: true, mode: "signup" })} />
       <SignInModal open={signInOpen} mode={signIn.mode} onClose={() => { setGateDismissed(true); setSignIn((s) => ({ ...s, open: false })) }} callbackUrl="/lists" reason="Sign in to see your lists." />
 
       <div style={{ width: "100%", maxWidth: 760, margin: "0 auto", padding: "8px 16px 40px", display: "flex", flexDirection: "column", gap: 16, boxSizing: "border-box" }}>
         <div>
-          <h1 className="h-display" style={{ fontSize: 26, margin: "8px 0 4px" }}>Lists, notes & reminders</h1>
+          <h1 className="h-display" style={{ fontSize: 26, margin: "8px 0 4px" }}>My stuff</h1>
           <p className="h-muted" style={{ fontSize: 13, margin: 0 }}>
             Just tell the assistant — “add eggs to my shopping list”, “remind me to pay rent on the 1st at 9am”, “note: Wi-Fi password is on the router”. It all shows up here.
           </p>
@@ -150,6 +160,22 @@ export default function ListsPage() {
                 onClick={() => void run(() => api(`notes/${n.id}`, { method: "DELETE" }))}>
                 <i className="ti ti-trash" style={{ fontSize: 13 }} />
               </button>
+            </div>
+          ))}
+        </Section>
+        <Section title="Files" hint="Everything you uploaded and everything Hangul made for you: documents, charts, images and voice notes." testId="files-section">
+          {files.length === 0 && <p className="h-muted" style={{ fontSize: 13, margin: 0 }}>No files yet. Try “make a PDF of my notes” or add a file with +.</p>}
+          {files.map((f) => (
+            <div key={f.name} style={{ display: "flex", alignItems: "center", gap: 10, fontSize: 14 }} data-testid={`file-${f.name}`}>
+              {f.kind === "image"
+                // eslint-disable-next-line @next/next/no-img-element -- a private, per-user file behind the BFF
+                ? <img src={fileUrl(f.name)} alt="" style={{ width: 36, height: 36, objectFit: "cover", borderRadius: 6 }} />
+                : <i className={`ti ti-${FILE_ICON[f.kind] ?? "file"}`} style={{ fontSize: 20, width: 36, textAlign: "center" }} />}
+              <span style={{ flex: 1, minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{f.name}</span>
+              <span className="h-muted" style={{ fontSize: 12 }}>{size(f.size)} · {new Date(f.modified * 1000).toLocaleDateString()}</span>
+              <a className="h-btn-ghost" href={fileUrl(f.name)} download={f.name} aria-label={`Download ${f.name}`} style={{ padding: "2px 6px" }}>
+                <i className="ti ti-download" style={{ fontSize: 14 }} />
+              </a>
             </div>
           ))}
         </Section>
