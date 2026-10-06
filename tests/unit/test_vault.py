@@ -308,6 +308,9 @@ def test_call_mints_one_off_grant_and_revokes_it():
 
 # ------------------------------------------------------------------ tools
 
+API = "http:api.example.com"
+
+
 def test_vault_tools_end_to_end(monkeypatch):
     async def scenario():
         v, up = make_vault()
@@ -315,28 +318,54 @@ def test_vault_tools_end_to_end(monkeypatch):
         try:
             tools = {t.name: t for t in await vr.build_vault_tools("7", "t1")}
             assert "not connected any provider" in tools["vault_request"].description
-            out = await tools["vault_request"].handler(provider="github", path="/user")
+            out = await tools["vault_request"].handler(provider=API, path="/user")
             assert out.startswith("VAULT_CONSENT_REQUIRED")     # no credential/consent yet
 
-            await v.add_credential(user_id="7", provider="github", secret=SECRET)
-            await v.grant_consent(user_id="7", provider="github", ttl=timedelta(hours=1))
+            await v.add_credential(user_id="7", provider="custom", secret=SECRET, base_url="https://api.example.com")
+            await v.grant_consent(user_id="7", provider=API, ttl=timedelta(hours=1))
             tools = {t.name: t for t in await vr.build_vault_tools("7", "t1")}
-            assert "github" in tools["vault_request"].description
-            out = await tools["vault_request"].handler(provider="github", path="user", query={"n": 1})
+            assert API in tools["vault_request"].description
+            out = await tools["vault_request"].handler(provider=API, path="user", query={"n": 1})
             assert out.startswith("HTTP 200") and SECRET not in out
-            assert str(up.calls[-1].url) == "https://api.github.com/user?n=1"
+            assert str(up.calls[-1].url) == "https://api.example.com/user?n=1"
 
-            out = await tools["vault_mutate"].handler(provider="github", method="GET", path="/x")
+            out = await tools["vault_mutate"].handler(provider=API, method="GET", path="/x")
             assert out.startswith("VAULT_DENIED")
-            out = await tools["vault_mutate"].handler(provider="github", method="POST", path="/x", body={"a": 1})
+            out = await tools["vault_mutate"].handler(provider=API, method="POST", path="/x", body={"a": 1})
             assert out.startswith("VAULT_CONSENT_REQUIRED") and "read-only" in out
-            await v.grant_consent(user_id="7", provider="github", ttl=timedelta(hours=1), allow_write=True)
-            out = await tools["vault_mutate"].handler(provider="github", method="POST", path="/x", body={"a": 1})
+            await v.grant_consent(user_id="7", provider=API, ttl=timedelta(hours=1), allow_write=True)
+            out = await tools["vault_mutate"].handler(provider=API, method="POST", path="/x", body={"a": 1})
             assert out.startswith("HTTP 200") and up.calls[-1].content == b'{"a": 1}'
         finally:
             set_current(None)
-        out = await tools["vault_request"].handler(provider="github", path="/user")
+        out = await tools["vault_request"].handler(provider=API, path="/user")
         assert out.startswith("VAULT_UNAVAILABLE")
+    run(scenario())
+
+
+def test_vault_tools_refuse_connector_only_providers():
+    """A connected GitHub/Notion/Slack token is reachable only through its connector's
+    tools, never as a raw API: no plan gate, no Kept log, no fixed action list there."""
+    async def scenario():
+        v, up = make_vault()
+        set_current(v)
+        try:
+            for provider in ("github", "notion", "slack"):
+                await v.add_credential(user_id="7", provider=provider, secret=SECRET + provider)
+                await v.grant_consent(user_id="7", provider=provider, ttl=timedelta(hours=1), allow_write=True)
+            tools = {t.name: t for t in await vr.build_vault_tools("7", "t1")}
+            assert "not connected any provider" in tools["vault_request"].description   # none offered
+            assert "No provider currently allows writes" in tools["vault_mutate"].description
+            out = await tools["vault_request"].handler(provider="github", path="/repos/a/b/readme")
+            assert out.startswith("VAULT_DENIED") and "github__" in out
+            out = await tools["vault_mutate"].handler(provider="GitHub", method="PATCH", path="/repos/a/b/issues/1",
+                                                      body={"state": "closed"})
+            assert out.startswith("VAULT_DENIED")
+            out = await tools["vault_mutate"].handler(provider="slack", method="POST", path="/api/chat.postMessage")
+            assert out.startswith("VAULT_DENIED")
+            assert up.calls == []                                   # nothing reached the network
+        finally:
+            set_current(None)
     run(scenario())
 
 

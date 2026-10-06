@@ -34,7 +34,7 @@ import crypto from "node:crypto"
 const PORT = Number(process.env.FAKE_BACKEND_PORT ?? 8765)
 const SECRET = process.env.FASTAPI_JWT_SECRET ?? "e2e-service-secret"
 
-const state = { down: false, approves: {}, executed: {}, uploads: [], asks: [], inFlight: {}, memory: {}, episodes: {}, conversations: {}, convMessages: {}, adminCalls: [], evalRuns: {}, prefs: {}, tasks: {}, google: {}, checkouts: [], todos: {}, reminders: {}, notes: {}, deviceTz: {}, transcripts: [], transcribed: [], spoken: [], apps: {}, billing: {}, churn: [] }
+const state = { down: false, approves: {}, executed: {}, uploads: [], asks: [], inFlight: {}, memory: {}, episodes: {}, conversations: {}, convMessages: {}, adminCalls: [], evalRuns: {}, prefs: {}, tasks: {}, google: {}, checkouts: [], todos: {}, reminders: {}, notes: {}, deviceTz: {}, transcripts: [], transcribed: [], spoken: [], apps: {}, billing: {}, churn: [], today: {}, whatsapp: {}, checkins: {}, kept: {}, linkDecisions: {} }
 
 function verify(req) {
   const h = req.headers.authorization ?? ""
@@ -250,7 +250,7 @@ async function askStream(req, res, user) {
 
     if (q.startsWith("APPROVAL") || q.startsWith("ASK")) {
       const isAsk = q.startsWith("ASK")
-      state.approves[runId] = { user: user.sub, pending: true, repause: q.startsWith("APPROVAL TWICE") }
+      state.approves[runId] = { user: user.sub, pending: true, repause: q.startsWith("APPROVAL TWICE"), ask: q.startsWith("ASK") }
       const fileArgs = { path: "/sessions/notes.txt", content: "Line one of the notes.\nLine two, with a bit more detail.\nLine three closes it." }
       if (!isAsk) {
         // Stream the call the way the real provider does: name first, then
@@ -316,6 +316,29 @@ async function upload(req, res, user) {
  * the same three. DELETE deactivates (like the real backend) — the row stays
  * in state with active:false so a test can assert it was not erased.
  */
+// the morning check-in (21-today / 28-hearth): a 3-morning streak so far; answering today makes it 4
+const CHECKIN_REPLIES = { great: "Love that. Let's make the most of it.", ok: "Okay. I'll keep today simple.",
+  tired: "Sorry to hear that. I'll keep today light.", busy: "Got it. I'll keep it short today." }
+function checkinFor(sub) {
+  const mood = state.checkins[sub] ?? null
+  return { mood, reply: mood ? CHECKIN_REPLIES[mood] : null, streak: mood ? 4 : 3, week: [false, false, false, true, true, true, Boolean(mood)] }
+}
+
+/** The fake's Kept list: its waiting approvals and reminders, plus rows planted with POST /__kept. */
+function keptFor(user) {
+  const items = [
+    ...Object.entries(state.approves).filter(([, a]) => a.user === user.sub && a.pending && !a.ask).map(([run_id, a]) => ({
+      id: `approval:${run_id}`, kind: "approval", state: "needs_you", did: "Write notes.txt (waiting for you)", said: a.said ?? "Save my notes to a file",
+      when: new Date().toISOString(), app: "File", conversation_id: a.conversation_id ?? "conv-kept", ref: { run_id, tool: "filesystem__write_file" } })),
+    ...(state.reminders[user.sub] ?? []).filter((r) => r.status !== "cancelled").map((r) => ({
+      id: `reminder:${r.id}`, kind: "reminder", state: r.status === "pending" ? "coming" : "done",
+      did: r.status === "pending" ? `Reminder: ${r.text}` : `Reminded you: ${r.text}`, said: r.said ?? null, when: r.due_at, app: "Reminder",
+      conversation_id: r.conversation_id ?? null, ref: { id: r.id, status: r.status } })),
+    ...(state.kept[user.sub] ?? []),
+  ]
+  return items.sort((a, b) => String(a.when ?? "").localeCompare(String(b.when ?? "")))
+}
+
 function memoryFor(user) {
   if (!state.memory[user.sub]) {
     state.memory[user.sub] = [
@@ -417,6 +440,26 @@ const server = http.createServer(async (req, res) => {
     state.billing[b.user] = { ...plan, ...(b.extra ?? {}) }
     return json(res, 200, { ok: true })
   }
+  if (url.pathname === "/__whatsapp" && req.method === "POST") {
+    // {user, enabled?, linked?}: switch WhatsApp on for a user, or pretend their code arrived from WhatsApp
+    const b = JSON.parse((await readBody(req)).toString() || "{}")
+    state.whatsapp[b.user] = { ...(state.whatsapp[b.user] ?? {}), ...b }
+    return json(res, 200, { ok: true })
+  }
+  if (url.pathname === "/__today" && req.method === "POST") {
+    // extra GET /today fields for a user: leave_by, birthdays, tomorrow (21-today.spec.ts)
+    const b = JSON.parse((await readBody(req)).toString() || "{}")
+    state.today[b.user] = b.extra ?? {}
+    state.todaySlowMs = { ...(state.todaySlowMs ?? {}), [b.user]: b.slowMs ?? 0 }   // delay the full brief
+    return json(res, 200, { ok: true })
+  }
+  if (url.pathname === "/__kept" && req.method === "POST") {
+    // {user, items}: extra GET /kept rows (actions, tasks…) on top of the ones the
+    // fake derives from its approvals and reminders (29-kept.spec.ts)
+    const b = JSON.parse((await readBody(req)).toString() || "{}")
+    state.kept[b.user] = b.items ?? []
+    return json(res, 200, { ok: true })
+  }
   if (url.pathname === "/__onboarding" && req.method === "POST") {
     const b = JSON.parse((await readBody(req)).toString() || "{}")
     state.prefs[b.user] = { ...(state.prefs[b.user] ?? {}), onboarded: false }
@@ -431,7 +474,7 @@ const server = http.createServer(async (req, res) => {
     // plant a reminder that has already fired (what the scheduler would leave)
     const b = JSON.parse((await readBody(req)).toString() || "{}")
     const rows = (state.reminders[b.user] ??= [])
-    const r = { id: rows.length + 1, text: b.text, due_at: new Date().toISOString(), status: b.status ?? "sent", sent_at: null }
+    const r = { id: rows.length + 1, text: b.text, due_at: b.due_at ?? new Date().toISOString(), status: b.status ?? "sent", sent_at: null, said: b.said ?? null, conversation_id: b.conversation_id ?? null }
     rows.push(r)
     return json(res, 200, r)
   }
@@ -453,8 +496,35 @@ const server = http.createServer(async (req, res) => {
     rows.push({ id: ++episodeSeq, thread_id: b.thread_id ?? `seed-${episodeSeq}`, title: b.title, summary: b.summary ?? `Q: ${b.title}\nA: Reply to: ${b.title}`, created_at: at, updated_at: at, active: true })
     return json(res, 200, { ok: true })
   }
-  if (url.pathname === "/__reset") { Object.assign(state, { down: false, approves: {}, executed: {}, uploads: [], asks: [], inFlight: {}, memory: {}, episodes: {}, conversations: {}, convMessages: {}, adminCalls: [], evalRuns: {}, prefs: {}, tasks: {}, google: {}, checkouts: [], todos: {}, reminders: {}, notes: {}, deviceTz: {}, transcripts: [], transcribed: [], spoken: [], apps: {}, billing: {}, churn: [] }); convSeq = 0; return json(res, 200, { ok: true }) }
+  if (url.pathname === "/__reset") { Object.assign(state, { down: false, approves: {}, executed: {}, uploads: [], asks: [], inFlight: {}, memory: {}, episodes: {}, conversations: {}, convMessages: {}, adminCalls: [], evalRuns: {}, prefs: {}, tasks: {}, google: {}, checkouts: [], todos: {}, reminders: {}, notes: {}, deviceTz: {}, transcripts: [], transcribed: [], spoken: [], apps: {}, billing: {}, churn: [], today: {}, whatsapp: {}, checkins: {}, kept: {}, linkDecisions: {} }); convSeq = 0; return json(res, 200, { ok: true }) }
   if (url.pathname === "/healthz") return state.down ? json(res, 503, { status: "down" }) : json(res, 200, { status: "ok" })
+  // approve-by-link (30-approve-link): no JWT, the token is the credential. Tokens whose
+  // first part starts "ok" are a waiting calendar event; anything else is invalid (410).
+  const link = url.pathname.match(/^\/approval-links\/([^/]+)$/)
+  if (link) {
+    const token = link[1]
+    if (!token.startsWith("ok")) return json(res, 410, { detail: "This link has expired or isn't valid." })
+    const decided = state.linkDecisions[token]
+    if (req.method === "GET") {
+      return json(res, 200, decided ? { state: "decided", asked: "Find a slot", card: null, conversation_id: "conv-link" } : {
+        state: "waiting", asked: "Find a free slot this afternoon and block it", conversation_id: "conv-link",
+        card: { title: "Add an event to your calendar?", rows: [["Event", "Focus time"], ["When", "Tue 6 Oct, 5:15 PM – 5:30 PM"], ["Invites", "Nobody — only your calendar"]], body: "" } })
+    }
+    const { decision } = JSON.parse((await readBody(req)).toString() || "{}")
+    if (decided) return json(res, 200, { state: "decided", answer: "" })
+    state.linkDecisions[token] = decision
+    return json(res, 200, { state: decision === "approve" ? "approved" : "rejected", answer: decision === "approve" ? "Added Focus time at 5:15 PM." : "Okay, I didn't add it.", waiting_again: false, conversation_id: "conv-link" })
+  }
+  // public homepage prices (28-hearth): India by device timezone, like billing.public_region
+  if (url.pathname === "/billing/prices") {
+    const india = ["Asia/Kolkata", "Asia/Calcutta"].includes(url.searchParams.get("tz") ?? "")
+    const p = (label, amount) => ({ month: { amount, currency: india ? "INR" : "USD", label } })
+    return json(res, 200, { region: india ? "in" : "intl", trial_days: 7, plans: [
+      { id: "free", label: "Free", prices: p(india ? "₹0" : "$0", 0) },
+      { id: "plus", label: "Plus", prices: p(india ? "₹499" : "$20", india ? 499 : 20) },
+      { id: "pro", label: "Pro", prices: p(india ? "₹1,499" : "$100", india ? 1499 : 100) },
+    ] })
+  }
   if (url.pathname === "/connectors") return json(res, 200, [
     { key: "arxiv", label: "Research", description: "Search and read arXiv papers", kind: "builtin", icon: "book-2", per_user: false, auth: null, servers: [] },
     ...[["gmail", "Gmail", "mail"], ["calendar", "Google Calendar", "calendar"], ["drive", "Google Drive", "brand-google-drive"], ["docs", "Google Docs", "file-text"]]
@@ -543,12 +613,14 @@ const server = http.createServer(async (req, res) => {
     return json(res, 200, {
       enabled: true, plan: "free", plan_label: "Free", status: null, renews_at: null, ends_at: null,
       allowance_usd: 0.5, allowance_left_usd: 0.2, credits_usd: 1.5, has_portal: true,
-      ...(state.billing[user.sub] ?? {}),
+      // billing/plans.RECOMMENDED, from the persona
+      recommended_plan: ({ founder: "pro", developer: "pro", student: "plus", professional: "plus", personal: "plus" })[state.prefs[user.sub]?.persona] ?? null,
       plans: [
-        { id: "free", label: "Free", price_usd_month: 0, model_tiers: ["basic"], max_effort: "medium", research_allowed: false, monthly_allowance_usd: 0.5 },
-        { id: "plus", label: "Plus", price_usd_month: 20, model_tiers: ["basic", "advanced"], max_effort: "xhigh", research_allowed: true, monthly_allowance_usd: 8 },
-        { id: "pro", label: "Pro", price_usd_month: 100, model_tiers: ["basic", "advanced", "frontier"], max_effort: "xhigh", research_allowed: true, monthly_allowance_usd: 40 },
+        { id: "free", label: "Free", price_usd_month: 0, model_tiers: ["basic"], max_effort: "medium", research_allowed: false, monthly_allowance_usd: 0.5, best_for: "Trying Hangul, and light personal use" },
+        { id: "plus", label: "Plus", price_usd_month: 20, model_tiers: ["basic", "advanced"], max_effort: "xhigh", research_allowed: true, monthly_allowance_usd: 8, best_for: "Students, professionals and everyday life" },
+        { id: "pro", label: "Pro", price_usd_month: 100, model_tiers: ["basic", "advanced", "frontier"], max_effort: "xhigh", research_allowed: true, monthly_allowance_usd: 40, best_for: "Founders and developers: work apps and the strongest models" },
       ],
+      ...(state.billing[user.sub] ?? {}),        // last, so a test can override any field, plans included
     })
   }
   if (url.pathname === "/billing/leave" && req.method === "POST") {
@@ -569,7 +641,7 @@ const server = http.createServer(async (req, res) => {
   if (url.pathname === "/billing/checkout" && req.method === "POST") {
     const b = JSON.parse((await readBody(req)).toString() || "{}")
     if (!["plus", "pro", "topup"].includes(b.product)) return json(res, 422, { detail: "bad product" })
-    state.checkouts.push({ user: user.sub, product: b.product })
+    state.checkouts.push({ user: user.sub, product: b.product, interval: b.interval ?? null })
     // stands in for the Dodo Payments hosted checkout URL
     return json(res, 200, { url: `/billing?checkout=${b.product}` })
   }
@@ -579,6 +651,13 @@ const server = http.createServer(async (req, res) => {
     const scope = url.searchParams.get("scope") ?? "upcoming"
     const want = scope === "due" ? ["sent"] : scope === "open" ? ["pending", "sent"] : ["pending"]
     return json(res, 200, (state.reminders[user.sub] ?? []).filter((r) => want.includes(r.status)))
+  }
+  const remOne = url.pathname.match(/^\/reminders\/(\d+)$/)
+  if (remOne && req.method === "DELETE") {
+    const r = (state.reminders[user.sub] ?? []).find((x) => x.id === Number(remOne[1]))
+    if (!r) return json(res, 404, { detail: "No such reminder." })
+    r.status = "cancelled"
+    return json(res, 200, r)
   }
   const remDone = url.pathname.match(/^\/reminders\/(\d+)\/done$/)
   if (remDone && req.method === "POST") {
@@ -647,9 +726,40 @@ const server = http.createServer(async (req, res) => {
     state.deviceTz[user.sub] = JSON.parse((await readBody(req)).toString() || "{}").timezone
     return json(res, 200, { timezone: state.deviceTz[user.sub], timezone_auto: true })
   }
+  // ---- Notifications (harness/push.py): off here; headless Chromium has no push service
+  if (url.pathname === "/push" && req.method === "GET") return json(res, 200, { enabled: false, public_key: null, devices: 0, this_device: false })
+  if (url.pathname.startsWith("/push/")) return json(res, 503, { detail: "Notifications aren't set up on this server yet." })
+  // ---- WhatsApp linking (harness/whatsapp): off unless a test switches it on
+  if (url.pathname === "/whatsapp/link") {
+    const w = state.whatsapp[user.sub] ?? {}
+    if (req.method === "GET") {
+      if (!w.enabled) return json(res, 200, { enabled: false, linked: false })
+      return json(res, 200, { enabled: true, linked: !!w.linked, phone: w.linked ? "+91 ••••• 3210" : null,
+                              business_number: "+91 90000 00000", chat_link: w.linked ? "https://wa.me/919000000000" : null })
+    }
+    if (req.method === "POST") {
+      if (!w.enabled) return json(res, 503, { detail: "WhatsApp isn't set up on this server yet." })
+      state.whatsapp[user.sub] = { ...w, code: "482913" }
+      return json(res, 200, { code: "482913", message: "HANGUL 482913", expires_in: 900, business_number: "+91 90000 00000",
+                              wa_link: "https://wa.me/919000000000?text=HANGUL%20482913" })
+    }
+    if (req.method === "DELETE") {
+      state.whatsapp[user.sub] = { ...w, linked: false }
+      return json(res, 200, { unlinked: true })
+    }
+  }
+  if (url.pathname === "/today/checkin" && req.method === "POST") {
+    const mood = JSON.parse((await readBody(req)).toString() || "{}").mood
+    if (!CHECKIN_REPLIES[mood]) return json(res, 422, { detail: "bad mood" })
+    state.checkins[user.sub] = mood
+    return json(res, 200, checkinFor(user.sub))
+  }
   if (url.pathname === "/today" && req.method === "GET") {
     const p = state.prefs[user.sub] ?? {}
-    return json(res, 200, {
+    const quick = url.searchParams.get("quick") === "1"
+    const slow = state.todaySlowMs?.[user.sub] ?? 0
+    if (!quick && slow) await new Promise((r) => setTimeout(r, slow))
+    const brief = {
       greeting: "Good morning", name: (p.display_name || "Alice").split(" ")[0], date_label: "Thursday, 02 October",
       timezone: "Asia/Kolkata", city: p.city ?? "",
       weather: p.city ? { place: `${p.city}, India`, current: { temp: 27.4, label: "Light rain", icon: "cloud-rain" }, daily: [{ max: 29, min: 22, rain_chance: 80 }] } : null,
@@ -660,9 +770,38 @@ const server = http.createServer(async (req, res) => {
       approvals: Object.entries(state.approves).filter(([, a]) => a.user === user.sub && a.pending)
         .map(([run_id]) => ({ run_id, conversation_id: null, tool: "filesystem__write_file" })),
       connected: state.google[user.sub] ? ["gmail", "calendar"] : [],
-    })
+      tomorrow: null, leave_by: null, birthdays: null,
+      checkin: checkinFor(user.sub),
+      memory: (() => { const m = memoryFor(user).find((x) => x.active); return m ? { id: m.id, content: m.content, kind: m.kind } : null })(),
+      suggestion: { kind: "brief", learned: true, count: 5, line: "You usually ask me this between 5am and 10am. Shall I?",
+        chips: [{ label: "Brief me", prompt: "Give me my brief for today." }, { label: "Weather", prompt: "What's the weather like today?" }] },
+      ...(state.today[user.sub] ?? {}),
+      partial: false,
+    }
+    // quick=1: only what the database knows; Google, weather and maps parts are still to come
+    return json(res, 200, quick ? { ...brief, weather: null, events: null, emails: null, replies: null, birthdays: null,
+      leave_by: null, tomorrow: null, connected: [], partial: true } : brief)
   }
   if (url.pathname === "/notes" && req.method === "GET") return json(res, 200, state.notes[user.sub] ?? [])
+  // ---- the Kept tab (harness.api.routes.kept)
+  if (url.pathname === "/kept/count" && req.method === "GET") return json(res, 200, { needs_you: keptFor(user).filter((i) => i.state === "needs_you").length })
+  if (url.pathname === "/kept" && req.method === "GET") {
+    const q = (url.searchParams.get("q") ?? "").trim().toLowerCase()
+    let items = keptFor(user)
+    if (q) {
+      const words = q.split(/\s+/).filter((w) => w.length > 2 && !["what", "did", "ask", "about", "the"].includes(w))
+      const held = [
+        ...(state.todos[user.sub] ?? []).map((t) => ({ id: `todo:${t.id}`, kind: "todo", state: t.done ? "done" : "kept", did: `On ${t.list_name}: ${t.text}`, said: null, when: null, app: "List", conversation_id: null, ref: { id: t.id, list: t.list_name, done: t.done } })),
+        ...(state.notes[user.sub] ?? []).map((n) => ({ id: `note:${n.id}`, kind: "note", state: "kept", did: `Note: ${n.text}`, said: null, when: n.created_at, app: "Note", conversation_id: null, ref: { id: n.id } })),
+        ...memoryFor(user).filter((m) => m.active).map((m) => ({ id: `memory:${m.id}`, kind: "memory", state: "kept", did: `Remembered: ${m.content}`, said: null, when: null, app: "Memory", conversation_id: null, ref: { id: m.id } })),
+      ]
+      items = [...items, ...held].filter((i) => words.some((w) => `${i.said ?? ""} ${i.did}`.toLowerCase().includes(w)))
+    }
+    const lists = {}
+    for (const t of state.todos[user.sub] ?? []) if (!t.done) lists[t.list_name] = (lists[t.list_name] ?? 0) + 1
+    return json(res, 200, { now: new Date().toISOString(), query: q || null, items, needs_you: items.filter((i) => i.state === "needs_you").length,
+      holding: { lists, notes: (state.notes[user.sub] ?? []).length, memories: memoryFor(user).filter((m) => m.active).length, files: 2 } })
+  }
   // ---- personalisation, scheduled tasks, integrations (per user)
   if (url.pathname === "/settings" && req.method === "GET") {
     // onboarded defaults to true so the walkthrough doesn't cover every other test; POST /__onboarding resets it
@@ -672,17 +811,32 @@ const server = http.createServer(async (req, res) => {
   if (url.pathname === "/settings" && req.method === "PUT") {
     const b = JSON.parse((await readBody(req)).toString() || "{}")
     if (!["concise", "balanced", "detailed"].includes(b.tone ?? "balanced")) return json(res, 422, { detail: "bad tone" })
-    state.prefs[user.sub] = { ...(state.prefs[user.sub] ?? {}), display_name: b.display_name ?? "", instructions: b.instructions ?? "", tone: b.tone ?? "balanced", timezone: b.timezone ?? "UTC", language: b.language ?? "", city: b.city ?? "" }
+    state.prefs[user.sub] = { ...(state.prefs[user.sub] ?? {}), display_name: b.display_name ?? "", instructions: b.instructions ?? "", tone: b.tone ?? "balanced", timezone: b.timezone ?? "UTC", language: b.language ?? "", city: b.city ?? "",
+      // like the real backend: not sent = keep the stored one
+      ...(b.persona !== undefined ? { persona: b.persona } : {}), ...(b.home_address !== undefined ? { home_address: b.home_address } : {}) }
     return json(res, 200, state.prefs[user.sub])
   }
   const userTasks = () => Object.values(state.tasks).filter((t) => t.user === user.sub)
-  const pub = (t) => Object.fromEntries(Object.entries(t).filter(([k]) => k !== "user"))
+  const pub = (t) => ({ ...Object.fromEntries(Object.entries(t).filter(([k]) => k !== "user")),
+    asks_first: [...((t.connectors ?? []).includes("gmail") && /\b(send|reply|forward)\b/i.test(t.question ?? "") ? ["gmail"] : []),
+                 ...(t.connectors ?? []).filter((a) => ["github", "slack", "notion", "docs", "sheets"].includes(a))] })
   if (url.pathname === "/tasks" && req.method === "GET") return json(res, 200, userTasks().map(pub))
+  // like POST /tasks/preview: apps the words switch on (a tiny keyword router), and the
+  // actions a task may pre-approve, offered when Calendar / Gmail are "connected"
+  if (url.pathname === "/tasks/preview" && req.method === "POST") {
+    const q = String(JSON.parse((await readBody(req)).toString() || "{}").question ?? "")
+    const apps = [...(/\b(event|slot|calendar|meeting)\b/i.test(q) ? ["calendar"] : []), ...(/\b(email|inbox|send|reply)\b/i.test(q) ? ["gmail"] : [])]
+    if (/\b(github|issue|pr)\b/i.test(q)) apps.push("github")
+    return json(res, 200, { apps, connected: ["gmail", "calendar", "github"], title: q.split(/\s+/).slice(0, 7).join(" "),
+      asks_first: [...(apps.includes("gmail") && /\b(send|reply|forward)\b/i.test(q) ? ["gmail"] : []),
+                   ...apps.filter((a) => ["github", "slack", "notion", "docs", "sheets"].includes(a))], lead_minutes: 5 })
+  }
   if (url.pathname === "/tasks" && req.method === "POST") {
     const b = JSON.parse((await readBody(req)).toString() || "{}")
     if (!(b.every_minutes || b.daily_at)) return json(res, 422, { detail: "a schedule needs every_minutes or daily_at" })
     const id = Object.keys(state.tasks).length + 1
-    state.tasks[id] = { id, user: user.sub, title: b.title, question: b.question, every_minutes: b.every_minutes ?? null, daily_at: b.daily_at ?? null,
+    state.tasks[id] = { id, user: user.sub, title: b.title || String(b.question ?? "").split(/\s+/).slice(0, 7).join(" "), question: b.question,
+      days: b.days ?? null, run_on: b.run_on ?? null, every_minutes: b.every_minutes ?? null, daily_at: b.daily_at ?? null,
       connectors: b.connectors ?? [], mode: b.mode ?? "default", enabled: true, next_run_at: new Date(Date.now() + 3600e3).toISOString(),
       last_run_at: null, last_status: "never", last_run_id: null, last_answer: "", created_at: new Date().toISOString(),
       deliver_email: b.deliver_email === true }

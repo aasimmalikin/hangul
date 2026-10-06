@@ -13,7 +13,7 @@ from pydantic import BaseModel, Field
 from harness.api.auth import get_current_user
 from harness.billing import dodo
 from harness.billing.entitlements import TRIAL_STATUSES, billing_enabled, messages_for, standing
-from harness.billing.plans import PLANS
+from harness.billing.plans import PLANS, RECOMMENDED, prices_for, product_key, region_for_timezone
 from harness.db import billing as billing_db
 from harness.logging import log
 
@@ -38,11 +38,64 @@ def trial_days_for(account, product: str) -> int:
     return days
 
 
+def offer_region(user_id: str) -> str:
+    """Which prices to offer: Indian ones when the user's (device-following)
+    timezone is India's, and only if the Indian Plus product is set up."""
+    from harness.db.settings import get_settings as user_settings
+    try:
+        region = region_for_timezone(user_settings(user_id).timezone)
+    except Exception:  # noqa: BLE001 - no settings row: international prices
+        return "intl"
+    return region if region == "intl" or dodo.product_id_for("plus_in") else "intl"
+
+
+def recommended_plan(user_id: str) -> str | None:
+    """The plan suggested for the user's persona (None until they pick one)."""
+    from harness.db.settings import get_settings as user_settings
+    try:
+        return RECOMMENDED.get(user_settings(user_id).persona or "")
+    except Exception:  # noqa: BLE001 - no settings row: no suggestion
+        return None
+
+
+def _plans_for(region: str) -> list[dict]:
+    """Each plan with its price (monthly and yearly) and allowance at ``region``'s prices."""
+    out = []
+    for p in PLANS.values():
+        d = p.to_dict()
+        d["monthly_allowance_usd"] = p.allowance_usd(region)
+        d["prices"] = prices_for(p.id, region)
+        # yearly is only offered once its Dodo product exists
+        if p.id != "free" and not dodo.product_id_for(product_key(p.id, region, "year")):
+            d["prices"].pop("year", None)
+        out.append(d)
+    return out
+
+
+def public_region(tz: str) -> str:
+    """offer_region for a visitor with no account: the device's timezone, and
+    Indian prices only when the Indian Plus product is set up, so the homepage
+    never shows a price that checkout wouldn't charge."""
+    region = region_for_timezone(tz)
+    return region if region == "intl" or dodo.product_id_for("plus_in") else "intl"
+
+
+@router.get("/billing/prices")
+async def public_prices(tz: str = "") -> dict:
+    """Plans and prices for the signed-out homepage, for the visitor's region
+    (from their device timezone). Public: nothing personal goes in or out."""
+    from harness.config import get_settings
+    region = public_region(tz[:64])
+    return {"region": region, "trial_days": max(get_settings().billing_trial_days, 0), "plans": _plans_for(region)}
+
+
 @router.get("/billing")
 async def billing(user: dict = Depends(get_current_user)) -> dict:
-    plans = [p.to_dict() for p in PLANS.values()]
+    region = await asyncio.to_thread(offer_region, user["user_id"])
+    plans = _plans_for(region)
+    recommended = await asyncio.to_thread(recommended_plan, user["user_id"])
     if not billing_enabled():
-        return {"enabled": False, "plan": "free", "plans": plans}
+        return {"enabled": False, "plan": "free", "plans": plans, "recommended_plan": recommended}
     st = await asyncio.to_thread(standing, user["user_id"])
     a = st.account
     allowance = float(st.allowance)
@@ -71,26 +124,45 @@ async def billing(user: dict = Depends(get_current_user)) -> dict:
         "credits_usd": float(st.credits),
         "free_pool_exhausted": st.pool_exhausted,
         "has_portal": bool(a.billing_customer_id),
+        "region": region,                         # prices offered: "in" (₹) or "intl" ($)
+        "plan_region": a.plan_region,             # what the current plan was bought at
+        "plan_interval": a.plan_interval,
+        "recommended_plan": recommended,          # from the persona: "Recommended for you" on that plan
         "plans": plans,
     }
 
 
 class CheckoutRequest(BaseModel):
     product: Literal["plus", "pro", "topup"]
+    interval: Literal["month", "year"] = "month"
+
+
+def checkout_product(product: str, interval: str, region: str) -> str:
+    """The Dodo product to sell: the regional / yearly variant when it is set
+    up, else the closest one that is (yearly -> monthly, Indian -> international)."""
+    if product == "topup":
+        return "topup"
+    for r, i in ((region, interval), (region, "month"), ("intl", interval), ("intl", "month")):
+        key = product_key(product, r, i)
+        if dodo.product_id_for(key):
+            return key
+    return product
 
 
 @router.post("/billing/checkout")
 async def checkout(req: CheckoutRequest, user: dict = Depends(get_current_user)) -> dict:
     account = await asyncio.to_thread(billing_db.get_account, user["user_id"])
     trial_days = trial_days_for(account, req.product)
+    region = await asyncio.to_thread(offer_region, user["user_id"])
+    sold = checkout_product(req.product, req.interval, region)
     try:
-        url = await dodo.create_checkout(req.product, user["user_id"], user.get("email"), trial_days=trial_days)
+        url = await dodo.create_checkout(sold, user["user_id"], user.get("email"), trial_days=trial_days)
     except dodo.BillingNotConfigured as e:
         raise HTTPException(status_code=503, detail=str(e))
     except httpx.HTTPError as e:
         log.warning("dodo checkout failed", error=str(e))
         raise HTTPException(status_code=502, detail="Could not start checkout. Try again shortly.")
-    return {"url": url, "trial_days": trial_days}
+    return {"url": url, "trial_days": trial_days, "product": sold}
 
 
 @router.post("/billing/portal")

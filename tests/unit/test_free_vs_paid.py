@@ -59,10 +59,10 @@ def test_free_cannot_schedule_daily_but_the_one_tap_brief_becomes_weekly(billing
     with pytest.raises(HTTPException) as e:
         settings_route._fit_schedule("7", _task(daily_at="08:00"))
     assert e.value.status_code == 402 and e.value.detail["plan_needed"] == "plus"
-    assert settings_route._fit_schedule("7", _task(daily_at="08:00", fit_plan=True)) == (tasks_db.WEEK_MINUTES, "08:00")
-    assert settings_route._fit_schedule("7", _task(every_minutes=tasks_db.WEEK_MINUTES)) == (tasks_db.WEEK_MINUTES, None)
+    assert settings_route._fit_schedule("7", _task(daily_at="08:00", fit_plan=True)) == (tasks_db.WEEK_MINUTES, "08:00", None)
+    assert settings_route._fit_schedule("7", _task(every_minutes=tasks_db.WEEK_MINUTES)) == (tasks_db.WEEK_MINUTES, None, None)
     billing["accounts"]["7"] = Account(user_id="7", plan="plus")
-    assert settings_route._fit_schedule("7", _task(daily_at="08:00")) == (None, "08:00")
+    assert settings_route._fit_schedule("7", _task(daily_at="08:00")) == (None, "08:00", None)
 
 
 def test_weekly_runs_at_the_next_hh_mm_then_every_seven_days():
@@ -88,7 +88,8 @@ def test_checkout_offers_the_trial_once(billing, monkeypatch):
 
     monkeypatch.setattr(billing_route.dodo, "create_checkout", fake_checkout)
     c = _app(billing_route.router)
-    assert c.post("/billing/checkout", json={"product": "plus"}).json() == {"url": "https://checkout.example/1", "trial_days": 7}
+    assert c.post("/billing/checkout", json={"product": "plus"}).json() == {
+        "url": "https://checkout.example/1", "trial_days": 7, "product": "plus"}
     assert c.post("/billing/checkout", json={"product": "pro"}).json()["trial_days"] == 0
     billing["accounts"]["7"] = Account(user_id="7", plan="free", billing_subscription_id="sub_old")
     assert c.post("/billing/checkout", json={"product": "plus"}).json()["trial_days"] == 0   # had a plan before

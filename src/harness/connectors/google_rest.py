@@ -11,7 +11,7 @@ exposes it to the model."""
 
 import base64
 from collections.abc import Awaitable, Callable
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, date, datetime, timedelta
 from email.message import EmailMessage
 
 import httpx
@@ -166,6 +166,49 @@ def free_slots(start: datetime, end: datetime, busy: list[tuple[datetime, dateti
     return out
 
 
+def upcoming(people: list[dict], today: date, days: int = 7) -> list[dict]:
+    """Birthdays from People API ``connections`` falling within ``days`` of
+    ``today`` (inclusive), soonest first. A 29 February birthday is shown on
+    the 28th in other years; the year, when Google has it, gives the age."""
+    out = []
+    for p in people:
+        name = ((p.get("names") or [{}])[0].get("displayName") or "").strip()
+        bday = next((b.get("date") for b in p.get("birthdays", []) if (b.get("date") or {}).get("month")), None)
+        if not name or not bday or not bday.get("day"):
+            continue
+        month, day = int(bday["month"]), int(bday["day"])
+        for year in (today.year, today.year + 1):
+            try:
+                when = date(year, month, day)
+            except ValueError:               # 29 Feb in a non-leap year
+                when = date(year, 2, 28)
+            if when >= today:
+                break
+        in_days = (when - today).days
+        if in_days <= days:
+            item = {"name": name, "date": when.isoformat(), "in_days": in_days}
+            if bday.get("year"):
+                item["turns"] = when.year - int(bday["year"])
+            out.append(item)
+    return sorted(out, key=lambda b: (b["in_days"], b["name"]))
+
+
+async def upcoming_birthdays(user_id: str, today: date, days: int = 7,
+                             http: httpx.AsyncClient | None = None) -> list[dict]:
+    """The user's saved contacts with a birthday in the next ``days`` days
+    (Contacts scope). Reads at most 3,000 contacts."""
+    people: list[dict] = []
+    params = {"personFields": "names,birthdays", "pageSize": 1000}
+    for _ in range(3):
+        r = await _request(http, user_id, "contacts", "GET", f"{PEOPLE}/people/me/connections", params=params)
+        body = r.json()
+        people += body.get("connections", [])
+        if not body.get("nextPageToken"):
+            break
+        params = {**params, "pageToken": body["nextPageToken"]}
+    return upcoming(people, today, days)
+
+
 def make_google_tools(user_id: str, http: httpx.AsyncClient | None = None) -> list[Tool]:
     async def call(product: str, method: str, url: str, **kw) -> httpx.Response:
         return await _request(http, user_id, product, method, url, **kw)
@@ -190,6 +233,20 @@ def make_google_tools(user_id: str, http: httpx.AsyncClient | None = None) -> li
             ui.append(_ui_message(m))
         return ToolOutput(f"{len(out)} message(s) for query {q!r}:\n\n" + "\n".join(out),
                           ui={"kind": "gmail_messages", "query": q, "messages": ui})
+
+    async def gmail_replies_owed() -> str | ToolOutput:
+        from harness.connectors.replies import OWED_AFTER_H, replies_owed
+        items = await replies_owed(user_id, datetime.now(UTC), http)
+        if not items:
+            return f"Nobody has been waiting more than {OWED_AFTER_H} hours for a reply from the user."
+        lines = [f"- {r['from']} <{r['email']}>: {r['subject']} — waiting {r['waiting_days']} day(s) [thread {r['thread_id']}]"
+                 for r in items]
+        return ToolOutput(f"{len(items)} email(s) waiting for the user's reply, longest first "
+                          "(use gmail__get_thread for the full text before drafting):\n" + "\n".join(lines),
+                          ui={"kind": "gmail_messages", "query": "replies you owe",
+                              "messages": [{"id": r["thread_id"], "thread_id": r["thread_id"], "from": r["from"],
+                                            "subject": r["subject"], "snippet": r["snippet"], "date": r["received"],
+                                            "labels": [], "unread": r["unread"]} for r in items]})
 
     async def gmail_get_thread(thread_id: str) -> str:
         r = await call("gmail", "GET", f"{GMAIL}/threads/{thread_id}", params={"format": "full"})
@@ -494,6 +551,12 @@ def make_google_tools(user_id: str, http: httpx.AsyncClient | None = None) -> li
              parameter={**obj, "properties": {"query": {"type": "string"}, "max_results": {"type": "integer", "minimum": 1, "maximum": 25},
                                               "label": {"type": "string", "description": "e.g. INBOX, UNREAD, STARRED"}}},
              handler=_handler("gmail", gmail_search)),
+        Tool(name="gmail__replies_owed",
+             description="Emails waiting for the user's reply: people who wrote to them directly (not newsletters or "
+                         "notifications) and haven't had an answer for over a day, longest wait first. Use for "
+                         "'who am I waiting to reply to', 'what do I owe', and before drafting catch-up replies.",
+             parameter={**obj, "properties": {}},
+             handler=_handler("gmail", gmail_replies_owed)),
         Tool(name="gmail__get_thread", description="Full text of a Gmail thread (all messages) by thread id.",
              parameter={**obj, "properties": {"thread_id": {"type": "string"}}, "required": ["thread_id"]},
              handler=_handler("gmail", gmail_get_thread)),
@@ -507,12 +570,12 @@ def make_google_tools(user_id: str, http: httpx.AsyncClient | None = None) -> li
                         "required": ["to", "subject", "body"]},
              handler=_handler("gmail", gmail_create_draft)),
         Tool(name="gmail__send_message",
-             description="SEND an email from the user's Gmail. Only when the user explicitly asked to send. Requires the user's approval.",
+             description="SEND an email from the user's Gmail. Only when the user explicitly asked to send. The user approves it on a card before it runs, so call it when asked.",
              parameter={**obj, "properties": {"to": {"type": "string"}, "subject": {"type": "string"}, "body": {"type": "string"},
                                               "cc": {"type": "string"}, "thread_id": {"type": "string", "description": "reply in this thread"}},
                         "required": ["to", "subject", "body"]},
              handler=_handler("gmail", gmail_send_message)),
-        Tool(name="gmail__send_draft", description="Send an existing Gmail draft by draft id. Requires the user's approval.",
+        Tool(name="gmail__send_draft", description="Send an existing Gmail draft by draft id. The user approves it on a card before it runs, so call it when asked.",
              parameter={**obj, "properties": {"draft_id": {"type": "string"}}, "required": ["draft_id"]},
              handler=_handler("gmail", gmail_send_draft)),
         Tool(name="calendar__list_events",
@@ -521,7 +584,7 @@ def make_google_tools(user_id: str, http: httpx.AsyncClient | None = None) -> li
                                               "calendar_id": {"type": "string"}, "query": {"type": "string"}}},
              handler=_handler("calendar", calendar_list_events)),
         Tool(name="calendar__create_event",
-             description="Create a calendar event. start/end are RFC3339 date-times (or YYYY-MM-DD for all-day). Requires the user's approval.",
+             description="Create a calendar event. start/end are RFC3339 date-times (or YYYY-MM-DD for all-day). The user approves it on a card before it runs, so call it when asked.",
              parameter={**obj, "properties": {"summary": {"type": "string"}, "start": {"type": "string"}, "end": {"type": "string"},
                                               "description": {"type": "string"}, "attendees": {"type": "array", "items": {"type": "string"}},
                                               "location": {"type": "string"}, "calendar_id": {"type": "string"}, "timezone": {"type": "string"}},
@@ -537,7 +600,7 @@ def make_google_tools(user_id: str, http: httpx.AsyncClient | None = None) -> li
         Tool(name="docs__get_document", description="Read a Google Doc's text by document id.",
              parameter={**obj, "properties": {"document_id": {"type": "string"}, "max_chars": {"type": "integer"}}, "required": ["document_id"]},
              handler=_handler("docs", docs_get_document)),
-        Tool(name="docs__append_text", description="Append text to the end of a Google Doc. Requires the user's approval.",
+        Tool(name="docs__append_text", description="Append text to the end of a Google Doc. The user approves it on a card before it runs, so call it when asked.",
              parameter={**obj, "properties": {"document_id": {"type": "string"}, "text": {"type": "string"}}, "required": ["document_id", "text"]},
              handler=_handler("docs", docs_append_text)),
         Tool(name="calendar__find_free_time",
@@ -552,7 +615,7 @@ def make_google_tools(user_id: str, http: httpx.AsyncClient | None = None) -> li
              handler=_handler("calendar", calendar_find_free_time)),
         Tool(name="calendar__update_event",
              description="Change an event (move it, rename it, change place/notes) by event id from calendar__list_events. "
-                         "Only pass the fields that change. Requires the user's approval.",
+                         "Only pass the fields that change. The user approves it on a card before it runs, so call it when asked.",
              parameter={**obj, "properties": {"event_id": {"type": "string"}, "start": {"type": "string"}, "end": {"type": "string"},
                                               "summary": {"type": "string"}, "location": {"type": "string"},
                                               "description": {"type": "string"}, "timezone": {"type": "string"},
@@ -560,7 +623,7 @@ def make_google_tools(user_id: str, http: httpx.AsyncClient | None = None) -> li
                         "required": ["event_id"]},
              handler=_handler("calendar", calendar_update_event)),
         Tool(name="calendar__delete_event",
-             description="Delete (cancel) an event by event id. Requires the user's approval.",
+             description="Delete (cancel) an event by event id. The user approves it on a card before it runs, so call it when asked.",
              parameter={**obj, "properties": {"event_id": {"type": "string"}, "calendar_id": {"type": "string"}},
                         "required": ["event_id"]},
              handler=_handler("calendar", calendar_delete_event)),
@@ -575,13 +638,13 @@ def make_google_tools(user_id: str, http: httpx.AsyncClient | None = None) -> li
              handler=_handler("sheets", sheets_read)),
         Tool(name="sheets__append_rows",
              description="Add rows to the end of a Google Sheet tab (`sheet` = tab name, default the first). Read the "
-                         "sheet first so the columns line up. Requires the user's approval.",
+                         "sheet first so the columns line up. The user approves it on a card before it runs, so call it when asked.",
              parameter={**obj, "properties": {"spreadsheet_id": {"type": "string"}, "sheet": {"type": "string"},
                                               "rows": {"type": "array", "items": {"type": "array", "items": {}}}},
                         "required": ["spreadsheet_id", "rows"]},
              handler=_handler("sheets", sheets_append_rows)),
         Tool(name="sheets__create_spreadsheet",
-             description="Create a new Google Sheet, optionally with starting rows (first row = header). Requires the user's approval.",
+             description="Create a new Google Sheet, optionally with starting rows (first row = header). The user approves it on a card before it runs, so call it when asked.",
              parameter={**obj, "properties": {"title": {"type": "string"},
                                               "rows": {"type": "array", "items": {"type": "array", "items": {}}}},
                         "required": ["title"]},

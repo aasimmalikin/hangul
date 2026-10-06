@@ -102,6 +102,10 @@ def test_task_routes_with_fake_store(monkeypatch):
     monkeypatch.setattr(settings_route.tasks_db, "list_tasks", lambda uid: [t for t in rows.values() if t.user_id == int(uid)])
     monkeypatch.setattr(settings_route.tasks_db, "delete_task", lambda uid, tid: rows.pop(tid, None) is not None if tid in rows and rows[tid].user_id == int(uid) else False)
     monkeypatch.setattr(settings_route, "get_settings", lambda uid: Settings())
+
+    async def connected(uid):
+        return []
+    monkeypatch.setattr("harness.connectors.auto.connected_apps", connected)
     app = FastAPI()
     app.include_router(settings_route.router)
     app.dependency_overrides[get_current_user] = lambda: {"user_id": "7", "role": "user"}

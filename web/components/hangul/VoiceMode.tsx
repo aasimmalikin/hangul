@@ -1,14 +1,17 @@
 "use client"
 
 import { useCallback, useEffect, useRef, useState } from "react"
-import { matchOption, Recorder, sharedSpeaker, transcribe, VoiceFailure, yesOrNo } from "@/lib/voice"
+import { matchOption, Recorder, sharedSpeaker, transcribe, VoiceFailure, yesOrNo, type VoiceMeter } from "@/lib/voice"
+import { SpeakingStag } from "@/components/hangul/SpeakingStag"
 import type { ApiFailure } from "@/lib/apiError"
 
 /**
  * Hands-free voice mode: a full-screen conversation. It listens, sends what
  * the user said as a normal chat message, reads the answer aloud, and listens
- * again. An approval is asked out loud ("…say yes or no") and a clarifying
- * question reads its options. Tap the orb to interrupt or to talk again.
+ * again -- no button: a turn ends when the user stops talking. An approval
+ * is asked out loud ("…say yes or no") and a clarifying question reads its
+ * options. After about 40 s of silence the mic turns off until the orb is
+ * tapped; tapping it while Hangul speaks interrupts.
  *
  * It drives the chat page through callbacks, so everything (tools, approvals,
  * history, billing) is exactly the text chat's.
@@ -18,11 +21,15 @@ export type VoicePause =
   | { kind: "approval"; key: string; summary: string }
   | { kind: "choice"; key: string; question: string; options: string[] }
 
-type Phase = "idle" | "listening" | "transcribing" | "thinking" | "speaking"
+/** Silent listens (≈10 s each) before the mic is switched off to wait for a tap. */
+const QUIET_ROUNDS = 4
+
+type Phase = "idle" | "asking" | "listening" | "transcribing" | "thinking" | "speaking"
 
 const PHASE_TEXT: Record<Phase, string> = {
   idle: "Tap to talk",
-  listening: "Listening…",
+  asking: "Allow microphone access to start",
+  listening: "Listening… just talk, I'll answer when you stop",
   transcribing: "Got it…",
   thinking: "Thinking…",
   speaking: "Speaking — tap to interrupt",
@@ -44,11 +51,12 @@ export function VoiceMode({ open, onClose, send, streaming, reply, pause, decide
 }) {
   const [phase, setPhase] = useState<Phase>("idle")
   const [heard, setHeard] = useState("")
-  const [level, setLevel] = useState(0)
+  const micLevel = useRef(0)                                       // read each frame by the stag
   const rec = useRef<Recorder | null>(null)
   const waitingFor = useRef<{ after: string | null } | null>(null)   // sent; waiting for a new reply
   const pending = useRef<VoicePause | null>(null)                  // asked out loud; awaiting yes/no / option
   const alive = useRef(false)
+  const quietRounds = useRef(0)                                    // listens in a row with no speech
   // listen() re-arms itself after each turn; it calls the latest version via this ref
   const again = useRef<() => void>(() => {})
 
@@ -67,18 +75,26 @@ export function VoiceMode({ open, onClose, send, streaming, reply, pause, decide
     if (!alive.current) return
     sharedSpeaker().stop()
     const r = (rec.current = new Recorder())
-    setPhase("listening")
-    setLevel(0)
+    setPhase("asking")                       // the browser may be showing its permission prompt
+    micLevel.current = 0
     let recording
     try {
-      recording = await r.start({ silenceMs: 1200, noSpeechMs: 9000, maxMs: 90_000, onLevel: setLevel })
+      recording = await r.start({ silenceMs: 1200, noSpeechMs: 10_000, maxMs: 90_000, onLevel: (l) => { micLevel.current = l },
+        onStart: () => setPhase("listening") })
     } catch {
       onFailure({ code: "mic_blocked", detail: "Allow microphone access in your browser to use voice mode." })
       setPhase("idle")
       return
     }
     if (!alive.current) return
-    if (!recording) { setPhase("idle"); return }      // nothing said: wait for a tap
+    if (!recording) {
+      // nothing said: keep listening for a while, then turn the mic off and wait for a tap
+      if (++quietRounds.current < QUIET_ROUNDS) return again.current()
+      quietRounds.current = 0
+      setPhase("idle")
+      return
+    }
+    quietRounds.current = 0
     setPhase("transcribing")
     let text = ""
     try { text = await transcribe(recording) } catch (e) { fail(e); return }
@@ -162,7 +178,12 @@ export function VoiceMode({ open, onClose, send, streaming, reply, pause, decide
     if (phase === "listening") rec.current?.stop()           // done talking
     else if (phase === "speaking" || phase === "idle") void listen()
   }
-  const scale = phase === "listening" ? 1 + Math.min(level * 6, 0.45) : phase === "speaking" ? 1.08 : 1
+  // what moves the stag: Hangul's voice while speaking, the user's while listening
+  const meter = (): VoiceMeter | null => {
+    if (phase === "speaking") return sharedSpeaker().meter()
+    const l = Math.min(1, micLevel.current * 8)
+    return { level: l, bands: [l, l * 0.8, l * 0.6, l * 0.4, l * 0.3] }
+  }
 
   return (
     <div role="dialog" aria-label="Voice mode" data-testid="voice-mode" data-phase={phase}
@@ -173,23 +194,21 @@ export function VoiceMode({ open, onClose, send, streaming, reply, pause, decide
         <i className="ti ti-x" style={{ fontSize: 16 }} /> Exit
       </button>
 
-      {/* The button stays still (an easy target); the ring behind it pulses with the voice. */}
-      <div style={{ position: "relative", width: 160, height: 160 }}>
-        <div aria-hidden style={{ position: "absolute", inset: 0, borderRadius: "50%", background: "var(--surface-hover)",
-          transform: `scale(${scale + 0.12})`, transition: "transform 120ms ease-out", opacity: phase === "idle" ? 0 : 1 }} />
-        <button type="button" onClick={tapOrb} aria-label={PHASE_TEXT[phase]} data-testid="voice-orb"
-          style={{ position: "absolute", inset: 0, borderRadius: "50%", border: 0, cursor: "pointer",
-            background: phase === "listening" ? "var(--fg)" : "var(--surface-solid)",
-            color: phase === "listening" ? "var(--bg)" : "var(--fg)", transition: "background 200ms",
-            display: "grid", placeItems: "center", boxShadow: "0 0 0 1px var(--surface-border)" }}>
-          <i className={`ti ${phase === "thinking" || phase === "transcribing" ? "ti-loader-2 animate-spin"
-            : phase === "speaking" ? "ti-volume" : "ti-microphone"}`} style={{ fontSize: 44 }} />
-        </button>
-      </div>
+      {/* Hangul itself is the button: tap to talk, to finish, or to interrupt. */}
+      <button type="button" onClick={tapOrb} aria-label={PHASE_TEXT[phase]} data-testid="voice-orb"
+        style={{ border: 0, padding: 0, background: "none", cursor: "pointer", borderRadius: "50%", WebkitTapHighlightColor: "transparent" }}>
+        <SpeakingStag phase={phase} meter={meter} size={220} />
+      </button>
 
       <div style={{ textAlign: "center", maxWidth: 480 }}>
         <p className="h-display" style={{ fontSize: 20, margin: 0 }} data-testid="voice-status">{PHASE_TEXT[phase]}</p>
         {heard && <p className="h-muted" style={{ fontSize: 14, margin: "10px 0 0" }}>“{heard}”</p>}
+        {phase === "listening" && (
+          <button type="button" className="h-btn-solid" onClick={() => rec.current?.stop()} data-testid="voice-stop"
+            style={{ marginTop: 16, gap: 6, background: "var(--err)" }}>
+            <i className="ti ti-player-stop-filled" style={{ fontSize: 13 }} /> Stop
+          </button>
+        )}
         {phase === "idle" && (
           <p className="h-muted" style={{ fontSize: 12, margin: "10px 0 0" }}>
             Try “what&apos;s on my shopping list?” or “remind me to call mom at 7”.

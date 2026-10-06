@@ -6,6 +6,7 @@ recall(): an on-demand tool the agent calls for a fuller lookup.
 from sqlalchemy import select
 from harness.db.base import SessionLocal
 from harness.db.models import UserMemory
+from harness.provenance import stamp
 
 # user_id arrives as the JWT ``sub`` (a string) but the column is the integer
 # users.id, so every query casts at this boundary -- psycopg will not coerce.
@@ -13,7 +14,7 @@ from harness.db.models import UserMemory
 def remember(user_id: str, content: str, kind: str = "preference") -> None:
     """Store a new memory for the user."""
     with SessionLocal() as session:
-        session.add(UserMemory(user_id = int(user_id), content = content, kind = kind))
+        session.add(UserMemory(user_id = int(user_id), content = content, kind = kind, **stamp()))
         session.commit()
 
 def list_active(user_id: str)-> list[UserMemory]:

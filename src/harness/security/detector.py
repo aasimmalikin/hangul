@@ -58,11 +58,16 @@ FAMILIES: list[tuple[str, float, list[str]]] = [
         r"\b(the\s+)?user\s+(has\s+)?(pre-?approved|already\s+approved|consented|authorised|authorized)\b",
     ]),
     ("hidden_text", 0.6, [
-        r"<!--.{20,}?-->", r"<(span|div|p)[^>]*(display\s*:\s*none|visibility\s*:\s*hidden|font-size\s*:\s*0|color\s*:\s*(white|#fff))",
+        r"<(span|div|p)[^>]*(display\s*:\s*none|visibility\s*:\s*hidden|font-size\s*:\s*0|color\s*:\s*(white|#fff))",
         r"\[\s*(hidden|secret|invisible)\s*(instructions?|text|note)\s*\]",
     ]),
 ]
 COMPILED = [(name, w, [re.compile(p, re.IGNORECASE | re.DOTALL) for p in pats]) for name, w, pats in FAMILIES]
+
+# An HTML comment is only hidden *instructions* when what it hides reads like them:
+# GitHub bots and Markdown templates put harmless markers in comments
+# ("<!-- codex-pull-request-review-summary -->") on most busy pull requests.
+HTML_COMMENT = re.compile(r"<!--(.{20,}?)-->", re.DOTALL)
 
 BASE64_BLOB = re.compile(r"(?<![A-Za-z0-9+/])[A-Za-z0-9+/]{80,}={0,2}(?![A-Za-z0-9+/])")
 
@@ -134,6 +139,14 @@ def scan(text: str, *, decode: bool = True) -> Finding:
             m = hit.search(clean)
             reasons.append(f"{name}: '{clean[max(0, m.start()-20):m.end()+20].strip()[:90]}'")
             miss *= 1 - weight
+    if "hidden_text" not in families:
+        for m in HTML_COMMENT.finditer(clean):
+            inner = scan(m.group(1), decode=False)
+            if inner.score >= 0.45:
+                families.append("hidden_text")
+                reasons.append(f"hidden_text: instructions inside an HTML comment ({inner.families})")
+                miss *= 1 - 0.6
+                break
     decoded_hits: list[str] = []
     if decode:
         for s in _decode_blobs(clean):

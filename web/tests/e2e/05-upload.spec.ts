@@ -29,10 +29,14 @@ test.describe("documents", () => {
     await chooser.setFiles(pdf("from-landing.pdf"))
     await expect(page.getByText("from-landing.pdf")).toBeVisible()
     await page.getByPlaceholder(/Ask/).fill("summarise")
+    // the document rides along to /chat in the URL. The chat page swaps that URL for its own
+    // (?c=…) and clears the chip as soon as the question is sent, either of which can happen
+    // before a check runs, so record every URL the page visits and look for it there.
+    const visited: string[] = []
+    page.on("framenavigated", (f) => { if (f === page.mainFrame()) visited.push(f.url()) })
     await page.keyboard.press("Enter")
-    await expect(page).toHaveURL(/\/chat/)
-    await expect(page.getByText("from-landing.pdf")).toBeVisible()
     await expectReply(page, "summarise")
+    expect(visited.some((u) => /\/chat\?.*doc=from-landing\.pdf/.test(u)), visited.join(" | ")).toBe(true)
   })
 
   test("wrong type and oversize files are refused by the BFF, not the backend", async ({ page }) => {
@@ -53,9 +57,15 @@ test.describe("documents", () => {
     await page.goto("/chat")
     await page.waitForLoadState("networkidle") // let the proxy's cookie refresh land first
     await context.clearCookies()
-    // Either the client already noticed (session refetch) and gates the +,
-    // or it still believes it is signed in and the upload's 401 gates it.
-    await page.getByRole("button", { name: "Add" }).click()
+    // Either the client already noticed (session refetch) and gates the + (or has
+    // already opened the sign-in box on its own), or it still believes it is signed
+    // in and the upload's 401 gates it.
+    const opened = await page.getByRole("button", { name: "Add" }).click({ timeout: 4000 }).then(() => true, () => false)
+    if (!opened) {                                        // the sign-in box got there first and covers the +
+      await expect(page.getByRole("dialog")).toContainText(/Sign in|session has expired/)
+      expect((await backendState()).uploads).toHaveLength(0)
+      return
+    }
     const docs = page.getByRole("menuitem", { name: "Files & photos" })
     if (await docs.isVisible().catch(() => false)) {
       const [chooser] = await Promise.all([page.waitForEvent("filechooser"), docs.click()])

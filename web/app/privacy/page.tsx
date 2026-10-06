@@ -19,6 +19,9 @@ export default function PrivacyPage() {
         <li><b>Your account:</b> your name, email address and profile picture from the way you sign in (Google or an email link).</li>
         <li><b>What you ask and what you add:</b> your messages and the assistant&apos;s replies, files and photos you upload (and the text extracted from them), voice notes you upload, and the reminders, lists, notes, memories and scheduled tasks you create.</li>
         <li><b>Voice:</b> when you talk to {product}, the recording is sent to be turned into text and is <b>not stored</b>; only the text of your message is kept, like a typed message. Voice notes you choose to upload are stored as files.</li>
+        <li><b>WhatsApp:</b> if you link it, your WhatsApp number and when you last messaged {product} (WhatsApp only lets us reply freely for 24 hours after that). Your WhatsApp messages are kept like any other conversation.</li>
+        <li><b>Notifications:</b> if you turn them on for a phone or computer, the address your browser gives us for sending to it (and the keys that encrypt what we send), plus the kind of browser. Turning them off, or removing the app, deletes it.</li>
+        <li><b>Your morning check-in:</b> if you answer &ldquo;How are you feeling today?&rdquo; on your home screen, the answer (great, okay, tired or swamped) is kept with the date, to count the mornings you&apos;ve checked in and to keep that day&apos;s plans lighter or shorter. You never have to answer.</li>
         <li><b>Your preferences:</b> the name you want to be called, your city, timezone (taken from your device unless you set one), tone, language and custom instructions.</li>
         <li><b>Connected apps:</b> if you connect Google, GitHub, Notion or Slack, {product} reads from them only when a request needs it (for example, your calendar when you ask what&apos;s on today), and writes to them only after you approve each action.</li>
         <li><b>Billing:</b> your plan, its status and renewal date, and a record of usage and credits. Payments are handled by Dodo Payments; <b>we never see or store your card details</b>.</li>
@@ -29,6 +32,7 @@ export default function PrivacyPage() {
       <ul>
         <li>To answer your requests and do the things you ask (set reminders, draft emails, create files…).</li>
         <li>To remember context you&apos;ve shared, so later answers fit you.</li>
+        <li>To suggest what you usually ask at this time of day when you tap the stag on your home screen. This is worked out from your own messages of the last 30 days each time you open the app; nothing extra is stored and it never leaves {product}.</li>
         <li>To send you the emails you ask for (reminders, your morning brief) and essential account messages.</li>
         <li>To run billing, enforce plan limits and prevent abuse and security threats.</li>
       </ul>
@@ -42,8 +46,10 @@ export default function PrivacyPage() {
         <li><b>GitHub, Notion, Slack</b> — only if you connect them.</li>
         <li><b>Dodo Payments</b> — processes payments as our merchant of record.</li>
         <li><b>Resend</b> — delivers the emails you ask for.</li>
+        <li><b>Your browser&apos;s notification service</b> (Google for Chrome and Android, Apple for Safari and iPhone, Mozilla for Firefox, Microsoft for Edge on Windows) — only if you turn notifications on: it carries your reminders and brief to your device. They are encrypted so that service can&apos;t read them.</li>
+        <li><b>Meta (WhatsApp)</b> — only if you link WhatsApp: your WhatsApp number, and the messages, voice notes, photos and files you exchange with {product} there, pass through Meta&apos;s WhatsApp service. On Plus and Pro, your reminders and brief are sent through it too.</li>
         <li><b>Tavily</b> — receives web search queries when the assistant searches the web.</li>
-        <li><b>OpenStreetMap services, Open-Meteo and Frankfurter</b> — receive place names, cities or currency codes for maps, weather and currency conversions (not your account details).</li>
+        <li><b>OpenStreetMap services, Open-Meteo and Frankfurter</b> — receive place names, cities or currency codes for maps, weather and currency conversions (not your account details). If you save a home address, it and the place of your next calendar event are sent to OpenStreetMap&apos;s routing services to work out when to leave.</li>
         <li><b>Our hosting and database providers</b>, who store and run the service for us.</li>
         <li>Authorities, where the law requires it.</li>
       </ul>

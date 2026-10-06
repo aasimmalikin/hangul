@@ -17,7 +17,8 @@ GOOGLE_PRODUCT_INSTRUCTIONS: dict[str, str] = {
     "gmail": ("The Gmail connector is ON: gmail__* tools act on the user's own mailbox. Read freely when the "
               "user asks about their mail; drafts are fine, sending pauses for their approval -- say what you "
               "are about to send before calling it. Never forward or quote mail to third parties unasked. "
-              "Gmail search syntax works in gmail__search_messages (newer_than:1d, from:, is:unread, subject:)."),
+              "Gmail search syntax works in gmail__search_messages (newer_than:1d, from:, is:unread, subject:). "
+              "For emails waiting on the user's reply, use gmail__replies_owed rather than searching."),
     "calendar": ("The Google Calendar connector is ON: calendar__* tools act on the user's own calendar. List "
                  "events and find free time freely (calendar__find_free_time, in the user's timezone); creating, "
                  "moving or deleting an event pauses for their approval -- say what you are about to change "
@@ -55,12 +56,15 @@ GOOGLE_PRODUCTS = ("gmail", "calendar", "drive", "docs", "sheets", "contacts")
 
 WORK_APP_INSTRUCTIONS = {
     "github": ("The GitHub connector is ON: github__* tools search and read the user's issues and pull requests "
-               "(github__my_work for their own queue). Opening issues and commenting pause for approval -- show "
-               "the text first."),
+               "(github__my_work: kind=all for 'what's waiting on me', kind=repos for 'my repos'), read files, a "
+               "PR's changes and its CI. Use them for github.com links too. To open an issue or comment, call the "
+               "tool with the full text: the user approves it on a card. They can't close, merge, label or "
+               "assign; say so plainly."),
     "notion": ("The Notion connector is ON: notion__* tools search and read pages shared with the user's Hangul "
-               "integration. Appending and creating pages pause for approval -- show the text first."),
+               "integration. To append or create a page, call the tool with the full text: the user approves it on a card."),
     "slack": ("The Slack connector is ON: slack__* tools search and read the user's Slack. Posting a message "
-              "pauses for approval -- show the exact text and channel first. Never post on the user's behalf unasked."),
+              "is approved by the user on a card: call the tool with the exact text and channel. Never post on the "
+              "user's behalf unasked."),
 }
 
 

@@ -2,7 +2,8 @@ import logging
 import asyncio
 from pathlib import Path
 from contextlib import asynccontextmanager
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
+from fastapi.responses import JSONResponse
 from harness.logging import configure_logging, log
 from harness.config import get_settings
 from harness.db.base import warm_pool
@@ -10,9 +11,10 @@ from harness.api.routes import ask, health, observability, upload, quality, appr
 from harness.mcp.config import load_server_configs
 from harness.mcp.manager import MCPManager, set_current as set_mcp_manager
 from harness.api.routes.ask import _registry
-from harness.api.routes import memory, episodes, models, vault as vault_routes, admin, connectors, integrations, settings as settings_routes, billing as billing_routes, personal as personal_routes, voice as voice_routes, files as files_routes, today as today_routes
-from harness.api.routes import conversations
+from harness.api.routes import memory, episodes, models, vault as vault_routes, admin, connectors, integrations, settings as settings_routes, billing as billing_routes, personal as personal_routes, voice as voice_routes, files as files_routes, today as today_routes, whatsapp as whatsapp_routes, kept as kept_routes, push as push_routes
+from harness.api.routes import approval_links as approval_link_routes, conversations
 from harness import scheduler
+from harness.providers.base import ModelUnavailable
 from harness.providers.registry import get_model
 from harness.vault.bootstrap import build_vault, shutdown_vault
 from harness.security import SecurityGuard, set_guard
@@ -29,6 +31,11 @@ async def lifespan(app: FastAPI):
     global _mcp_manager
     log.info("Starting up", app_name = settings.app_name, env = settings.environment,
              model = settings.model, default_effort = settings.default_effort)
+    if settings.environment == "prod" and (settings.jwt_secret == "dev-secret-change-in-production"
+                                           or len(settings.jwt_secret) < 32):
+        # the default is public: anyone could mint a token for any user
+        raise RuntimeError("JWT_SECRET is the development default (or shorter than 32 characters). "
+                           "Set a long random JWT_SECRET, the same value as the web app's FASTAPI_JWT_SECRET.")
     if get_model(settings.model) is None:
         # Every /ask without an explicit model would 422 and cost would be 0.
         log.error("settings.model is not in providers.registry.MODELS", model = settings.model)
@@ -76,6 +83,12 @@ async def lifespan(app: FastAPI):
              mcp=[st.as_dict() for st in _mcp_manager.status()])
 
     scheduler_task = scheduler.start() if settings.scheduler_enabled else None
+    if scheduler_task is not None:
+        # not replica-safe: a second server with it on would run every due task twice
+        log.info("scheduler on: run exactly one API server with SCHEDULER_ENABLED=true")
+    if settings.dodo_api_key and settings.billing_free_pool_usd is None:
+        log.warning("billing is on but BILLING_FREE_POOL_USD is unset: free users' spend is uncapped. "
+                    "Set a monthly cap before launch.")
 
     yield
 
@@ -89,12 +102,20 @@ async def lifespan(app: FastAPI):
 
 def create_app() -> FastAPI:
     app = FastAPI(title = settings.app_name, lifespan = lifespan)
+
+    @app.exception_handler(ModelUnavailable)
+    async def _model_unavailable(request: Request, exc: ModelUnavailable):
+        # a sentence the chat can show, not a bare 500 (or the vendor's "add credits" text)
+        return JSONResponse(status_code=503, content={"detail": str(exc)},
+                            headers={"X-Reason": f"model_{exc.reason}", "Retry-After": "60"})
+
     app.include_router(ask.router)
     app.include_router(health.router)
     app.include_router(observability.router)
     app.include_router(upload.router)
     app.include_router(quality.router)
     app.include_router(approve.router)
+    app.include_router(approval_link_routes.router)
     app.include_router(ask_stream.router)
     app.include_router(memory.router)
     app.include_router(episodes.router)
@@ -110,6 +131,9 @@ def create_app() -> FastAPI:
     app.include_router(voice_routes.router)
     app.include_router(files_routes.router)
     app.include_router(today_routes.router)
+    app.include_router(whatsapp_routes.router)
+    app.include_router(kept_routes.router)
+    app.include_router(push_routes.router)
     return app
 
 app = create_app()

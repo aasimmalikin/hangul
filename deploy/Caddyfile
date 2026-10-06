@@ -1,0 +1,20 @@
+# Caddy gets and renews the HTTPS certificate for HANGUL_DOMAIN by itself
+# (the domain's A record must point at this server, and ports 80/443 be open).
+{$HANGUL_DOMAIN} {
+	encode zstd gzip
+
+	# Everything goes to the web app: pages, its /api/* routes (which call the
+	# FastAPI backend on the internal network), and the Meta / Dodo webhooks.
+	reverse_proxy web:3000 {
+		# chat answers stream (SSE): pass every chunk through at once
+		flush_interval -1
+		transport http {
+			read_timeout 10m
+		}
+	}
+
+	log {
+		output stdout
+		format console
+	}
+}

@@ -77,6 +77,10 @@ def billing(monkeypatch):
     # "messages left": no run history, so the BILLING_USD_PER_MESSAGE estimate ($0.01)
     monkeypatch.setattr(ledger, "average_run_cost", lambda since, min_runs=50: None)
     monkeypatch.setattr(entitlements, "_per_message", None)
+    # the offered prices follow the user's timezone (Indian ones for Asia/Kolkata)
+    from harness.db.settings import Settings
+    state["tz"] = "UTC"
+    monkeypatch.setattr("harness.db.settings.get_settings", lambda uid: Settings(timezone=state["tz"]))
     return state
 
 

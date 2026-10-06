@@ -15,6 +15,7 @@ import { SpeakButton } from "@/components/hangul/SpeakButton"
 import { VoiceMode, type VoicePause } from "@/components/hangul/VoiceMode"
 import { HangulSigil } from "@/components/HangulSigil"
 import { AppHeader } from "@/components/hangul/AppHeader"
+import { announceKept } from "@/components/hangul/MainNav"
 import { SignInModal, type AuthMode } from "@/components/hangul/SignInModal"
 import { AttachMenu, type Attachment } from "@/components/hangul/AttachMenu"
 import { AttachmentChips } from "@/components/hangul/AttachmentChips"
@@ -29,6 +30,7 @@ import { useConnectivity } from "@/components/hangul/useConnectivity"
 import { parseApiFailure, failureFromResponse, isBillingFailure, type ApiFailure } from "@/lib/apiError"
 import { UpgradeCard } from "@/components/hangul/UpgradeCard"
 import { UsageNudge } from "@/components/hangul/UsageNudge"
+import { chatStarters, usePersona } from "@/lib/personas"
 import { deviceTimeZone } from "@/lib/timezone"
 
 type Approval = { runId: string; toolCallId?: string | null; tool: string; arguments: Record<string, unknown> }
@@ -614,11 +616,13 @@ function ChatInner() {
   }, [userId, conversationId])
 
   const streaming = status === "submitted" || status === "streaming"
+  const personaStarters = chatStarters(usePersona(Boolean(userId)))
   // bumped when an answer finishes, so the usage nudge re-reads what's left
   const [answersDone, setAnswersDone] = useState(0)
   const wasStreaming = useRef(false)
   useEffect(() => {
-    if (wasStreaming.current && !streaming) setAnswersDone((n) => n + 1)
+    // an answer finished: the Kept badge may have changed (an action waiting, or done)
+    if (wasStreaming.current && !streaming) { setAnswersDone((n) => n + 1); announceKept() }
     wasStreaming.current = streaming
   }, [streaming])
   // Save on every change, including mid-answer: if the user navigates away
@@ -786,6 +790,7 @@ function ChatInner() {
       return msg
     } finally {
       setBusy(null)
+      announceKept()
     }
   }
   const decide = (pause: Approval, decision: "approve" | "reject") => resume(pause, { decision })
@@ -1031,7 +1036,7 @@ function ChatInner() {
               </p>
               {/* Starter prompts: tapping one puts it in the box to edit or send. */}
               <div className="flex flex-wrap justify-center gap-2" style={{ maxWidth: 520, marginTop: 6 }} data-testid="starters">
-                {STARTERS.map((s) => (
+                {[...personaStarters, ...STARTERS].map((s) => (
                   <button key={s.text} type="button" className="h-chip" onClick={() => { setInput(s.text); composerRef.current?.focus() }}
                     style={{ display: "inline-flex", alignItems: "center", gap: 6 }}>
                     <i className={`ti ti-${s.icon}`} style={{ fontSize: 13 }} />{s.label}

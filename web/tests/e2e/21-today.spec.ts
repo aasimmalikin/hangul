@@ -22,8 +22,87 @@ test.describe("today", () => {
     await expect(page.getByTestId("today-weather")).toContainText("take an umbrella")
   })
 
+  test("'Needs you' appears only when something needs the user", async ({ page }) => {
+    await page.goto("/")
+    await expect(page.getByTestId("today-tasks")).toBeVisible()
+    await expect(page.getByTestId("today-needs")).toHaveCount(0)          // nothing waiting: no tile at all
+    // an approval waiting in a chat
+    await page.goto("/chat")
+    await ask(page, "APPROVAL write the notes")
+    await expect(page.getByTestId("approval-card").or(page.getByRole("button", { name: /approve/i })).first()).toBeVisible()
+    await page.goto("/")
+    await expect(page.getByTestId("today-needs")).toBeVisible()
+    await expect(page.getByTestId("today-approval")).toContainText("waiting for your OK")
+  })
+
+  test("important unread mail shows under 'Needs you'", async ({ page }) => {
+    await backend("/__google", { user: me.id })
+    await page.goto("/")
+    await expect(page.getByTestId("today-needs")).toContainText("Statement ready")
+    await expect(page.getByTestId("today-inbox")).toBeVisible()
+  })
+
+  test("leave by: asks for a home address, then says when to go", async ({ page }) => {
+    const soon = new Date(Date.now() + 2 * 3600_000).toISOString()
+    await backend("/__today", { user: me.id, extra: { leave_by: { summary: "Dentist", start: soon, location: "FC Road, Pune", needs_home: true } } })
+    await page.goto("/")
+    await expect(page.getByTestId("today-leave")).toContainText("Dentist")
+    await expect(page.getByTestId("today-leave-home")).toHaveAttribute("href", "/settings#home")
+    await backend("/__today", { user: me.id, extra: { leave_by: { summary: "Dentist", start: soon, location: "FC Road, Pune",
+      minutes: 25, leave_at: new Date(Date.now() + 85 * 60_000).toISOString(), late: false, link: "https://www.google.com/maps/dir/" } } })
+    await page.reload()
+    await expect(page.getByTestId("today-leave")).toContainText("Leave by")
+    await expect(page.getByTestId("today-leave")).toContainText("25 min drive")
+    await expect(page.getByRole("link", { name: "Directions →" })).toBeVisible()
+  })
+
+  test("birthdays this week, with a one-tap wish", async ({ page }) => {
+    await backend("/__today", { user: me.id, extra: { birthdays: [{ name: "Priya", date: "2026-10-05", in_days: 0, turns: 31 }] } })
+    await page.goto("/")
+    await expect(page.getByTestId("today-birthdays")).toContainText("Priya")
+    await expect(page.getByTestId("today-birthdays")).toContainText("Today · turns 31")
+    await page.getByTestId("today-birthday-wish").click()
+    await expect(page).toHaveURL(/\/chat/)          // the wish is drafted in a chat
+  })
+
+  test("tomorrow shows in the evening, and is hidden when empty", async ({ page }) => {
+    await backend("/__today", { user: me.id, extra: { tomorrow: { date_label: "Sunday, 04 October",
+      events: [{ summary: "Flight to Delhi", start: "2026-10-04T07:10:00+05:30", end: "2026-10-04T09:30:00+05:30" }],
+      reminders: [{ id: 9, text: "Pack bag", due_at: "2026-10-04T06:00:00+05:30" }] } } })
+    await page.goto("/")
+    const t = page.getByTestId("today-tomorrow")
+    await expect(t).toContainText("Tomorrow · Sunday, 04 October")
+    await expect(t).toContainText("Flight to Delhi")
+    await expect(t).toContainText("Pack bag")
+    await backend("/__today", { user: me.id, extra: { tomorrow: { date_label: "Sunday, 04 October", events: [], reminders: [] } } })
+    await page.reload()
+    await expect(page.getByTestId("today-tasks")).toBeVisible()
+    await expect(page.getByTestId("today-tomorrow")).toHaveCount(0)
+  })
+
+  test("replies you owe, with a one-tap draft", async ({ page }) => {
+    await backend("/__today", { user: me.id, extra: { replies: [
+      { thread_id: "18c2f", from: "Priya Shah <priya@acme.com>", subject: "Contract changes", waiting_days: 3 },
+      { thread_id: "18c30", from: "Ravi <ravi@x.com>", subject: "Dinner Saturday?", waiting_days: 1 }] } })
+    await page.goto("/")
+    const card = page.getByTestId("today-replies")
+    await expect(card).toContainText("Replies you owe · 2")
+    await expect(card.getByTestId("today-reply").first()).toContainText("Priya Shah")
+    await expect(card.getByTestId("today-reply").first()).toContainText("3 days")
+    await expect(card.getByTestId("today-reply").first()).toHaveAttribute("href", "https://mail.google.com/mail/u/0/#inbox/18c2f")
+    await page.getByTestId("today-draft-replies").click()
+    await expect(page).toHaveURL(/\/chat/)
+  })
+
+  test("no replies card when nobody is waiting", async ({ page }) => {
+    await backend("/__today", { user: me.id, extra: { replies: [] } })
+    await page.goto("/")
+    await expect(page.getByTestId("today-tasks")).toBeVisible()
+    await expect(page.getByTestId("today-replies")).toHaveCount(0)
+  })
+
   test("a to-do can be ticked off from home", async ({ page }) => {
-    await page.goto("/lists")
+    await page.goto("/kept#holding")
     await page.getByLabel("New item").fill("Buy milk")
     await page.getByRole("button", { name: "Add" }).click()
     await page.goto("/")
@@ -53,5 +132,21 @@ test.describe("today", () => {
     await ask(page, "and now without")
     await expectReply(page, "Reply to: and now without")
     expect((await backend("/__state")).asks.at(-1).connectors_auto).toBe(false)
+  })
+
+  test("the greeting and to-dos show before the slow parts arrive", async ({ page }) => {
+    await backend("/__reminder", { user: me.id, text: "Call mom" })
+    await backend("/__today", { user: me.id, slowMs: 2500 })
+    await page.goto("/")
+    // the quick brief: greeting, reminders and the dots where Hangul's messages go; calendar still being checked
+    await expect(page.getByTestId("today")).toContainText("Good morning", { timeout: 2000 })
+    await expect(page.getByTestId("today-tasks")).toContainText("Call mom")
+    await expect(page.getByTestId("today-events")).toContainText("Checking your calendar")
+    await expect(page.getByTestId("today-talk-loading")).toBeVisible()
+    await expect(page.getByTestId("today-loading")).toHaveCount(0)
+    // then the full brief replaces it
+    await expect(page.getByTestId("today-talk-loading")).toHaveCount(0, { timeout: 6000 })
+    await expect(page.getByTestId("today-talk")).toBeVisible()
+    await expect(page.getByTestId("today-events")).toContainText("Connect Google Calendar")
   })
 })

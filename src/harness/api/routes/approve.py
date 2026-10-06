@@ -5,6 +5,7 @@ import asyncio
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 
+from harness import provenance
 from harness.agent.loop import run_agent
 from harness.logging import log
 from harness.providers import provider_for
@@ -100,9 +101,15 @@ async def approve(req: ApproveRequest, user: dict = Depends(get_current_user)) -
     # cannot execute the tool twice, and a foreign run id reads as not found.
     cp = await asyncio.to_thread(_store.claim_pending, req.approval_id, user["user_id"])
     if cp is None:
+        if peek is not None and peek.user_id == user["user_id"] and peek.status == "expired":
+            raise HTTPException(status_code=409, headers={"X-Reason": "approval_expired"},
+                                detail="This request expired because the chat moved on. Ask again if you still want it.")
         raise HTTPException(status_code=404, detail="No pending action for that approval id.")
 
     pending = cp.pending_tool
+    # the approved action and the rest of the run are the original question's doing
+    from harness.db.kept import run_question
+    provenance.begin(user["user_id"], cp.conversation_id, run_question(cp.message))
     # Resumes with the model/effort the run started with (resolved above,
     # with the plan check, from the same row).
     model = spec.id

@@ -47,9 +47,12 @@ class CheckpointStore:
         with SessionLocal() as session:
             row = (
                 session.query(Thread)
+                # status, not `pending_tool IS NOT NULL`: assigning None to a JSONB
+                # column stores JSON null, which IS NOT NULL -- so every finished
+                # (or expired) run would otherwise look claimable
                 .filter(Thread.thread_id == thread_id,
                         Thread.user_id == user_id,
-                        Thread.pending_tool.isnot(None))
+                        Thread.status == "pending_approval")
                 .with_for_update(skip_locked=True)
                 .one_or_none()
             )
@@ -61,6 +64,29 @@ class CheckpointStore:
             session.commit()
             return cp
     
+    def expire_pending(self, conversation_id: str, user_id: str, keep_thread_id: str | None = None) -> int:
+        """The user moved on: a new message in this chat closes any approval
+        still waiting in it (status "expired"), so a stale action can never
+        be approved later. Returns how many were expired."""
+        with SessionLocal() as session:
+            n = (session.query(Thread)
+                 .filter(Thread.conversation_id == conversation_id, Thread.user_id == user_id,
+                         Thread.status == "pending_approval", Thread.thread_id != (keep_thread_id or ""))
+                 .update({Thread.status: "expired", Thread.pending_tool: None}, synchronize_session=False))
+            session.commit()
+            return n
+
+    def expire_run(self, thread_id: str, user_id: str) -> bool:
+        """Close one run's waiting approval (a scheduled run that was superseded or
+        waited too long), so a stale action can't be approved later. True if it was waiting."""
+        with SessionLocal() as session:
+            n = (session.query(Thread)
+                 .filter(Thread.thread_id == thread_id, Thread.user_id == user_id,
+                         Thread.status == "pending_approval")
+                 .update({Thread.status: "expired", Thread.pending_tool: None}, synchronize_session=False))
+            session.commit()
+            return bool(n)
+
     def save(self, cp: Checkpoint)-> None:
         values = {
             "thread_id": cp.thread_id, 

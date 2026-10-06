@@ -73,6 +73,31 @@ class Settings(BaseSettings):
     resend_api_key: str | None = Field(default=None, validation_alias=AliasChoices("resend_api_key", "auth_resend_key"))
     email_from: str | None = Field(default=None, validation_alias=AliasChoices("email_from", "auth_email_from"))
     app_url: str = "http://localhost:3000"     # links in emails
+    # WhatsApp (harness/whatsapp) via Meta's Cloud API. Off until both the token
+    # and the phone number id are set. The token is imported into the vault at
+    # startup (like TAVILY_API_KEY) and never read anywhere else.
+    whatsapp_access_token: str | None = None          # a System User's permanent token
+    whatsapp_phone_number_id: str | None = None       # sends go to /<version>/<this>/messages
+    whatsapp_business_number: str | None = None       # the number users message, e.g. +919876543210 (wa.me links)
+    whatsapp_app_secret: str | None = None            # checks X-Hub-Signature-256 on every webhook delivery
+    whatsapp_verify_token: str | None = None          # any long random string; Meta echoes it once to confirm the webhook
+    whatsapp_api_version: str = "v23.0"
+    # approved templates for messages Hangul starts outside the 24-hour window
+    whatsapp_template_reminder: str = "reminder"      # body: "⏰ Reminder: {{1}}"
+    whatsapp_template_brief: str = "morning_brief"    # body: "Good morning {{1}}! Your brief is ready. Reply to see it."
+    # optional: a scheduled task's approval outside the 24-hour window, with quick-reply buttons
+    # Approve / Reject. Body: "Hangul needs your OK for {{1}}: {{2}}". Unset = the brief template,
+    # and the Approve / Reject buttons follow the user's reply.
+    whatsapp_template_approval: str = ""
+    whatsapp_template_language: str = "en"
+    whatsapp_usd_per_message: float = 0.0016          # Meta's India utility/service rate incl. GST, charged to the user
+    whatsapp_link_code_ttl_s: int = 15 * 60
+    # Web Push (harness/push.py): notifications on the user's phone or computer from
+    # the installed app or the browser, even when Hangul is closed. Off until both
+    # keys are set; make a pair with `python -m harness.push keys`.
+    vapid_public_key: str | None = None       # base64url P-256 point (the browser's applicationServerKey)
+    vapid_private_key: str | None = None      # base64url raw 32-byte key; never leaves the server
+    vapid_subject: str | None = None          # mailto:/https: contact for push services; default mailto:<email_from>
     # Billing (harness/billing) via Dodo Payments, the merchant of record.
     # Unset API key = billing off: no plan checks, every model open (dev).
     dodo_api_key: str | None = None
@@ -80,6 +105,14 @@ class Settings(BaseSettings):
     dodo_product_plus: str | None = None      # pdt_… subscription product
     dodo_product_pro: str | None = None
     dodo_product_topup: str | None = None     # pdt_… one-time product
+    # yearly plans (2 months free) and Indian plans (priced in rupees, UPI AutoPay);
+    # any left unset falls back to the international monthly product
+    dodo_product_plus_annual: str | None = None
+    dodo_product_pro_annual: str | None = None
+    dodo_product_plus_in: str | None = None
+    dodo_product_pro_in: str | None = None
+    dodo_product_plus_in_annual: str | None = None
+    dodo_product_pro_in_annual: str | None = None
     dodo_test_mode: bool = True               # test.dodopayments.com vs live.dodopayments.com
     billing_return_url: str = "http://localhost:3000/billing"   # where checkout sends the buyer back
     # Allowances and credits are dollars of MODEL cost (registry prices), not
@@ -87,6 +120,10 @@ class Settings(BaseSettings):
     billing_allowance_free: float = 0.25       # per calendar month
     billing_allowance_plus: float = 8.00       # per billing period
     billing_allowance_pro: float = 40.00
+    # Indian prices (₹499 / ₹1,499) are about a quarter of $20 / $100 after GST
+    # and fees, so they include a smaller monthly allowance
+    billing_allowance_plus_in: float = 2.00
+    billing_allowance_pro_in: float = 6.00
     billing_trial_days: int = 7                # Plus trial at checkout (0 = no trial); card authorised up front
     billing_allowance_trial: float = 2.00      # allowance while trialling, before the first real charge
     # "about N messages left": the allowance divided by the average cost of a run

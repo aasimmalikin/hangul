@@ -12,6 +12,7 @@ from sqlalchemy import or_, select
 
 from harness.db.base import SessionLocal
 from harness.db.models import Note, Reminder, TodoItem
+from harness.provenance import stamp
 
 MAX_OPEN_REMINDERS = 200
 MAX_ITEMS_PER_USER = 2000
@@ -50,7 +51,7 @@ def add_reminder(user_id: str, text: str, due_at: datetime) -> ReminderOut:
                                               Reminder.status.in_(("pending", "sent"))).count()
         if open_count >= MAX_OPEN_REMINDERS:
             raise LimitReached(f"You already have {open_count} open reminders.")
-        row = Reminder(user_id=int(user_id), text=text.strip()[:500], due_at=due_at.astimezone(UTC))
+        row = Reminder(user_id=int(user_id), text=text.strip()[:500], due_at=due_at.astimezone(UTC), **stamp())
         s.add(row)
         s.commit()
         s.refresh(row)
@@ -130,7 +131,8 @@ def add_todos(user_id: str, list_name: str, items: list[str]) -> list[TodoOut]:
         count = s.query(TodoItem).filter(TodoItem.user_id == int(user_id)).count()
         if count + len(items) > MAX_ITEMS_PER_USER:
             raise LimitReached("Your lists are full; clear some finished items first.")
-        rows = [TodoItem(user_id=int(user_id), list_name=norm_list(list_name), text=i) for i in items]
+        src = stamp()
+        rows = [TodoItem(user_id=int(user_id), list_name=norm_list(list_name), text=i, **src) for i in items]
         s.add_all(rows)
         s.commit()
         for r in rows:
@@ -203,7 +205,7 @@ def add_note(user_id: str, text: str) -> NoteOut:
     with SessionLocal() as s:
         if s.query(Note).filter(Note.user_id == int(user_id)).count() >= MAX_NOTES_PER_USER:
             raise LimitReached("You have too many notes; delete some first.")
-        row = Note(user_id=int(user_id), text=text.strip()[:4000])
+        row = Note(user_id=int(user_id), text=text.strip()[:4000], **stamp())
         s.add(row)
         s.commit()
         s.refresh(row)

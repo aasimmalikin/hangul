@@ -1,19 +1,23 @@
 #!/bin/bash
-# Start the FastAPI backend and the Streamlit frontend together.
-set -e
+# Start the Hangul API: apply database migrations, then serve.
+#
+#   RUN_MIGRATIONS=1  (default) run `alembic upgrade head` first; set 0 to skip
+#   PORT              (default 8000)
+#   WEB_CONCURRENCY   (default 1) uvicorn workers. Keep 1 while SCHEDULER_ENABLED
+#                     is true: every worker would run the scheduler, and it isn't
+#                     safe to run twice (tasks and reminders would go out twice).
+set -euo pipefail
 
-# Start the API in the background
-uvicorn harness.api.app:app --host 0.0.0.0 --port 8000 &
-API_PID=$!
+if [[ "${RUN_MIGRATIONS:-1}" == "1" ]]; then
+  echo "→ alembic upgrade head"
+  alembic upgrade head
+fi
 
-# Give the API a moment to come up before Streamlit starts calling it
-sleep 3
-
-# Start Streamlit in the foreground (keeps the container alive)
-streamlit run streamlit_app.py \
-    --server.port 8501 \
-    --server.address 0.0.0.0 \
-    --server.headless true
-
-# If Streamlit exits, stop the API too
-kill $API_PID
+# No --proxy-headers on purpose: the admin IP allowlist ignores X-Forwarded-For
+# (CLAUDE.md), and the API is only reachable from the web container anyway.
+exec uvicorn harness.api.app:app \
+  --host 0.0.0.0 \
+  --port "${PORT:-8000}" \
+  --workers "${WEB_CONCURRENCY:-1}" \
+  --no-proxy-headers \
+  --timeout-keep-alive 75

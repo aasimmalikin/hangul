@@ -25,19 +25,19 @@ export const metadata: Metadata = {
   title: "Hangul",
   description: "Your personal AI assistant: reminders, email, calendar, documents and more — just ask, or talk.",
   // installed on a phone home screen: opens full-screen with its own icon
-  appleWebApp: { capable: true, title: "Hangul", statusBarStyle: "black-translucent" },
+  appleWebApp: { capable: true, title: "Hangul", statusBarStyle: "default" },
   icons: { apple: "/icons/apple-touch-icon.png" },
 };
 
 export const viewport: Viewport = {
-  themeColor: "#0F0F10",
+  themeColor: [{ media: "(prefers-color-scheme: light)", color: "#FFFFFF" }, { media: "(prefers-color-scheme: dark)", color: "#121413" }],
   viewportFit: "cover",          // lets the bottom bar sit above the phone's home indicator (safe-area insets)
 };
 
 // Applies the saved theme before first paint so the page never flashes the
 // wrong palette. ThemeProvider takes over once hydrated; `suppressHydrationWarning`
 // covers the attribute this script sets on <html>.
-const themeScript = `(function(){try{var t=localStorage.getItem("theme");document.documentElement.dataset.theme=(t==="light"||t==="dark")?t:"dark"}catch(e){document.documentElement.dataset.theme="dark"}})()`;
+const themeScript = `(function(){try{var t=localStorage.getItem("theme");document.documentElement.dataset.theme=(t==="light"||t==="dark")?t:"light"}catch(e){document.documentElement.dataset.theme="light"}})()`;
 
 export default async function RootLayout({ children }: LayoutProps<"/">) {
   // Read the session cookie once on the server; every page starts knowing
@@ -46,7 +46,7 @@ export default async function RootLayout({ children }: LayoutProps<"/">) {
   return (
     <html
       lang="en"
-      data-theme="dark"
+      data-theme="light"
       suppressHydrationWarning
       className={`${geistSans.variable} ${geistMono.variable} ${fraunces.variable} h-full antialiased`}
     >

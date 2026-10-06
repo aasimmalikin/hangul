@@ -114,13 +114,13 @@ export function ProfileMenu() {
             Profile & preferences
           </Link>
           <Link
-            href="/lists"
+            href="/kept"
             className="h-btn-ghost"
             style={{ width: "100%", justifyContent: "flex-start", padding: "8px 10px", textDecoration: "none" }}
             onClick={() => setOpen(false)}
           >
-            <i className="ti ti-checklist" style={{ fontSize: 15 }} />
-            My stuff
+            <i className="ti ti-bookmark" style={{ fontSize: 15 }} />
+            Kept
           </Link>
           <Link
             href="/billing"

@@ -13,6 +13,46 @@ import { LEGAL } from "@/lib/legal"
  */
 type BillingSummary = { enabled: boolean; plan: string; plan_label?: string }
 type Integrations = { google: { connected: boolean; products: string[] }; apps?: Record<string, boolean> }
+type Memory = { id: number; kind: string; content: string; created_at: string }
+
+/**
+ * What Hangul remembers about the user (the agent's `remember` tool): GET
+ * /api/memory, and Forget = DELETE /api/memory/<id>. Hidden while empty.
+ */
+function Memories() {
+  const [items, setItems] = useState<Memory[] | null>(null)
+  const [error, setError] = useState<string | null>(null)
+  useEffect(() => {
+    void fetch("/api/memory", { cache: "no-store" }).then((r) => (r.ok ? r.json() : [])).then(setItems).catch(() => setItems([]))
+  }, [])
+  const forget = async (id: number) => {
+    setError(null)
+    const res = await fetch(`/api/memory/${id}`, { method: "DELETE" }).catch(() => null)
+    if (res?.ok) setItems((xs) => (xs ?? []).filter((m) => m.id !== id))
+    else setError("Couldn't forget that right now. Try again in a moment.")
+  }
+  if (!items?.length) return null
+  return (
+    <section className="h-surface" data-testid="you-memory" style={{ padding: "14px 16px", borderRadius: 14, display: "flex", flexDirection: "column", gap: 8 }}>
+      <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+        <i className="ti ti-brain" style={{ fontSize: 22 }} />
+        <span style={{ flex: 1 }}>
+          <span style={{ display: "block", fontSize: 15, fontWeight: 500 }}>What Hangul remembers</span>
+          <span className="h-muted" style={{ fontSize: 12 }}>Things you told it to keep in mind. Forget any of them at any time.</span>
+        </span>
+      </div>
+      <ul style={{ margin: 0, padding: 0, listStyle: "none", display: "flex", flexDirection: "column" }}>
+        {items.map((m) => (
+          <li key={m.id} data-testid="you-memory-item" style={{ display: "flex", alignItems: "center", gap: 10, padding: "8px 0", borderTop: "0.5px solid var(--surface-border)", fontSize: 14 }}>
+            <span style={{ flex: 1, minWidth: 0 }}>{m.content}</span>
+            <button className="h-btn-ghost" onClick={() => void forget(m.id)} data-testid="you-memory-forget" style={{ fontSize: 12 }}>Forget</button>
+          </li>
+        ))}
+      </ul>
+      {error && <span style={{ color: "var(--err)", fontSize: 12 }}>{error}</span>}
+    </section>
+  )
+}
 
 function Row({ href, icon, title, detail, testId }: { href: string; icon: string; title: string; detail: string; testId: string }) {
   return (
@@ -70,6 +110,7 @@ export default function YouPage() {
           detail={apps.length ? `Connected: ${apps.join(", ")}` : "Connect Google, GitHub, Notion or Slack"} />
         <Row href="/billing" icon="credit-card" title="Plan & billing" testId="you-plan"
           detail={billing?.enabled ? `You're on ${billing.plan_label ?? billing.plan}` : "Your plan and usage"} />
+        {status === "authenticated" && <Memories />}
         <button className="h-btn-ghost" onClick={() => signOut({ redirectTo: "/" })} style={{ alignSelf: "flex-start", marginTop: 8, gap: 6 }}>
           <i className="ti ti-logout" style={{ fontSize: 15 }} /> Sign out
         </button>

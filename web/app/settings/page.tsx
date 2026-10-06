@@ -6,6 +6,10 @@ import { AppHeader } from "@/components/hangul/AppHeader"
 import { SignInModal, type AuthMode } from "@/components/hangul/SignInModal"
 import { loadAvailableConnectors, type ConnectorInfo } from "@/lib/connectors"
 import { deviceTimeZone } from "@/lib/timezone"
+import { announcePersona, PERSONAS, type Persona } from "@/lib/personas"
+import { PushToggle } from "@/components/hangul/PushToggle"
+import { WhatsAppLink } from "@/components/hangul/WhatsAppLink"
+import { TaskScheduler, type Task } from "@/components/hangul/TaskScheduler"
 
 /**
  * /settings — how the assistant should treat you (name, tone, timezone,
@@ -14,18 +18,9 @@ import { deviceTimeZone } from "@/lib/timezone"
  * Chats rail as "⏰ <title>" conversations.
  */
 
-type Prefs = { display_name: string; instructions: string; tone: string; timezone: string; language: string; timezone_auto?: boolean; city?: string; tones?: string[] }
-const WEEK_MINUTES = 7 * 24 * 60
+type Prefs = { display_name: string; instructions: string; tone: string; timezone: string; language: string; timezone_auto?: boolean; city?: string; home_address?: string; persona?: string; tones?: string[] }
 
-/** "daily at 08:00", "weekly at 08:00" (daily_at + a week), "every 60 min". */
-function scheduleLabel(t: { every_minutes: number | null; daily_at: string | null }): string {
-  if (t.daily_at) return t.every_minutes === WEEK_MINUTES ? `weekly at ${t.daily_at}` : `daily at ${t.daily_at}`
-  return t.every_minutes === WEEK_MINUTES ? "weekly" : `every ${t.every_minutes} min`
-}
 
-type Task = { id: number; title: string; question: string; every_minutes: number | null; daily_at: string | null; connectors: string[]; mode: string; enabled: boolean; next_run_at: string | null; last_run_at: string | null; last_status: string; last_run_id: string | null; last_answer: string; deliver_email?: boolean }
-
-const mono = { fontFamily: "var(--font-geist-mono)" } as const
 
 async function api<T>(path: string, init?: RequestInit): Promise<T> {
   const res = await fetch(`/api/${path}`, { ...init, cache: "no-store", headers: { "Content-Type": "application/json", ...(init?.headers ?? {}) } })
@@ -37,7 +32,6 @@ async function api<T>(path: string, init?: RequestInit): Promise<T> {
   return res.json() as Promise<T>
 }
 
-const when = (iso: string | null) => (iso ? new Date(iso).toLocaleString() : "—")
 
 function Section({ title, hint, children }: { title: string; hint?: string; children: React.ReactNode }) {
   return (
@@ -64,14 +58,6 @@ export default function SettingsPage() {
   const [saved, setSaved] = useState(false)
   const [busy, setBusy] = useState(false)
 
-  const [title, setTitle] = useState("")
-  const [question, setQuestion] = useState("")
-  const [schedule, setSchedule] = useState<"daily" | "interval">("daily")
-  const [dailyAt, setDailyAt] = useState("08:00")
-  const [every, setEvery] = useState(60)
-  const [taskConnectors, setTaskConnectors] = useState<string[]>([])
-  const [research, setResearch] = useState(false)
-  const [emailMe, setEmailMe] = useState(false)
 
   const reload = useCallback(async () => {
     try {
@@ -98,18 +84,8 @@ export default function SettingsPage() {
     // automatic = this device's timezone; pinned = what the user typed
     const timezone = body.timezone_auto !== false ? (deviceTimeZone() ?? body.timezone) : body.timezone
     await api("settings", { method: "PUT", body: JSON.stringify({ ...body, timezone, timezone_auto: body.timezone_auto !== false }) })
+    announcePersona(PERSONAS.some((x) => x.key === body.persona) ? (body.persona as Persona) : null)
     setSaved(true); setTimeout(() => setSaved(false), 2000)
-  })
-
-  const addTask = () => run(async () => {
-    await api("tasks", {
-      method: "POST",
-      body: JSON.stringify({
-        title, question, connectors: taskConnectors, mode: research ? "research" : "default", deliver_email: emailMe,
-        ...(schedule === "daily" ? { daily_at: dailyAt } : { every_minutes: every }),
-      }),
-    })
-    setTitle(""); setQuestion("")
   })
 
   // One tap: a daily 08:00 brief, emailed, using whichever Google products exist.
@@ -122,7 +98,8 @@ export default function SettingsPage() {
         title: "Morning brief", daily_at: "08:00", connectors: google, mode: "default", deliver_email: true, fit_plan: true,
         question: "Give me my morning brief for today, short and with headings: the weather where I live (use what " +
           "you remember about my city), today's calendar events, my reminders and to-do items, and any important " +
-          "unread emails from the last day. Skip any section you can't access.",
+          "unread emails from the last day, and anyone who has been waiting more than a day for my reply. " +
+          "Skip any section you can't access.",
       }),
     })
   })
@@ -163,6 +140,15 @@ export default function SettingsPage() {
               <datalist id="tz-suggest"><option value={browserTz} /><option value="UTC" /></datalist>
               <input className="h-input" placeholder="Preferred language (optional)" value={prefs.language} onChange={(e) => setPrefs({ ...prefs, language: e.target.value })} maxLength={16} aria-label="Language" />
               <input className="h-input" placeholder="Your city (for weather and places near you)" value={prefs.city ?? ""} onChange={(e) => setPrefs({ ...prefs, city: e.target.value })} maxLength={80} aria-label="City" />
+              {/* the Today screen's "Leave by": routed with OpenStreetMap, never shown to anyone */}
+              <select className="h-input" value={prefs.persona ?? ""} aria-label="What describes you best" data-testid="settings-persona"
+                onChange={(e) => setPrefs({ ...prefs, persona: e.target.value })}>
+                <option value="">What describes you best? (optional)</option>
+                {PERSONAS.map((p) => <option key={p.key} value={p.key}>{p.label}</option>)}
+              </select>
+              <input id="home" className="h-input" placeholder="Home address (for “leave by” times)" value={prefs.home_address ?? ""}
+                onChange={(e) => setPrefs({ ...prefs, home_address: e.target.value })} maxLength={200} aria-label="Home address"
+                style={{ gridColumn: "1 / -1" }} data-testid="home-address" />
               <textarea className="h-input" rows={4} placeholder="Custom instructions — e.g. 'I run a small clinic; prefer plain language and always give dates in DD/MM.'" value={prefs.instructions} onChange={(e) => setPrefs({ ...prefs, instructions: e.target.value })} maxLength={2000} style={{ gridColumn: "1 / -1", resize: "vertical" }} aria-label="Custom instructions" />
               <div style={{ gridColumn: "1 / -1", display: "flex", gap: 10, alignItems: "center", justifyContent: "flex-end" }}>
                 {saved && <span className="h-muted" style={{ fontSize: 12 }} data-testid="prefs-saved">Saved</span>}
@@ -172,72 +158,33 @@ export default function SettingsPage() {
           </Section>
         )}
 
+        <PushToggle frame={(content) => (
+          <div id="notifications">
+            <Section title="Notifications" hint="Turn them on for each phone or computer you use. Free on every plan.">
+              {content}
+            </Section>
+          </div>
+        )} />
+
+        <WhatsAppLink frame={(content) => (
+          <div id="whatsapp">
+            <Section title="WhatsApp" hint="Hangul on WhatsApp, on Plus and Pro: chat, reminders and your brief, with the same tools and approvals as here. Linking takes one message.">
+              {content}
+            </Section>
+          </div>
+        )} />
+
         <Section title="Scheduled tasks" hint="A question the assistant asks for you on a schedule, with the connectors you pick. Answers appear in your chats (and your inbox, if you choose); anything needing approval waits for you.">
           {prefs && !tasks.some((t) => t.title === "Morning brief") && (
             <div className="h-surface" style={{ padding: "10px 12px", display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" }} data-testid="brief-offer">
               <i className="ti ti-sunrise" style={{ fontSize: 18 }} />
               <span style={{ fontSize: 13, flex: 1, minWidth: 200 }}>
-                <b>Morning brief</b> — every day at 8:00, an email with your weather, calendar, reminders and important mail.
+                <b>Morning brief</b> — every day at 8:00 AM, an email with your weather, calendar, reminders and important mail.
               </span>
               <button className="h-btn-solid" type="button" disabled={busy} onClick={() => void addMorningBrief()}>Set it up</button>
             </div>
           )}
-          <form onSubmit={(e) => { e.preventDefault(); void addTask() }} style={{ display: "grid", gap: 8, gridTemplateColumns: "1fr 1fr" }} data-testid="task-form">
-            <input className="h-input" placeholder="Title, e.g. Morning brief" value={title} onChange={(e) => setTitle(e.target.value)} maxLength={120} required aria-label="Task title" />
-            <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
-              <select className="h-input" style={{ width: "auto" }} value={schedule} onChange={(e) => setSchedule(e.target.value as "daily" | "interval")} aria-label="Schedule kind">
-                <option value="daily">Every day at</option>
-                <option value="interval">Every N minutes</option>
-              </select>
-              {schedule === "daily"
-                ? <input className="h-input" type="time" value={dailyAt} onChange={(e) => setDailyAt(e.target.value)} aria-label="Time of day" />
-                : <input className="h-input" type="number" min={15} max={10080} value={every} onChange={(e) => setEvery(Number(e.target.value))} aria-label="Minutes" />}
-            </div>
-            <textarea className="h-input" rows={2} placeholder="What should it do? e.g. 'Summarise unread email from today and list meetings tomorrow.'" value={question} onChange={(e) => setQuestion(e.target.value)} maxLength={4000} required style={{ gridColumn: "1 / -1", resize: "vertical" }} aria-label="Task question" />
-            <div style={{ gridColumn: "1 / -1", display: "flex", gap: 12, flexWrap: "wrap", alignItems: "center" }}>
-              {connectors.map((c) => (
-                <label key={c.key} className="h-muted" style={{ fontSize: 12, display: "flex", gap: 6, alignItems: "center" }}>
-                  <input type="checkbox" checked={taskConnectors.includes(c.key)} onChange={(e) => setTaskConnectors((ks) => e.target.checked ? [...ks, c.key] : ks.filter((k) => k !== c.key))} /> {c.label}
-                </label>
-              ))}
-              <label className="h-muted" style={{ fontSize: 12, display: "flex", gap: 6, alignItems: "center" }}>
-                <input type="checkbox" checked={research} onChange={(e) => setResearch(e.target.checked)} /> deep research
-              </label>
-              <label className="h-muted" style={{ fontSize: 12, display: "flex", gap: 6, alignItems: "center" }}>
-                <input type="checkbox" checked={emailMe} onChange={(e) => setEmailMe(e.target.checked)} aria-label="Email me the result" /> email me the result
-              </label>
-              <button className="h-btn-solid" type="submit" disabled={busy || !title || !question} style={{ marginLeft: "auto" }}>Add task</button>
-            </div>
-          </form>
-
-          {tasks.length === 0 ? <p className="h-muted" style={{ fontSize: 13, margin: 0 }}>No scheduled tasks.</p> : (
-            <ul style={{ listStyle: "none", padding: 0, margin: 0, display: "flex", flexDirection: "column", gap: 10 }}>
-              {tasks.map((t) => (
-                <li key={t.id} style={{ border: "0.5px solid var(--surface-border)", borderRadius: 12, padding: "10px 12px", fontSize: 13 }} data-testid={`task-${t.id}`}>
-                  <div style={{ display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap" }}>
-                    <strong>{t.title}</strong>
-                    <span className="h-muted" style={{ fontSize: 12 }}>{scheduleLabel(t)}{t.connectors.length ? ` · ${t.connectors.join(", ")}` : ""}{t.mode === "research" ? " · research" : ""}{t.deliver_email ? " · emailed" : ""}</span>
-                    <span className="h-muted" style={{ ...mono, fontSize: 11, marginLeft: "auto" }}>{t.enabled ? `next ${when(t.next_run_at)}` : "paused"} · last: {t.last_status}</span>
-                  </div>
-                  <div className="h-muted" style={{ fontSize: 12, marginTop: 4 }}>{t.question}</div>
-                  {t.last_answer && <div style={{ fontSize: 12, marginTop: 6, whiteSpace: "pre-wrap" }}>{t.last_answer.slice(0, 400)}{t.last_answer.length > 400 ? "…" : ""}</div>}
-                  {t.last_status === "needs_approval" && t.last_run_id && (
-                    <div className="h-surface" style={{ padding: "8px 10px", marginTop: 8, fontSize: 12, display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }} data-testid={`task-${t.id}-approval`}>
-                      <i className="ti ti-hand-stop" />
-                      <span style={{ flex: 1 }}>This run wants to do something that needs your approval.</span>
-                      <button className="h-btn-solid" disabled={busy} onClick={() => run(() => api("approve", { method: "POST", body: JSON.stringify({ approval_id: t.last_run_id, decision: "approve" }) }))}>Approve</button>
-                      <button className="h-btn-outline" disabled={busy} onClick={() => run(() => api("approve", { method: "POST", body: JSON.stringify({ approval_id: t.last_run_id, decision: "reject" }) }))}>Reject</button>
-                    </div>
-                  )}
-                  <div style={{ display: "flex", gap: 6, marginTop: 8 }}>
-                    <button className="h-btn-ghost" disabled={busy} onClick={() => run(() => api(`tasks/${t.id}/run`, { method: "POST" }))}>Run now</button>
-                    <button className="h-btn-ghost" disabled={busy} onClick={() => run(() => api(`tasks/${t.id}`, { method: "POST", body: JSON.stringify({ enabled: !t.enabled }) }))}>{t.enabled ? "Pause" : "Resume"}</button>
-                    <button className="h-btn-ghost" disabled={busy} onClick={() => run(() => api(`tasks/${t.id}`, { method: "DELETE" }))}>Delete</button>
-                  </div>
-                </li>
-              ))}
-            </ul>
-          )}
+          <TaskScheduler tasks={tasks} connectors={connectors} busy={busy} run={run} api={api} />
         </Section>
       </div>
     </main>

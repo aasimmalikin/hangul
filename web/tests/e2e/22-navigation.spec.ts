@@ -1,7 +1,7 @@
 import { test, expect } from "@playwright/test"
 import { freshUser, resetBackend, seedChat, signInAs } from "./helpers"
 
-/** Four places — Today, Chats, My stuff, You — as header tabs on desktop and a bottom bar on phones. */
+/** Four places — Today, Chats, Kept, You — as header tabs on desktop and a bottom bar on phones. */
 test.describe("navigation", () => {
   const me = freshUser("nav")
   test.beforeEach(async ({ context, baseURL }) => {
@@ -10,8 +10,8 @@ test.describe("navigation", () => {
   })
 
   test("desktop: header tabs mark where you are", async ({ page }) => {
-    await page.goto("/lists")
-    await expect(page.getByTestId("nav-My stuff")).toHaveAttribute("aria-current", "page")
+    await page.goto("/kept")
+    await expect(page.getByTestId("nav-Kept")).toHaveAttribute("aria-current", "page")
     await page.getByTestId("nav-You").click()
     await expect(page).toHaveURL(/\/you$/)
     await expect(page.getByTestId("you-preferences")).toContainText("Profile & preferences")
@@ -22,9 +22,10 @@ test.describe("navigation", () => {
     await expect(page.getByTestId("nav-You")).toHaveAttribute("aria-current", "page")     // still under "You"
   })
 
-  test("My stuff lists files with downloads", async ({ page }) => {
+  test("the old /lists address opens Kept's drawer, with files to download", async ({ page }) => {
     await page.goto("/lists")
-    await expect(page.getByRole("heading", { name: "My stuff" })).toBeVisible()
+    await expect(page).toHaveURL(/\/kept#holding$/)
+    await expect(page.getByRole("heading", { name: "Kept" })).toBeVisible()
     await expect(page.getByTestId("files-section")).toContainText("monthly-budget.pdf")
     await expect(page.getByRole("link", { name: "Download monthly-budget.pdf" })).toHaveAttribute("href", "/api/files/monthly-budget.pdf")
   })

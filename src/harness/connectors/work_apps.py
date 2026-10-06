@@ -9,13 +9,18 @@ side-effect prefixes. Each tool returns text the model can act on, including
 "connect it at /vault" when there is no token.
 """
 
+import asyncio
+import base64
 import json
+import re
 from collections.abc import Awaitable, Callable
+from urllib.parse import quote
 
 from harness.tools.base import Tool, ToolOutput
 
 NOTION_VERSION = "2022-06-28"
 MAX_TEXT = 12_000
+TYPED_QUERY = re.compile(r"(?<!\S)(is|type):(issue|pr|pull-request)\b", re.IGNORECASE)
 
 
 class AppError(Exception):
@@ -44,6 +49,10 @@ async def _call(user_id: str, provider: str, method: str, path: str, *, query: d
         data = json.loads(resp.body) if resp.body else {}
     except ValueError:
         data = {}
+    if provider == "github" and resp.status in (403, 404, 422):
+        plain = _github_error(resp.status, resp.body or "")   # the reason can sit in errors[], not message
+        if plain:
+            raise AppError(plain)
     if resp.status in (401, 403):
         raise AppError(f"{provider.upper()}_AUTH: the saved {provider} token was refused ({resp.status}); "
                        f"ask the user to reconnect it at /vault.")
@@ -67,36 +76,112 @@ def _safe(fn: Callable[..., Awaitable[str | ToolOutput]]) -> Callable[..., Await
 
 
 def _repo(repo: str) -> str:
-    repo = repo.strip().removeprefix("https://github.com/").strip("/")
-    if repo.count("/") != 1 or not all(repo.split("/")):
+    """owner/name, also from a github.com link ("https://github.com/o/r/issues/5" -> "o/r")."""
+    repo = re.sub(r"^(https?://)?(www\.)?github\.com/", "", repo.strip(), flags=re.IGNORECASE).split("#")[0]
+    parts = [p for p in repo.split("/") if p]
+    if len(parts) < 2 or (len(parts) > 2 and "://" in repo):
         raise AppError("Give the repository as owner/name, e.g. 'octocat/hello-world'.")
-    return repo
+    if len(parts) > 2 and parts[2] not in ("issues", "pull", "pulls", "blob", "tree", "actions", "commit"):
+        raise AppError("Give the repository as owner/name, e.g. 'octocat/hello-world'.")
+    return f"{parts[0]}/{parts[1]}"
+
+
+def _github_error(status: int, body: str) -> str | None:
+    """A plain reason for GitHub's commonest refusals, so the model can tell the user what to change."""
+    m = body.lower()
+    if status == 422 and "cannot be searched" in m:
+        return ("GITHUB_NO_ACCESS: GitHub won't search that repository with the user's token -- it doesn't exist, "
+                "or the token doesn't cover it (fine-grained tokens only see the repositories picked when the "
+                "token was made). Tell the user; a new token with that repository fixes it.")
+    if status == 404:
+        return ("github: not found (404) -- it doesn't exist, or the user's token can't see it (fine-grained "
+                "tokens only see the repositories picked when the token was made).")
+    if status == 403 and "rate limit" in m:
+        return "github: GitHub's rate limit was hit. Do not retry now; tell the user to try again in a few minutes."
+    if status == 403 and "not accessible" in m:
+        return ("github: the token doesn't have permission for that (403). Tell the user which permission it needs "
+                "on their fine-grained token: Issues / Pull requests to read or write those, Contents to read files "
+                "and PR changes, Commit statuses / Checks for CI.")
+    return None
 
 
 # ------------------------------------------------------------------ github
 
+MY_WORK = {"assigned": ("Assigned to you", "is:open assignee:@me"),
+           "review_requests": ("Waiting for your review", "is:open is:pr review-requested:@me"),
+           "created": ("Opened by you", "is:open author:@me"),
+           "mentioned": ("Mentioning you", "is:open mentions:@me")}
+WAITING_ON_ME = ("review_requests", "assigned", "mentioned")
+MAX_PATCH = 3_000          # per file, in pr_changes
+FAILED = ("failure", "timed_out", "cancelled", "action_required", "startup_failure", "stale")
+
+
 def make_github_tools(user_id: str) -> list[Tool]:
+    login: list[str] = []          # the token's GitHub username, looked up once per run
+
     async def gh(method, path, **kw):
         return await _call(user_id, "github", method, path,
                            headers={"Accept": "application/vnd.github+json", "X-GitHub-Api-Version": "2022-11-28"}, **kw)
+
+    async def whoami() -> str:
+        if not login:
+            login.append((await gh("GET", "/user")).get("login") or "")
+        return login[0]
 
     def issue_rows(items):
         return [{"repo": i.get("repository_url", "").split("/repos/")[-1], "number": i.get("number"),
                  "title": i.get("title"), "state": i.get("state"), "url": i.get("html_url"),
                  "pr": "pull_request" in i, "updated": (i.get("updated_at") or "")[:10]} for i in items]
 
+    def line(r):
+        return f"{r['repo']}#{r['number']} [{r['state']}{' PR' if r['pr'] else ''}] {r['title']} — {r['url']}"
+
+    async def find(query: str, n: int) -> list[dict]:
+        # GitHub's search API now answers 422 unless the query says is:issue or is:pull-request
+        # (authenticated calls); when it names neither, search both and merge, newest first.
+        if TYPED_QUERY.search(query):
+            items = (await gh("GET", "/search/issues", query={"q": query, "per_page": str(n)})).get("items", [])
+        else:
+            issues, prs = await asyncio.gather(
+                gh("GET", "/search/issues", query={"q": f"{query} is:issue", "per_page": str(n)}),
+                gh("GET", "/search/issues", query={"q": f"{query} is:pull-request", "per_page": str(n)}))
+            items = sorted(issues.get("items", []) + prs.get("items", []),
+                           key=lambda i: i.get("updated_at") or "", reverse=True)[:n]
+        return issue_rows(items)
+
     async def search(query: str, max_results: int = 10):
-        d = await gh("GET", "/search/issues", query={"q": query, "per_page": str(max(1, min(int(max_results or 10), 30)))})
-        rows = issue_rows(d.get("items", []))
+        rows = await find(query, max(1, min(int(max_results or 10), 30)))
         if not rows:
             return f"No issues or pull requests match {query!r}."
-        return ToolOutput("\n".join(f"{r['repo']}#{r['number']} [{r['state']}{' PR' if r['pr'] else ''}] {r['title']} — {r['url']}" for r in rows),
-                          {"kind": "issues", "items": rows})
+        return ToolOutput("\n".join(line(r) for r in rows), {"kind": "issues", "items": rows})
 
-    async def my_work(kind: str = "assigned"):
-        q = {"assigned": "is:open assignee:@me", "review_requests": "is:open is:pr review-requested:@me",
-             "created": "is:open author:@me", "mentioned": "is:open mentions:@me"}.get(kind, "is:open assignee:@me")
-        return await search(q, 20)
+    async def my_work(kind: str = "all"):
+        if kind == "repos":
+            me = await whoami()
+            rows = await find(f"user:{me} is:open", 20)
+            if not rows:
+                return f"Nothing is open in the repositories {me} owns."
+            return ToolOutput(f"Open in repositories {me} owns:\n" + "\n".join(line(r) for r in rows),
+                              {"kind": "issues", "items": rows})
+        kinds = WAITING_ON_ME if kind not in MY_WORK else (kind,)
+        found = await asyncio.gather(*(find(MY_WORK[k][1], 20) for k in kinds), return_exceptions=True)
+        sections, rows, seen, failed = [], [], set(), []
+        for k, got in zip(kinds, found):
+            label, q = MY_WORK[k]
+            if isinstance(got, BaseException):
+                failed.append(f"{label.lower()}: {got}")
+                continue
+            fresh = [r for r in got if r["url"] not in seen]
+            seen.update(r["url"] for r in fresh)
+            rows += fresh
+            sections.append(f"{label} ({q}): " + ("none" if not got else
+                            "\n" + "\n".join(line(r) for r in got)))
+        text = "\n".join(sections)
+        if failed:
+            text += "\nCould not check -- " + "; ".join(failed)
+        if not rows:
+            return text
+        return ToolOutput(text, {"kind": "issues", "items": rows})
 
     async def get_issue(repo: str, number: int):
         r = _repo(repo)
@@ -108,6 +193,79 @@ def make_github_tools(user_id: str) -> list[Tool]:
             lines.append(f"--- {c.get('user', {}).get('login')}: {(c.get('body') or '')[:1500]}")
         return "\n".join(lines)[:MAX_TEXT]
 
+    async def read_file(repo: str, path: str = "", ref: str = ""):
+        r = _repo(repo)
+        q = {"ref": ref} if ref else None
+        clean = path.strip().strip("/")
+        d = await gh("GET", f"/repos/{r}/contents/{quote(clean)}" if clean else f"/repos/{r}/readme", query=q)
+        if isinstance(d, list):
+            entries = sorted(d, key=lambda e: (e.get("type") != "dir", e.get("name", "")))
+            return f"{r}/{clean or ''} (folder):\n" + "\n".join(
+                f"{e.get('name')}{'/' if e.get('type') == 'dir' else ''}" for e in entries)[:MAX_TEXT]
+        name, url = d.get("path") or clean, d.get("html_url", "")
+        if d.get("type") != "file" or d.get("encoding") != "base64" or not d.get("content"):
+            return f"{r}/{name} can't be shown here (too large or not a regular file): {url}"
+        try:
+            text = base64.b64decode(d["content"]).decode("utf-8")
+        except (ValueError, UnicodeDecodeError):
+            return f"{r}/{name} is a binary file: {url}"
+        more = f"\n…[truncated; full file: {url}]" if len(text) > MAX_TEXT else ""
+        return f"{r}/{name} ({url})\n{text[:MAX_TEXT]}{more}"
+
+    async def pr(r: str, number: int) -> dict:
+        try:
+            return await gh("GET", f"/repos/{r}/pulls/{int(number)}")
+        except AppError as e:
+            if "404" in str(e):
+                raise AppError(f"{r}#{number} is not a pull request, or the token can't see it.") from e
+            raise
+
+    async def pr_changes(repo: str, number: int):
+        r = _repo(repo)
+        p = await pr(r, number)
+        files = await gh("GET", f"/repos/{r}/pulls/{int(number)}/files", query={"per_page": "100"})
+        state = "merged" if p.get("merged") else ("draft" if p.get("draft") else p.get("state"))
+        out = [f"{r}#{number} [{state}] {p.get('title')} — {p.get('html_url')}",
+               (f"{p.get('head', {}).get('ref')} → {p.get('base', {}).get('ref')} · {p.get('changed_files')} files, "
+                f"+{p.get('additions')} −{p.get('deletions')}")]
+        for f in files if isinstance(files, list) else []:
+            out.append(f"\n=== {f.get('status')} {f.get('filename')} (+{f.get('additions')} −{f.get('deletions')})")
+            patch = f.get("patch")
+            out.append(patch[:MAX_PATCH] + ("\n…[patch truncated]" if len(patch) > MAX_PATCH else "")
+                       if patch else "(no text diff: binary or too large)")
+        text = "\n".join(out)
+        return text[:MAX_TEXT] + ("\n…[more changes not shown]" if len(text) > MAX_TEXT else "")
+
+    async def checks(repo: str, number: int):
+        r = _repo(repo)
+        p = await pr(r, number)
+        sha = (p.get("head") or {}).get("sha", "")
+        runs, status = await asyncio.gather(
+            gh("GET", f"/repos/{r}/commits/{sha}/check-runs", query={"per_page": "100"}),
+            gh("GET", f"/repos/{r}/commits/{sha}/status"), return_exceptions=True)
+        items = []   # (name, state, link) with state = passed / failed / running / skipped
+        if not isinstance(runs, BaseException):
+            for c in runs.get("check_runs", []):
+                concl = c.get("conclusion")
+                st = ("running" if c.get("status") != "completed" else "failed" if concl in FAILED
+                      else "skipped" if concl in ("skipped", "neutral") else "passed")
+                items.append((c.get("name"), st, c.get("details_url") or c.get("html_url") or ""))
+        if not isinstance(status, BaseException):
+            for c in status.get("statuses", []):
+                st = {"success": "passed", "pending": "running"}.get(c.get("state"), "failed")
+                items.append((c.get("context"), st, c.get("target_url") or ""))
+        if not items:
+            if isinstance(runs, BaseException) and isinstance(status, BaseException):
+                raise runs
+            return f"{r}#{number}: no CI checks reported for the latest commit ({sha[:7]})."
+        count = {s: sum(1 for _, st, _ in items if st == s) for s in ("passed", "failed", "running", "skipped")}
+        verdict = "failing" if count["failed"] else "still running" if count["running"] else "passing"
+        out = [f"{r}#{number} CI is {verdict} on {sha[:7]}: " + ", ".join(f"{v} {k}" for k, v in count.items() if v)]
+        out += [f"- {st}: {name} {link}".rstrip() for name, st, link in items if st in ("failed", "running")]
+        if isinstance(runs, BaseException):
+            out.append(f"(check runs not readable: {runs})")
+        return "\n".join(out)
+
     async def create_issue(repo: str, title: str, body: str = ""):
         i = await gh("POST", f"/repos/{_repo(repo)}/issues", body={"title": title, "body": body})
         return f"Created {_repo(repo)}#{i.get('number')}: {i.get('html_url')}"
@@ -117,21 +275,35 @@ def make_github_tools(user_id: str) -> list[Tool]:
         return f"Commented: {c.get('html_url')}"
 
     o = {"type": "object"}
+    repo_desc = ("owner/name or a github.com link. If the user hasn't said which repository, ask them "
+                 "(ask_user) -- never guess one.")
+    repo_num = {**o, "properties": {"repo": {"type": "string", "description": repo_desc},
+                                    "number": {"type": "integer"}}, "required": ["repo", "number"]}
     return [
         Tool("github__search", "Search GitHub issues and pull requests with GitHub search syntax, e.g. "
              "'repo:owner/name is:open label:bug' or 'is:pr author:@me'.",
              {**o, "properties": {"query": {"type": "string"}, "max_results": {"type": "integer"}}, "required": ["query"]},
              _safe(search)),
-        Tool("github__my_work", "The user's own open GitHub work: kind = assigned (default), review_requests, created or mentioned.",
-             {**o, "properties": {"kind": {"type": "string", "enum": ["assigned", "review_requests", "created", "mentioned"]}}},
+        Tool("github__my_work", "The user's own open GitHub work. kind = all (default: review requests, assigned "
+             "and mentions together -- use for 'what's waiting on me'), review_requests, assigned, created, "
+             "mentioned, or repos (everything open in repositories the user owns -- 'my repo').",
+             {**o, "properties": {"kind": {"type": "string", "enum": ["all", *MY_WORK, "repos"]}}},
              _safe(my_work)),
-        Tool("github__get_issue", "Read an issue or pull request with its latest comments. repo = owner/name.",
-             {**o, "properties": {"repo": {"type": "string"}, "number": {"type": "integer"}}, "required": ["repo", "number"]},
-             _safe(get_issue)),
-        Tool("github__create_issue", "Open a new issue in a repository. Requires the user's approval.",
+        Tool("github__get_issue", "Read an issue or pull request's description and latest comments. "
+             "Use this (not read_webpage) for github.com issue and PR links.", repo_num, _safe(get_issue)),
+        Tool("github__pr_changes", "A pull request's changed files with their diffs (code review).", repo_num,
+             _safe(pr_changes)),
+        Tool("github__checks", "Whether a pull request's CI passed: check runs and statuses on its latest commit.",
+             repo_num, _safe(checks)),
+        Tool("github__read_file", "Read a file or list a folder in a repository; no path = the README. "
+             "ref = branch, tag or commit (default branch if empty).",
+             {**o, "properties": {"repo": {"type": "string", "description": repo_desc}, "path": {"type": "string"},
+                                  "ref": {"type": "string"}},
+              "required": ["repo"]}, _safe(read_file)),
+        Tool("github__create_issue", "Open a new issue in a repository. The user approves it on a card before it runs, so call it when asked.",
              {**o, "properties": {"repo": {"type": "string"}, "title": {"type": "string"}, "body": {"type": "string"}},
               "required": ["repo", "title"]}, _safe(create_issue)),
-        Tool("github__comment", "Comment on an issue or pull request. Requires the user's approval.",
+        Tool("github__comment", "Comment on an issue or pull request. The user approves it on a card before it runs, so call it when asked.",
              {**o, "properties": {"repo": {"type": "string"}, "number": {"type": "integer"}, "body": {"type": "string"}},
               "required": ["repo", "number", "body"]}, _safe(comment)),
     ]
@@ -207,10 +379,10 @@ def make_notion_tools(user_id: str) -> list[Tool]:
              {**o, "properties": {"query": {"type": "string"}, "max_results": {"type": "integer"}}}, _safe(search)),
         Tool("notion__read_page", "Read a Notion page's text by page id (from notion__search).",
              {**o, "properties": {"page_id": {"type": "string"}}, "required": ["page_id"]}, _safe(read_page)),
-        Tool("notion__append_to_page", "Add text to the end of a Notion page (lines; '- ' bullets, '# ' headings). Requires the user's approval.",
+        Tool("notion__append_to_page", "Add text to the end of a Notion page (lines; '- ' bullets, '# ' headings). The user approves it on a card before it runs, so call it when asked.",
              {**o, "properties": {"page_id": {"type": "string"}, "text": {"type": "string"}}, "required": ["page_id", "text"]},
              _safe(append)),
-        Tool("notion__create_page", "Create a Notion page under a parent page. Requires the user's approval.",
+        Tool("notion__create_page", "Create a Notion page under a parent page. The user approves it on a card before it runs, so call it when asked.",
              {**o, "properties": {"parent_page_id": {"type": "string"}, "title": {"type": "string"}, "content": {"type": "string"}},
               "required": ["parent_page_id", "title"]}, _safe(create_page)),
     ]
@@ -257,7 +429,7 @@ def make_slack_tools(user_id: str) -> list[Tool]:
         Tool("slack__read_channel", "Read the latest messages in a Slack channel by id (from slack__list_channels).",
              {**o, "properties": {"channel_id": {"type": "string"}, "limit": {"type": "integer"}}, "required": ["channel_id"]},
              _safe(read_channel)),
-        Tool("slack__send_message", "Post a message to a Slack channel by id, as the user. Requires the user's approval.",
+        Tool("slack__send_message", "Post a message to a Slack channel by id, as the user. The user approves it on a card before it runs, so call it when asked.",
              {**o, "properties": {"channel_id": {"type": "string"}, "text": {"type": "string"}}, "required": ["channel_id", "text"]},
              _safe(send)),
     ]

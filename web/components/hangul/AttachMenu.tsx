@@ -119,15 +119,18 @@ export function AttachMenu({
   const recordNote = async () => {
     setOpen(false)
     const r = (noteRec.current = new Recorder())
-    setNoteSecs(0)
-    const tick = setInterval(() => setNoteSecs((x) => (x ?? 0) + 1), 1000)
+    setNoteSecs(-1)                       // -1 = waiting for the browser's mic permission
+    let tick: number | undefined
     let rec
     try {
-      rec = await r.start({ maxMs: 10 * 60_000 })
+      rec = await r.start({ maxMs: 10 * 60_000, onStart: () => {
+        setNoteSecs(0)
+        tick = window.setInterval(() => setNoteSecs((x) => (x ?? 0) + 1), 1000)
+      } })
     } catch {
       onError?.("Allow microphone access in your browser to record a voice note.")
     } finally {
-      clearInterval(tick)
+      window.clearInterval(tick)
       setNoteSecs(null)
     }
     if (!rec || rec.seconds < 1) return
@@ -173,13 +176,27 @@ export function AttachMenu({
         hidden
         onChange={(e) => { const f = e.target.files?.[0]; if (f) upload(f) }}
       />
-      {noteSecs !== null && (
-        <button type="button" className="h-btn-solid" data-testid="voice-note-stop"
-          onClick={() => noteRec.current?.stop()} aria-label="Stop recording the voice note"
-          style={{ position: "absolute", bottom: 40, left: 0, zIndex: 31, gap: 6, whiteSpace: "nowrap", background: "var(--err)" }}>
-          <i className="ti ti-player-stop-filled" style={{ fontSize: 13 }} />
-          Recording {Math.floor(noteSecs / 60)}:{String(noteSecs % 60).padStart(2, "0")} — tap to finish
+      {noteSecs === -1 && (
+        <button type="button" className="h-btn-ghost" data-testid="voice-note-waiting"
+          onClick={() => noteRec.current?.cancel()} aria-label="Cancel the voice note"
+          style={{ position: "absolute", bottom: 40, left: 0, zIndex: 31, gap: 6, whiteSpace: "nowrap" }}>
+          <i className="ti ti-loader-2 animate-spin" style={{ fontSize: 13 }} />
+          Allow microphone access… — tap to cancel
         </button>
+      )}
+      {noteSecs !== null && noteSecs >= 0 && (
+        <div style={{ position: "absolute", bottom: 40, left: 0, zIndex: 31, display: "flex", gap: 6 }}>
+          <button type="button" className="h-btn-solid" data-testid="voice-note-stop"
+            onClick={() => noteRec.current?.stop()} aria-label="Stop recording the voice note"
+            style={{ gap: 6, whiteSpace: "nowrap", background: "var(--err)" }}>
+            <i className="ti ti-player-stop-filled" style={{ fontSize: 13 }} />
+            Recording {Math.floor(noteSecs / 60)}:{String(noteSecs % 60).padStart(2, "0")} · Stop
+          </button>
+          <button type="button" className="h-btn-ghost" data-testid="voice-note-cancel"
+            onClick={() => noteRec.current?.cancel()} aria-label="Discard the voice note" title="Discard">
+            <i className="ti ti-x" style={{ fontSize: 13 }} />
+          </button>
+        </div>
       )}
       <button
         type="button"

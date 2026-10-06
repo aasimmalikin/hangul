@@ -14,7 +14,7 @@ const APPS: Record<AppKey, { label: string; icon: string; steps: string[]; link:
   github: {
     label: "GitHub", icon: "brand-github", placeholder: "github_pat_…",
     link: "https://github.com/settings/personal-access-tokens/new", linkText: "Create a fine-grained token",
-    steps: ["Choose the repositories Hangul may see.", "Permissions: Issues and Pull requests → Read and write (Read only if you just want to look).", "Generate, copy, paste below."],
+    steps: ["Choose the repositories Hangul may see.", "Permissions: Issues and Pull requests → Read and write (Read only if you just want to look); Contents and Commit statuses → Read (to read files, PR changes and CI).", "Generate, copy, paste below."],
   },
   notion: {
     label: "Notion", icon: "brand-notion", placeholder: "ntn_…",

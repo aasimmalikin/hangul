@@ -10,8 +10,8 @@ export default function manifest(): MetadataRoute.Manifest {
     scope: "/",
     display: "standalone",
     orientation: "portrait",
-    background_color: "#0F0F10",
-    theme_color: "#0F0F10",
+    background_color: "#FFFFFF",
+    theme_color: "#FFFFFF",
     icons: [
       { src: "/icons/icon-192.png", sizes: "192x192", type: "image/png" },
       { src: "/icons/icon-512.png", sizes: "512x512", type: "image/png" },
@@ -19,7 +19,7 @@ export default function manifest(): MetadataRoute.Manifest {
     ],
     shortcuts: [
       { name: "Talk to Hangul", short_name: "Talk", url: "/chat?voice=1", icons: [{ src: "/icons/icon-192.png", sizes: "192x192" }] },
-      { name: "My stuff", url: "/lists", icons: [{ src: "/icons/icon-192.png", sizes: "192x192" }] },
+      { name: "Kept", url: "/kept", icons: [{ src: "/icons/icon-192.png", sizes: "192x192" }] },
     ],
   }
 }

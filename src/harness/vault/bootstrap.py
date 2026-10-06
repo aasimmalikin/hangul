@@ -38,6 +38,9 @@ async def build_vault(settings: Settings, audit=None) -> Vault | None:
     set_current(vault)
     # operator keys from .env become system credentials so nothing else has to hold them
     await vault.import_system_credential("tavily", settings.tavily_api_key, label="TAVILY_API_KEY from .env")
+    for provider in ("whatsapp", "whatsapp_media"):     # one token: the Graph API and Meta's media host
+        await vault.import_system_credential(provider, settings.whatsapp_access_token,
+                                             label="WHATSAPP_ACCESS_TOKEN from .env")
     log.info("vault ready", grant_ttl_s=settings.vault_grant_ttl_s, public_url=settings.vault_public_url)
     return vault
 

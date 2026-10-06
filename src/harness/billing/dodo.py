@@ -24,7 +24,9 @@ from harness.db import billing as billing_db
 from harness.db import ledger
 from harness.logging import log
 
-PRODUCTS = ("plus", "pro", "topup")
+PRODUCTS = ("plus", "pro", "topup",
+            # yearly and Indian (INR) variants of the plans: see plans.product_key
+            "plus_annual", "pro_annual", "plus_in", "pro_in", "plus_in_annual", "pro_in_annual")
 
 # Subscription statuses that keep the paid plan. A user who cancels stays
 # `active` with cancel_at_next_billing_date until the period ends; then Dodo
@@ -74,7 +76,7 @@ async def create_checkout(product: str, user_id: str, email: str | None, *, tria
         # copied onto the payment / subscription, so the webhook knows the user
         "metadata": {"user_id": str(user_id), "product": product},
     }
-    if trial_days > 0 and product in ("plus", "pro"):
+    if trial_days > 0 and product.split("_")[0] in ("plus", "pro"):
         body["subscription_data"] = {"trial_period_days": int(trial_days)}
         body["metadata"]["trial"] = "1"           # copied onto the subscription: the webhook marks it trialing
     if email:
@@ -185,9 +187,11 @@ def apply_event(payload: dict) -> str:
         return "topup"
 
     if kind.startswith("subscription."):
+        from harness.billing.plans import parse_product_key
         status = data.get("status")
         product = product_for_id(data.get("product_id"))
-        plan = product if product in ("plus", "pro") and status in ACTIVE_STATUSES else "free"
+        bought, region, interval = parse_product_key(product) if product and product != "topup" else (None, "intl", "month")
+        plan = bought if bought in ("plus", "pro") and status in ACTIVE_STATUSES else "free"
         cancelling = bool(data.get("cancel_at_next_billing_date")) and plan != "free"
         before = billing_db.get_account(user_id)
         # a trial runs from subscription.active until the first real charge (subscription.renewed)
@@ -204,8 +208,12 @@ def apply_event(payload: dict) -> str:
             billing_customer_id=customer.get("customer_id") or before.billing_customer_id,
             billing_subscription_id=data.get("subscription_id") or before.billing_subscription_id,
         )
-        if plan != before.plan:
-            # a new plan starts a fresh allowance period
+        if plan != "free":
+            # which price it was bought at decides the allowance (Indian plans include less)
+            fields.update(plan_region=region, plan_interval=interval)
+        switched = plan != "free" and (region, interval) != (before.plan_region, before.plan_interval)
+        if plan != before.plan or (switched and kind != "subscription.renewed"):
+            # a new plan (or the same plan at another price: monthly -> yearly) starts a fresh allowance period
             fields["plan_period_start"] = datetime.now(timezone.utc) if plan != "free" else None
         elif kind == "subscription.renewed" and before.plan_status in ("trialing", "trial_cancelling"):
             # the trial converted: the first paid period starts now, with the full allowance

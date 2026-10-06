@@ -1,11 +1,8 @@
 "use client"
 
-import { useState } from "react"
-import Link from "next/link"
+import { useEffect, useState } from "react"
 import { useRouter } from "next/navigation"
 import { useSession } from "next-auth/react"
-import { useTheme } from "@/components/ThemeProvider"
-import { HangulSigil } from "@/components/HangulSigil"
 import { AppHeader } from "@/components/hangul/AppHeader"
 import { SignInModal, type AuthMode } from "@/components/hangul/SignInModal"
 import { AttachMenu, type Attachment } from "@/components/hangul/AttachMenu"
@@ -17,23 +14,19 @@ import { ChatsPanel } from "@/components/hangul/ChatsPanel"
 import { TodayBrief } from "@/components/hangul/TodayBrief"
 import { InstallTip } from "@/components/hangul/InstallTip"
 import { Onboarding } from "@/components/hangul/Onboarding"
+import { HomeLanding } from "@/components/hangul/HomeLanding"
+import { homePrompts, usePersona } from "@/lib/personas"
 
-// One tap from the home screen: `send` asks right away, otherwise it fills the box to finish.
-const PROMPTS: Array<{ label: string; text: string; send: boolean; icon: string }> = [
-  { label: "Plan my day", text: "Plan my day: what's on my calendar, what's due, and what should I focus on?", send: true, icon: "sun" },
-  { label: "Remind me…", text: "Remind me to ", send: false, icon: "alarm" },
-  { label: "Search my documents", text: "Search my documents", send: true, icon: "file-search" },
-  { label: "Make a document", text: "Make a PDF of ", send: false, icon: "file-type-pdf" },
-]
+// One tap from the home screen (lib/personas.ts): they follow who the user said they are.
 // How tall the composer grows before it scrolls: ~8 lines at 22px.
 const MAX_COMPOSER_PX = 200
 
 export default function Landing() {
   const { status } = useSession()
   const router = useRouter()
-  const { theme } = useTheme()
-  const [signIn, setSignIn] = useState<{ open: boolean; mode: AuthMode; reason?: string }>({ open: false, mode: "signin" })
+  const [signIn, setSignIn] = useState<{ open: boolean; mode: AuthMode; reason?: string; callbackUrl?: string }>({ open: false, mode: "signin" })
   const [input, setInput] = useState("")
+  const prompts = homePrompts(usePersona(status === "authenticated"))
 
   // Documents added here are already indexed server-side for this user; their
   // names ride along to /chat so the chips carry over.
@@ -45,23 +38,56 @@ export default function Landing() {
   const [uploadError, setUploadError] = useState<string | null>(null)
 
   const askToSignIn = (reason?: string) => setSignIn({ open: true, mode: "signin", reason })
-  const askToSignUp = () => setSignIn({ open: true, mode: "signup" })
+  const askToSignUp = (reason?: string, callbackUrl?: string) => setSignIn({ open: true, mode: "signup", reason, callbackUrl })
 
   // Signed-in users go straight to chat with their question; everyone else
   // has to sign in first.
+  // A question sent while a file is still uploading waits for it, so the document goes along.
+  const [queued, setQueued] = useState<string | null>(null)
   const onSubmit = (text = input) => {
     const q = text.trim()
     if (!q) return
     if (status !== "authenticated") return askToSignIn("Sign in to ask the agent.")
+    if (uploading) { setQueued(q); return }
     const params = new URLSearchParams({ q })
     for (const a of attachments) params.append("doc", a.name)
     router.push(`/chat?${params}`)
+  }
+  useEffect(() => {
+    if (queued === null || uploading) return
+    const params = new URLSearchParams({ q: queued })
+    for (const a of attachments) params.append("doc", a.name)
+    router.push(`/chat?${params}`)
+  }, [queued, uploading, attachments, router])
+
+  const modal = (
+    <SignInModal
+      open={signIn.open}
+      onClose={() => setSignIn((s) => ({ ...s, open: false }))}
+      mode={signIn.mode}
+      reason={signIn.reason}
+      callbackUrl={signIn.callbackUrl ?? "/"}
+    />
+  )
+
+  // Signed out: the public homepage (Hearth). Signed in: Today and the box to ask.
+  // Only a definite "unauthenticated" swaps the page: the session is re-checked when the
+  // window regains focus (e.g. after the file picker closes) and reads "loading" for a
+  // moment, which must not unmount Today and lose an attached document.
+  if (status === "unauthenticated") {
+    return (
+      <main style={{ minHeight: "100vh", display: "flex", flexDirection: "column" }}>
+        <AppHeader wordmarkHref={null} onSignIn={() => askToSignIn()} onSignUp={() => askToSignUp()} />
+        <HomeLanding onStart={askToSignUp} />
+        {modal}
+      </main>
+    )
   }
 
   return (
     <main className="h-has-bottom-nav" style={{ height: "100vh", display: "flex", flexDirection: "column", boxSizing: "border-box" }}>
       {/* Same wordmark as every other page; plain (not a link) because this is home. */}
-      <AppHeader wordmarkHref={null} onSignIn={() => askToSignIn()} onSignUp={askToSignUp} />
+      <AppHeader wordmarkHref={null} onSignIn={() => askToSignIn()} onSignUp={() => askToSignUp()} />
 
       <div style={{ flex: 1, display: "flex", minHeight: 0 }}>
       {/* Same rail as /chat: the user's conversations, visible right after sign-in. */}
@@ -75,21 +101,7 @@ export default function Landing() {
             <TodayBrief onAsk={(t) => onSubmit(t)} />
             <div style={{ marginTop: 10 }}><InstallTip /></div>
           </div>
-        ) : (
-          <>
-            <div style={{ filter: theme === "dark" ? "drop-shadow(0 0 10px rgba(242,243,245,0.18))" : "none" }}>
-              <HangulSigil size={52} />
-            </div>
-            <p className="h-display" style={{ fontSize: 25, margin: "22px 0 8px" }}>Your personal AI assistant</p>
-            <p className="h-muted" style={{ fontSize: 14, margin: "0 0 24px", textAlign: "center", maxWidth: 460 }}>
-              Reminders, email, calendar, documents and more — just ask, or talk.
-            </p>
-            <nav className="h-muted" aria-label="Legal" data-testid="landing-legal"
-              style={{ position: "fixed", bottom: 14, left: 0, right: 0, textAlign: "center", fontSize: 12 }}>
-              <Link href="/terms" style={{ color: "inherit" }}>Terms</Link> · <Link href="/privacy" style={{ color: "inherit" }}>Privacy</Link> · <Link href="/refunds" style={{ color: "inherit" }}>Refunds</Link>
-            </nav>
-          </>
-        )}
+        ) : null}
 
         {/* Wide enough to write a real question in (was 460); still centred and clear of the rail. */}
         <div style={{ width: "100%", maxWidth: status === "authenticated" ? 760 : 640 }} data-testid="landing-composer-box">
@@ -98,7 +110,7 @@ export default function Landing() {
             <AttachMenu
               onUploaded={(a) => setAttachments((list) => [...list, a])}
               onUploadingChange={setUploading}
-              onError={setUploadError}
+              onError={(e) => { setUploadError(e); if (e) setQueued(null) }}
               onRequireSignIn={askToSignIn}
               placement="below"
               connectors={connectors}
@@ -147,7 +159,7 @@ export default function Landing() {
             Deep research
           </button>
           <ConnectorChips keys={connectors} onChange={setConnectors} />
-          {PROMPTS.map((p) => (
+          {prompts.map((p) => (
             <button key={p.label} className="h-chip" style={{ display: "inline-flex", alignItems: "center", gap: 5 }}
               onClick={() => (p.send ? onSubmit(p.text) : setInput(p.text))}>
               <i className={`ti ti-${p.icon}`} style={{ fontSize: 12 }} />{p.label}
@@ -159,13 +171,7 @@ export default function Landing() {
 
       {status === "authenticated" && <Onboarding />}
 
-      <SignInModal
-        open={signIn.open}
-        onClose={() => setSignIn((s) => ({ ...s, open: false }))}
-        mode={signIn.mode}
-        reason={signIn.reason}
-        callbackUrl="/"
-      />
+      {modal}
     </main>
   )
 }

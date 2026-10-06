@@ -9,6 +9,19 @@ from harness.db.models import UserSettings
 
 TONES = ("concise", "balanced", "detailed")
 
+# Who the user is, picked in onboarding or /settings. The text goes into the
+# system prompt so answers fit them; the web uses the key for starter prompts
+# and billing.plans.RECOMMENDED for the plan it suggests. "" = not chosen.
+PERSONAS: dict[str, str] = {
+    "founder": "Founder or business owner: their inbox, calendar and decisions matter most. Be brief and action-first; "
+               "flag what needs a decision or a reply.",
+    "developer": "Software developer: comfortable with technical detail, code and exact commands. Be precise; skip "
+                 "basics they already know.",
+    "student": "Student: deadlines, studying and research. Explain clearly, cite sources, and help them plan their time.",
+    "professional": "Working professional: meetings, email and getting work done. Keep answers practical and ready to use.",
+    "personal": "Using Hangul for everyday life: reminders, plans, errands and family. Keep it friendly and simple.",
+}
+
 
 @dataclass
 class Settings:
@@ -20,6 +33,8 @@ class Settings:
     timezone_auto: bool = True
     city: str = ""
     onboarded: bool = False
+    home_address: str = ""
+    persona: str = ""
 
     def as_dict(self) -> dict:
         return asdict(self)
@@ -31,7 +46,9 @@ def _row_to(row: UserSettings | None) -> Settings:
     return Settings(display_name=row.display_name, instructions=row.instructions, tone=row.tone,
                     timezone=row.timezone, language=row.language,
                     timezone_auto=bool(row.timezone_auto) if row.timezone_auto is not None else True,
-                    city=getattr(row, "city", "") or "", onboarded=bool(getattr(row, "onboarded", False)))
+                    city=getattr(row, "city", "") or "", onboarded=bool(getattr(row, "onboarded", False)),
+                    home_address=getattr(row, "home_address", "") or "",
+                    persona=getattr(row, "persona", "") or "")
 
 
 def get_settings(user_id: str) -> Settings:
@@ -68,6 +85,8 @@ def save_settings(user_id: str, values: Settings) -> Settings:
         raise ValueError(f"tone must be one of {TONES}")
     if not valid_timezone(values.timezone):
         raise ValueError(f"unknown timezone {values.timezone!r}")
+    if values.persona and values.persona not in PERSONAS:
+        raise ValueError(f"persona must be one of {tuple(PERSONAS)}")
     with SessionLocal() as s:
         row = s.get(UserSettings, int(user_id))
         if row is None:
@@ -79,6 +98,8 @@ def save_settings(user_id: str, values: Settings) -> Settings:
         row.timezone = values.timezone
         row.timezone_auto = values.timezone_auto
         row.city = values.city.strip()[:80]
+        row.home_address = values.home_address.strip()[:200]
+        row.persona = values.persona
         row.onboarded = bool(row.onboarded) or values.onboarded
         row.language = values.language.strip()[:16]
         s.commit()
@@ -144,6 +165,8 @@ def prompt_block(st: Settings, now: datetime | None = None) -> str:
         lines.append(f"Home city: {st.city} (use it for weather, places and 'near me' unless they say otherwise)")
     if st.language:
         lines.append(f"Preferred language: {st.language}")
+    if st.persona in PERSONAS:
+        lines.append(f"Who they are: {PERSONAS[st.persona]}")
     lines.append(f"Tone: {TONE_TEXT.get(st.tone, TONE_TEXT['balanced'])}")
     if st.instructions:
         lines.append("Custom instructions from the user (follow them unless they conflict with the rules above):\n"

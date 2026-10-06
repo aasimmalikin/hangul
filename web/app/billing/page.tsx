@@ -14,7 +14,9 @@ import { SignInModal, type AuthMode } from "@/components/hangul/SignInModal"
  * the page re-reads /api/billing on return.
  */
 
-type PlanInfo = { id: string; label: string; price_usd_month: number; model_tiers: string[]; max_effort: string; research_allowed: boolean; monthly_allowance_usd: number }
+type Price = { amount: number; currency: string; label: string }
+type PlanInfo = { id: string; label: string; price_usd_month: number; model_tiers: string[]; max_effort: string; research_allowed: boolean; monthly_allowance_usd: number
+  prices?: { month?: Price; year?: Price }; best_for?: string }
 type Billing = {
   enabled: boolean
   plan: string
@@ -32,10 +34,20 @@ type Billing = {
   trialing?: boolean
   trial_ends_at?: string | null
   trial_days?: number
+  region?: "in" | "intl"
+  plan_interval?: "month" | "year"
+  recommended_plan?: string | null       // from the persona the user picked
   plans: PlanInfo[]
 }
 
 const usd = (n: number) => `$${n.toFixed(2)}`
+/** "₹499/mo", "$200/yr", "Free": the region's price from GET /billing, else the plan's dollar price. */
+function priceLabel(p: PlanInfo, interval: "month" | "year"): string {
+  if (!p.price_usd_month) return "Free"
+  const price = p.prices?.[interval] ?? p.prices?.month
+  if (!price) return `$${p.price_usd_month}/mo`
+  return `${price.label}/${p.prices?.[interval] && interval === "year" ? "yr" : "mo"}`
+}
 const day = (iso?: string | null) => (iso ? new Date(iso).toLocaleDateString() : null)
 const TIER_TEXT: Record<string, string> = { basic: "Fast everyday models", advanced: "Advanced models (GPT-5.4, Terra…)", frontier: "Frontier models (GPT-5.5, Sol, Astra)" }
 
@@ -64,6 +76,7 @@ function BillingInner() {
   const [busy, setBusy] = useState<string | null>(null)
   const [cancelling, setCancelling] = useState(false)
   const [notice, setNotice] = useState<string | null>(null)
+  const [period, setPeriod] = useState<"month" | "year">("month")
 
   const load = useCallback(async () => {
     try {
@@ -92,7 +105,8 @@ function BillingInner() {
       window.location.href = data.url
     } catch (e) { setError((e as Error).message); setBusy(null) }
   }
-  const checkout = (product: "plus" | "pro" | "topup") => redirectTo(product, "/api/billing/checkout", { product })
+  const checkout = (product: "plus" | "pro" | "topup") =>
+    redirectTo(product, "/api/billing/checkout", product === "topup" ? { product } : { product, interval: period })
   const openPortal = () => redirectTo("portal", "/api/billing/portal")
   const resume = async () => {
     setBusy("resume"); setError(null)
@@ -186,6 +200,17 @@ function BillingInner() {
             onDone={(msg) => { setCancelling(false); setNotice(msg); void load() }} />
         )}
 
+        {b && b.plans.some((p) => p.prices?.year) && (
+          <div className="flex" style={{ gap: 6, alignItems: "center", alignSelf: "center" }} role="group" aria-label="Billing period" data-testid="interval-toggle">
+            {(["month", "year"] as const).map((i) => (
+              <button key={i} className={period === i ? "h-btn-solid" : "h-btn-ghost"} style={{ fontSize: 12, padding: "4px 12px" }}
+                aria-pressed={period === i} onClick={() => setPeriod(i)} data-testid={`interval-${i}`}>
+                {i === "month" ? "Monthly" : "Yearly"}
+              </button>
+            ))}
+            <span className="h-muted" style={{ fontSize: 12 }}>Yearly: 2 months free</span>
+          </div>
+        )}
         {b && (
           <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(200px, 1fr))", gap: 12 }}>
             {b.plans.map((p) => {
@@ -195,10 +220,17 @@ function BillingInner() {
                 <div key={p.id} className="h-surface" data-testid={`plan-${p.id}`}
                   style={{ padding: 16, display: "flex", flexDirection: "column", gap: 8,
                     outline: highlight === p.id ? "1.5px solid var(--fg)" : undefined }}>
+                  {b.recommended_plan === p.id && !current && (
+                    <span className="h-chip" data-testid={`recommended-${p.id}`}
+                      style={{ alignSelf: "flex-start", fontSize: 11, padding: "1px 8px", background: "var(--solid-bg)", color: "var(--solid-fg)", borderColor: "var(--solid-bg)" }}>
+                      Recommended for you
+                    </span>
+                  )}
                   <div className="flex" style={{ justifyContent: "space-between", alignItems: "baseline" }}>
                     <h3 className="h-display" style={{ fontSize: 17, margin: 0 }}>{p.label}</h3>
-                    <span style={{ fontSize: 15 }}>{p.price_usd_month ? `$${p.price_usd_month}/mo` : "Free"}</span>
+                    <span style={{ fontSize: 15 }} data-testid={`price-${p.id}`}>{priceLabel(p, period)}</span>
                   </div>
+                  {p.best_for && <p style={{ fontSize: 12, margin: 0 }} data-testid={`best-for-${p.id}`}><b style={{ fontWeight: 500 }}>Best for:</b> {p.best_for}</p>}
                   <ul className="h-muted" style={{ fontSize: 12, margin: 0, paddingLeft: 16, display: "flex", flexDirection: "column", gap: 3 }}>
                     {p.model_tiers.map((t) => <li key={t}>{TIER_TEXT[t] ?? t}</li>)}
                     <li>Effort up to {p.max_effort}</li>

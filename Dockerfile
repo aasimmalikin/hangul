@@ -1,3 +1,6 @@
+# The Hangul API (FastAPI). The web app has its own image: web/Dockerfile.
+# docker-compose.prod.yml runs both behind Caddy; see docs/deploy.md.
+
 # ---- Stage 1: builder — installs dependencies into a venv ----
 FROM python:3.12-slim AS builder
 
@@ -29,39 +32,36 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 
 WORKDIR /app
 
-# Node is needed for the MCP filesystem server (npx @modelcontextprotocol/server-filesystem)
+# Node: MCP servers declared in servers.yaml run through npx
 # fonts-dejavu-core: a Unicode font for generated PDFs (create_file: ₹, accents, Greek, Cyrillic)
-RUN apt-get update && apt-get install -y --no-install-recommends nodejs npm fonts-dejavu-core \
+# curl: the health check
+RUN apt-get update && apt-get install -y --no-install-recommends nodejs npm fonts-dejavu-core curl \
     && rm -rf /var/lib/apt/lists/*
 
 # Copy the ready-made venv from the builder (no build tools shipped)
 COPY --from=builder /opt/venv /opt/venv
 
-# Copy the application code and data the app reads
+# The application, its migrations, and the shared documents (indexed into
+# Postgres with `python -m harness.retrieval.ingest docs`, once per database)
 COPY src ./src
+COPY alembic ./alembic
+COPY alembic.ini ./
 COPY docs ./docs
-COPY data/index.json data/index_version.txt ./data/
-COPY data/eval_runs ./data/eval_runs
-COPY data/eval_baseline.json ./data/
-COPY streamlit_app.py ./
-COPY .streamlit ./.streamlit
 COPY start.sh ./
 
-# Create the session folder the app writes to, and a non-root user
+# The user files folder lives on a volume (data/sessions); a non-root user owns it
 RUN mkdir -p data/sessions && \
     groupadd -r app && useradd -r -g app -m -d /home/app app && \
     mkdir -p /home/app/.npm && \
-    chown -R app:app /app /home/app
+    chown -R app:app /app /home/app && chmod +x start.sh
 ENV HOME=/home/app \
     NPM_CONFIG_CACHE=/home/app/.npm
 USER app
 
-# API on 8000, Streamlit on 8501
-EXPOSE 8000 8501
+EXPOSE 8000
 
-# Health check: is the API answering? (slim image has no curl, so use python)
-HEALTHCHECK --interval=30s --timeout=5s --start-period=15s --retries=3 \
-    CMD python -c "import urllib.request; urllib.request.urlopen('http://localhost:8000/healthz').read()" || exit 1
+HEALTHCHECK --interval=30s --timeout=5s --start-period=60s --retries=3 \
+    CMD curl -fsS http://localhost:8000/healthz >/dev/null || exit 1
 
-# Start both processes (see start.sh)
+# Migrations (RUN_MIGRATIONS=1, the default), then the API (start.sh)
 CMD ["./start.sh"]

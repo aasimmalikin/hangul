@@ -1,7 +1,7 @@
 import { test, expect } from "@playwright/test"
 import { ask, backend, expectReply, freshUser, resetBackend, signInAs } from "./helpers"
 
-/** Everyday-assistant tools: checklist and weather cards, the reminder bell, /lists, starter chips. */
+/** Everyday-assistant tools: checklist and weather cards, the reminder bell, Kept's lists, starter chips. */
 test.describe("daily assistant", () => {
   const me = freshUser("daily")
   test.beforeEach(async ({ context, baseURL }) => {
@@ -40,8 +40,8 @@ test.describe("daily assistant", () => {
     await expect.poll(async () => (await backend("/__state")).reminders[me.id][0].status).toBe("done")
   })
 
-  test("/lists adds and shows items", async ({ page }) => {
-    await page.goto("/lists")
+  test("Kept's drawer adds and shows list items", async ({ page }) => {
+    await page.goto("/kept#holding")
     await page.getByLabel("New item").fill("Pay rent")
     await page.getByRole("button", { name: "Add" }).click()
     await expect(page.getByTestId("list-To-do")).toContainText("Pay rent")

@@ -30,7 +30,7 @@ export function AppHeader({
   onSignIn: () => void
   onSignUp?: () => void
   children?: React.ReactNode
-  /** Phones: the Today / Chats / My stuff / You bar (off inside a conversation). */
+  /** Phones: the Today / Chats / Kept / You bar (off inside a conversation). */
   bottomNav?: boolean
 }) {
   const { status } = useSession()

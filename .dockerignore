@@ -21,3 +21,14 @@ data/audit.jsonl
 # Git and OS noise
 .git/
 .DS_Store
+
+# Not part of the API image
+web/
+tests/
+data/eval_runs/
+data/index.json
+data/checkpoints.json
+streamlit_app.py
+.streamlit/
+*.md
+!docs/*.md

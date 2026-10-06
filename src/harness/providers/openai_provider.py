@@ -1,9 +1,16 @@
+import httpx
 from openai import AsyncOpenAI
-from harness.providers.base import AssistantTurn, ToolCall
+from harness.providers.base import AssistantTurn, ModelUnavailable, ToolCall
 import json
 
 from harness.logging import log
 
+
+# A stalled call must not hold a chat (and its conversation claim) for the SDK's
+# default 10 minutes x 3 attempts. The read limit is the gap between bytes, so a
+# long streamed answer is fine; a non-streamed deep answer has 5 minutes.
+TIMEOUT = httpx.Timeout(300.0, connect=10.0)
+MAX_RETRIES = 1
 
 # model -> what to send as reasoning_effort alongside function tools, learnt
 # from OpenAI's refusal: "none" when it asks for that, None = omit the field.
@@ -28,7 +35,7 @@ class OpenAIProvider:
     def __init__(self, api_key: str, model: str = "gpt-4o",
                  reasoning_effort: str | None = None,
                  client: AsyncOpenAI | None = None):
-        self.client = client or AsyncOpenAI(api_key=api_key)
+        self.client = client or AsyncOpenAI(api_key=api_key, timeout=TIMEOUT, max_retries=MAX_RETRIES)
         self.model = model
         # Sent as `reasoning_effort` when set; leave None for non-reasoning models.
         self.reasoning_effort = reasoning_effort
@@ -52,6 +59,29 @@ class OpenAIProvider:
         return kwargs
 
     async def _create(self, kwargs: dict):
+        """_create_once, with OpenAI's service failures turned into ModelUnavailable."""
+        import openai
+        try:
+            return await self._create_once(kwargs)
+        except (openai.AuthenticationError, openai.PermissionDeniedError) as e:
+            log.error("model provider refused our API key", model=kwargs.get("model"), error=str(e)[:300])
+            raise ModelUnavailable("unavailable") from e
+        except openai.RateLimitError as e:
+            # an empty prepaid balance is a 429 too; it needs the operator, not a retry
+            out_of_credit = getattr(e, "code", None) in ("insufficient_quota", "credit_balance_exhausted") \
+                or "insufficient_quota" in str(e)
+            if out_of_credit:
+                log.error("model provider credit exhausted: top up the OpenAI balance", model=kwargs.get("model"))
+            else:
+                log.warning("model provider rate limit", model=kwargs.get("model"))
+            raise ModelUnavailable("unavailable" if out_of_credit else "busy") from e
+        except openai.APITimeoutError as e:
+            raise ModelUnavailable("timeout") from e
+        except (openai.APIConnectionError, openai.InternalServerError) as e:
+            log.warning("model provider unreachable", model=kwargs.get("model"), error=str(e)[:300])
+            raise ModelUnavailable("unreachable") from e
+
+    async def _create_once(self, kwargs: dict):
         """chat.completions.create, retried once when the API refuses
         ``reasoning_effort`` together with function tools (OpenAI does this for
         some models on /v1/chat/completions; the Responses API would be the

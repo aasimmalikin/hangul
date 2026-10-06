@@ -11,7 +11,7 @@ import json
 
 from harness.tools.base import Tool
 from harness.vault import current as current_vault
-from harness.vault.providers import WRITE_METHODS
+from harness.vault.providers import CONNECTOR_ONLY, WRITE_METHODS
 from harness.vault.proxy import ProxyError
 from harness.vault.vault import VaultError
 
@@ -30,8 +30,16 @@ def _unavailable() -> str:
             "Do not retry; tell the user external APIs are unavailable.")
 
 
+def _connector_only(provider: str) -> str | None:
+    if (provider or "").strip().lower() in CONNECTOR_ONLY:
+        return (f"VAULT_DENIED: {provider} is only available through its connector's {provider}__* tools, "
+                f"not through vault_request/vault_mutate. Use those tools; if none does what was asked, "
+                f"tell the user Hangul can't do that in {provider.capitalize()} yet.")
+    return None
+
+
 def make_vault_tools(user_id: str, thread_id: str | None, consented: dict[str, bool] | None = None) -> list[Tool]:
-    consented = consented or {}
+    consented = {p: w for p, w in (consented or {}).items() if p not in CONNECTOR_ONLY}
     readable = sorted(consented)
     writable = sorted(p for p, w in consented.items() if w)
     hint_r = f" Providers you may use right now: {', '.join(readable)}." if readable else \
@@ -43,6 +51,8 @@ def make_vault_tools(user_id: str, thread_id: str | None, consented: dict[str, b
         vault = current_vault()
         if vault is None:
             return _unavailable()
+        if denied := _connector_only(provider):
+            return denied
         if not path.startswith("/"):
             path = "/" + path
         try:
@@ -58,6 +68,8 @@ def make_vault_tools(user_id: str, thread_id: str | None, consented: dict[str, b
         vault = current_vault()
         if vault is None:
             return _unavailable()
+        if denied := _connector_only(provider):
+            return denied
         method = (method or "").upper()
         if method not in WRITE_METHODS:
             return f"VAULT_DENIED: vault_mutate only accepts {', '.join(WRITE_METHODS)}; use vault_request for reads."
@@ -79,14 +91,15 @@ def make_vault_tools(user_id: str, thread_id: str | None, consented: dict[str, b
             description=(
                 "Read from a third-party API on the user's behalf (GET only). The vault "
                 "injects the user's credential; you never handle tokens. Give the provider "
-                "name and a path relative to that API (e.g. provider='github', "
-                "path='/user/repos'). If the result says VAULT_CONSENT_REQUIRED, tell the "
+                "name and a path relative to that API (e.g. provider='http:api.example.com', "
+                "path='/v1/items'). GitHub, Notion and Slack are not available here: use their "
+                "github__/notion__/slack__ tools. If the result says VAULT_CONSENT_REQUIRED, tell the "
                 "user to connect the provider at /vault and stop." + hint_r
             ),
             parameter={
                 "type": "object",
                 "properties": {
-                    "provider": {"type": "string", "description": "e.g. github, tavily, http:<host>"},
+                    "provider": {"type": "string", "description": "e.g. http:<host>"},
                     "path": {"type": "string", "description": "Path relative to the provider's API base"},
                     "query": {"type": "object", "description": "Optional query parameters",
                               "additionalProperties": {"type": "string"}},

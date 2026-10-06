@@ -126,6 +126,125 @@ def test_github_repo_must_be_owner_slash_name(monkeypatch):
     assert "owner/name" in run(tools(work_apps.make_github_tools)["github__create_issue"].handler(repo="justaname", title="x"))
 
 
+def _item(repo, number, title, pr=False, updated="2026-10-01T10:00:00Z"):
+    return {"repository_url": f"https://api.github.com/repos/{repo}", "number": number, "title": title, "state": "open",
+            "html_url": f"https://github.com/{repo}/{'pull' if pr else 'issues'}/{number}", "updated_at": updated,
+            **({"pull_request": {}} if pr else {})}
+
+
+class SearchVault(FakeVault):
+    """Answers /search/issues by query, so the parts of a merged search can differ."""
+    def __init__(self, by_query, replies=None):
+        super().__init__(replies or {})
+        self.by_query = by_query
+
+    async def call(self, *, subject, provider, method, path, query=None, headers=None, body=None):
+        if path != "/search/issues":
+            return await super().call(subject=subject, provider=provider, method=method, path=path, query=query,
+                                      headers=headers, body=body)
+        self.calls.append({"provider": provider, "method": method, "path": path, "query": query})
+        got = self.by_query.get(query["q"], [])
+        if isinstance(got, tuple):
+            return SimpleNamespace(status=got[0], body=json.dumps(got[1]))
+        return SimpleNamespace(status=200, body=json.dumps({"items": got}))
+
+
+def test_github_search_names_a_type_or_searches_both(monkeypatch):
+    v = SearchVault({"repo:a/b is:issue": [_item("a/b", 1, "Old bug", updated="2026-09-01T00:00:00Z")],
+                     "repo:a/b is:pull-request": [_item("a/b", 2, "New fix", pr=True)]})
+    import harness.vault as vault_mod
+    monkeypatch.setattr(vault_mod, "current", lambda: v)
+    out = run(tools(work_apps.make_github_tools)["github__search"].handler(query="repo:a/b"))
+    assert [r["number"] for r in out.ui["items"]] == [2, 1]                     # merged, newest first
+    run(tools(work_apps.make_github_tools)["github__search"].handler(query="repo:a/b is:pr"))
+    assert v.calls[-1]["query"]["q"] == "repo:a/b is:pr"                         # typed: one call, unchanged
+
+
+def test_github_waiting_on_me_checks_all_three(monkeypatch):
+    shared = _item("a/b", 7, "Both assigned and mentioned")
+    v = SearchVault({"is:open is:pr review-requested:@me": [_item("a/b", 9, "Review me", pr=True)],
+                     "is:open assignee:@me is:issue": [shared],
+                     "is:open assignee:@me is:pull-request": [],
+                     "is:open mentions:@me is:issue": [shared],
+                     "is:open mentions:@me is:pull-request": (500, {"message": "boom"})})
+    import harness.vault as vault_mod
+    monkeypatch.setattr(vault_mod, "current", lambda: v)
+    out = run(tools(work_apps.make_github_tools)["github__my_work"].handler())
+    assert "Waiting for your review" in out.text and "Assigned to you" in out.text
+    assert "Could not check -- mentioning you" in out.text                     # one failure doesn't sink the rest
+    assert sorted(r["number"] for r in out.ui["items"]) == [7, 9]               # deduplicated
+
+
+def test_github_waiting_on_me_says_nothing_plainly(monkeypatch):
+    import harness.vault as vault_mod
+    monkeypatch.setattr(vault_mod, "current", lambda: SearchVault({}))
+    out = run(tools(work_apps.make_github_tools)["github__my_work"].handler(kind="all"))
+    assert isinstance(out, str) and out.count(": none") == 3
+
+
+def test_github_my_repos_uses_the_login(monkeypatch):
+    v = SearchVault({"user:octo is:open is:issue": [_item("octo/app", 3, "Bug")]},
+                    {("GET", "/user"): (200, {"login": "octo"})})
+    import harness.vault as vault_mod
+    monkeypatch.setattr(vault_mod, "current", lambda: v)
+    out = run(tools(work_apps.make_github_tools)["github__my_work"].handler(kind="repos"))
+    assert "repositories octo owns" in out.text and out.ui["items"][0]["number"] == 3
+
+
+def test_github_read_file_readme_folder_and_binary(monkeypatch):
+    def enc(b):
+        return base64.b64encode(b).decode()
+    with_vault(monkeypatch, {
+        ("GET", "/repos/a/b/readme"): (200, {"type": "file", "path": "README.md", "encoding": "base64",
+                                             "content": enc(b"# Hello\nworld"), "html_url": "u"}),
+        ("GET", "/repos/a/b/contents/src"): (200, [{"name": "z.py", "type": "file"}, {"name": "lib", "type": "dir"}]),
+        ("GET", "/repos/a/b/contents/logo.png"): (200, {"type": "file", "path": "logo.png", "encoding": "base64",
+                                                        "content": enc(b"\x89PNG\xff\xfe"), "html_url": "u"}),
+    })
+    t = tools(work_apps.make_github_tools)["github__read_file"]
+    assert "# Hello\nworld" in run(t.handler(repo="https://github.com/a/b"))
+    assert run(t.handler(repo="a/b", path="/src/")).endswith("lib/\nz.py")     # folders first
+    assert "binary" in run(t.handler(repo="a/b", path="logo.png"))
+
+
+def test_github_pr_changes_and_checks(monkeypatch):
+    head = {"ref": "fix", "sha": "abc1234def"}
+    with_vault(monkeypatch, {
+        ("GET", "/repos/a/b/pulls/5"): (200, {"title": "Fix", "state": "open", "html_url": "u", "head": head,
+                                              "base": {"ref": "main"}, "changed_files": 1, "additions": 2, "deletions": 1}),
+        ("GET", "/repos/a/b/pulls/5/files"): (200, [{"filename": "x.py", "status": "modified", "additions": 2,
+                                                     "deletions": 1, "patch": "@@\n-a\n+b\n" + "+c\n" * 2000}]),
+        ("GET", "/repos/a/b/commits/abc1234def/check-runs"): (403, {"message": "Resource not accessible by personal access token"}),
+        ("GET", "/repos/a/b/commits/abc1234def/status"): (200, {"statuses": [
+            {"context": "ci/test", "state": "failure", "target_url": "https://ci/1"},
+            {"context": "ci/lint", "state": "success"}]}),
+    })
+    t = tools(work_apps.make_github_tools)
+    diff = run(t["github__pr_changes"].handler(repo="a/b", number=5))
+    assert "fix → main" in diff and "modified x.py (+2 −1)" in diff and "[patch truncated]" in diff
+    ci = run(t["github__checks"].handler(repo="a/b", number=5))
+    assert ci.startswith("a/b#5 CI is failing on abc1234") and "failed: ci/test https://ci/1" in ci
+    assert "check runs not readable" in ci and "permission" in ci              # a 403 here is a permission, not a bad token
+    assert "not a pull request" in run(t["github__checks"].handler(repo="a/b", number=6))
+
+
+def test_github_errors_say_what_to_do(monkeypatch):
+    with_vault(monkeypatch, {("GET", "/search/issues"): (422, {"message": "Validation Failed", "errors": [
+        {"message": "The listed users and repositories cannot be searched either because the resources do not exist "
+                    "or you do not have permission to view them."}]})})
+    out = run(tools(work_apps.make_github_tools)["github__search"].handler(query="repo:facebook/react is:issue"))
+    assert out.startswith("GITHUB_NO_ACCESS")
+
+
+def test_github_repo_accepts_links():
+    assert work_apps._repo("https://github.com/a/b/issues/5") == "a/b"
+    assert work_apps._repo("github.com/a/b/pull/7#issuecomment-1") == "a/b"
+    assert work_apps._repo(" a/b ") == "a/b"
+    for bad in ("justaname", "a/b/c", "https://example.com/a/b"):
+        with pytest.raises(work_apps.AppError):
+            work_apps._repo(bad)
+
+
 def test_not_connected_points_at_the_vault(monkeypatch):
     from harness.vault.vault import VaultError
     with_vault(monkeypatch, {("POST", "/v1/search"): (VaultError("no credential for 'notion': add one first"), None)})

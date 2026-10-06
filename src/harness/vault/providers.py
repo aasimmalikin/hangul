@@ -14,6 +14,12 @@ WRITE_METHODS: tuple[str, ...] = ("POST", "PUT", "PATCH", "DELETE")
 
 GENERIC_PREFIX = "http:"
 
+# Providers only their own connector may call. The generic vault_request /
+# vault_mutate tools refuse them: otherwise a connected GitHub token is a raw API
+# (closing issues, merging PRs) outside the connector's tools, its plan gate and
+# the Kept log. The connectors call vault.call directly and are unaffected.
+CONNECTOR_ONLY: frozenset[str] = frozenset({"github", "notion", "slack", "whatsapp", "whatsapp_media"})
+
 
 @dataclass(frozen=True)
 class ProviderSpec:
@@ -57,6 +63,19 @@ BUILTIN: dict[str, ProviderSpec] = {
         name="notion", base_url="https://api.notion.com", inject="bearer",
         allow_paths=("/v1/*",), read_paths=("/v1/search", "/v1/databases/*/query"),
         description="Notion API (internal integration token)",
+    ),
+    # WhatsApp Cloud API (operator credential, WHATSAPP_ACCESS_TOKEN): sending is a POST
+    # to /<version>/<phone number id>/messages; media metadata is a GET
+    "whatsapp": ProviderSpec(
+        name="whatsapp", base_url="https://graph.facebook.com", inject="bearer",
+        allow_paths=("/v*/*",), max_calls_per_grant=10,
+        description="WhatsApp Cloud API (Meta)",
+    ),
+    # where Meta serves the bytes of a received voice note / photo / document
+    "whatsapp_media": ProviderSpec(
+        name="whatsapp_media", base_url="https://lookaside.fbsbx.com", inject="bearer",
+        allow_paths=("/whatsapp_business/*",), max_calls_per_grant=2,
+        description="WhatsApp media downloads (Meta)",
     ),
     # Slack Web API: reads are GETs; chat.postMessage etc. are POST writes
     "slack": ProviderSpec(

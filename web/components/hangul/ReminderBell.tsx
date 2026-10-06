@@ -2,6 +2,7 @@
 
 import Link from "next/link"
 import { useCallback, useEffect, useRef, useState } from "react"
+import { enablePush, showLocal } from "@/lib/push"
 import { deviceTimeZone } from "@/lib/timezone"
 
 type Due = { id: number; text: string; due_at: string }
@@ -12,7 +13,8 @@ const POLL_MS = 60_000
  * The header bell: reminders that have fired and not been dismissed. Polls
  * `/api/reminders?scope=due` once a minute (the scheduler fires them on the
  * same cadence) and, if the browser already allows notifications, raises a
- * system notification for each new one. Nothing to set up for the user.
+ * system notification for each new one. With the app closed, the server's
+ * push (lib/push.ts) delivers them instead.
  */
 export function ReminderBell() {
   const [due, setDue] = useState<Due[]>([])
@@ -29,9 +31,9 @@ export function ReminderBell() {
       // A system notification for reminders that fired since the last poll
       // (not for the backlog present when the page opened).
       for (const r of rows) {
-        if (!seen.current.has(r.id) && !first.current && typeof Notification !== "undefined"
-            && Notification.permission === "granted") {
-          try { new Notification("⏰ Reminder", { body: r.text, tag: `reminder-${r.id}` }) } catch { /* unsupported */ }
+        // same tag as the server's push for it, so the phone shows one, not two
+        if (!seen.current.has(r.id) && !first.current) {
+          void showLocal("⏰ Reminder", { body: r.text, tag: `reminder-${r.id}`, data: { url: "/kept" } })
         }
         seen.current.add(r.id)
       }
@@ -77,8 +79,10 @@ export function ReminderBell() {
     await fetch(`/api/reminders/${id}/done`, { method: "POST" }).catch(() => null)
   }
 
+  // The first tap on the bell asks to turn notifications on (a browser prompt
+  // must follow a tap); after that it's on/off in Settings → Notifications.
   const askPermission = () => {
-    if (typeof Notification !== "undefined" && Notification.permission === "default") void Notification.requestPermission()
+    if (typeof Notification !== "undefined" && Notification.permission === "default") void enablePush()
   }
 
   return (
@@ -110,9 +114,9 @@ export function ReminderBell() {
               <button className="h-btn-ghost" style={{ fontSize: 12, padding: "4px 8px" }} onClick={() => void dismiss(r.id)}>Done</button>
             </div>
           ))}
-          <Link href="/lists" className="h-btn-ghost" onClick={() => setOpen(false)}
+          <Link href="/kept" className="h-btn-ghost" onClick={() => setOpen(false)}
             style={{ width: "100%", justifyContent: "center", fontSize: 12, marginTop: 4, textDecoration: "none" }}>
-            My stuff
+            Everything in Kept
           </Link>
         </div>
       )}

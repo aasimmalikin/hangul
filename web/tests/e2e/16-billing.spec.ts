@@ -57,7 +57,7 @@ test.describe("billing", () => {
     await page.getByTestId("upgrade-plus").click()
     await expect(page).toHaveURL(/\/billing\?checkout=plus/)
     const s = await backend("/__state")
-    expect(s.checkouts).toEqual([{ user: me.id, product: "plus" }])
+    expect(s.checkouts).toEqual([{ user: me.id, product: "plus", interval: "month" }])
   })
 
   test("manage subscription opens the provider portal", async ({ page }) => {

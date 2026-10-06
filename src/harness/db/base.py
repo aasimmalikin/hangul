@@ -70,16 +70,19 @@ def _probe(ip: str, port: int, timeout: float) -> str | None:
         return None
 
 
-def fastest_hostaddr(host: str, port: int = 5432, timeout: float = 1.5) -> str | None:
+def fastest_hostaddr(host: str, port: int = 5432, timeout: float = 1.5, avoid: str | None = None) -> str | None:
     now = time.monotonic()
     hit = _pinned.get(host)
-    if hit and now - hit[1] < _PIN_TTL_S:
+    if hit and now - hit[1] < _PIN_TTL_S and hit[0] != avoid:
         return hit[0]
     try:
         ips = sorted({ai[4][0] for ai in socket.getaddrinfo(host, port, socket.AF_INET, socket.SOCK_STREAM)})
     except socket.gaierror:
         return None
+    ips = [ip for ip in ips if ip != avoid] or ips
     if len(ips) <= 1:
+        if ips and avoid:
+            _pinned[host] = (ips[0], now)   # the one left after a bad pin: use it until it fails too
         return ips[0] if ips else None
     with ThreadPoolExecutor(max_workers=len(ips)) as pool:
         futures = [pool.submit(_probe, ip, port, timeout) for ip in ips]
@@ -95,11 +98,19 @@ def fastest_hostaddr(host: str, port: int = 5432, timeout: float = 1.5) -> str |
 def _pin_reachable_address(dialect, conn_rec, cargs, cparams):
     host = cparams.get("host") or engine.url.host
     if not host or host in ("localhost", "127.0.0.1") or host.endswith(".local"):
-        return
-    ip = fastest_hostaddr(host, int(cparams.get("port") or engine.url.port or 5432))
-    if ip:
-        cparams["hostaddr"] = ip
-    # returning nothing lets the dialect connect with the adjusted params
+        return None   # the dialect connects as usual
+    port = int(cparams.get("port") or engine.url.port or 5432)
+    ip = fastest_hostaddr(host, port)
+    try:
+        return dialect.connect(*cargs, **({**cparams, "hostaddr": ip} if ip else cparams))
+    except dialect.loaded_dbapi.OperationalError:
+        if not ip:
+            raise
+    # The pinned address went bad (it answered a probe but not the login, or stopped
+    # answering since): without this every new connection fails until the pin expires.
+    _pinned.pop(host, None)
+    ip = fastest_hostaddr(host, port, avoid=ip)
+    return dialect.connect(*cargs, **({**cparams, "hostaddr": ip} if ip else cparams))
 
 
 def warm_pool(n: int | None = None) -> int:

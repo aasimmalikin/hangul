@@ -44,6 +44,7 @@ const TOOL_LABELS: Record<string, Labels> = {
   remember: { pending: "Preparing a memory", running: "Saving to memory", done: "Saved to memory", awaiting: "Wants to save to memory" },
   recall: { pending: "Preparing to check memory", running: "Checking memory", done: "Checked memory", awaiting: "Wants to check memory" },
   recall_episodes: { pending: "Preparing to look back", running: "Looking at past conversations", done: "Looked at past conversations", awaiting: "Wants to look at past conversations" },
+  gmail__replies_owed: { pending: "Preparing to check your replies", running: "Finding emails waiting on you", done: "Found emails waiting on you", awaiting: "Wants to check your replies" },
   gmail__search_messages: { pending: "Preparing a Gmail search", running: "Searching Gmail", done: "Searched Gmail", awaiting: "Wants to search Gmail" },
   gmail__get_thread: { pending: "Preparing to open a thread", running: "Reading a Gmail thread", done: "Read a Gmail thread", awaiting: "Wants to read a Gmail thread" },
   gmail__get_message: { pending: "Preparing to open an email", running: "Reading an email", done: "Read an email", awaiting: "Wants to read an email" },

@@ -11,7 +11,7 @@ from harness.db.base import SessionLocal
 from harness.db.models import BillingEvent, User
 
 _FIELDS = ("plan", "plan_status", "plan_period_start", "plan_renews_at", "plan_ends_at",
-           "billing_customer_id", "billing_subscription_id")
+           "billing_customer_id", "billing_subscription_id", "plan_region", "plan_interval")
 
 
 @dataclass
@@ -24,6 +24,8 @@ class Account:
     plan_ends_at: datetime | None = None
     billing_customer_id: str | None = None
     billing_subscription_id: str | None = None
+    plan_region: str = "intl"          # "in" = bought at Indian prices
+    plan_interval: str = "month"       # "year" = yearly plan, allowance still monthly
 
 
 def _uid(user_id: str) -> int | None:

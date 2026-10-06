@@ -1,0 +1,85 @@
+# Production: Caddy (HTTPS) -> web (Next.js) -> api (FastAPI).
+# Only Caddy is reachable from outside; the web app reaches the API on the
+# internal network (FASTAPI_URL=http://api:8000), and Meta / Dodo webhooks come
+# in through the web app's relays. See docs/deploy.md.
+#
+#   docker compose -f docker-compose.prod.yml --env-file .env.production up -d
+#
+# Images are built by .github/workflows/images.yml and pulled (a small server
+# can't build the web app: next build needs more memory than 2 GB). Set
+# HANGUL_IMAGE_TAG to pin a version; `build:` is the fallback on a big machine.
+#
+# Postgres and Redis: use hosted ones (Neon, Upstash…) via DATABASE_URL /
+# REDIS_URL, or run them here with `--profile db` (Option A: one server).
+
+name: hangul
+
+services:
+  api:
+    image: ${HANGUL_API_IMAGE:-ghcr.io/aasimmalikin/hangul-api}:${HANGUL_IMAGE_TAG:-latest}
+    build: .
+    env_file: .env.production
+    environment:
+      # exactly one API server runs the scheduler (reminders, tasks, the brief)
+      SCHEDULER_ENABLED: "true"
+      WEB_CONCURRENCY: "1"
+    volumes:
+      # data/: users' files (sessions/: uploads, created files, charts) and the audit log (audit.jsonl)
+      - data:/app/data
+    restart: unless-stopped
+    # no ports: only the web container talks to it
+
+  web:
+    image: ${HANGUL_WEB_IMAGE:-ghcr.io/aasimmalikin/hangul-web}:${HANGUL_IMAGE_TAG:-latest}
+    build: ./web
+    env_file: .env.production
+    environment:
+      FASTAPI_URL: http://api:8000
+    depends_on:
+      - api
+    restart: unless-stopped
+
+  caddy:
+    image: caddy:2-alpine
+    ports:
+      - "80:80"
+      - "443:443"
+      - "443:443/udp"
+    environment:
+      HANGUL_DOMAIN: ${HANGUL_DOMAIN:?set HANGUL_DOMAIN in .env.production, e.g. app.example.com}
+    volumes:
+      - ./deploy/Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data                    # the TLS certificates
+      - caddy_config:/config
+    depends_on:
+      - web
+    restart: unless-stopped
+
+  # ---- optional: Postgres + Redis on this server (`--profile db`) ----
+  postgres:
+    profiles: ["db"]
+    image: pgvector/pgvector:pg16           # the stock image has no `vector` extension
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-hangul}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD for --profile db}
+      POSTGRES_DB: ${POSTGRES_DB:-hangul}
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-hangul}"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+    restart: unless-stopped
+
+  redis:
+    profiles: ["db"]
+    image: redis:7-alpine
+    command: redis-server --maxmemory 128mb --maxmemory-policy allkeys-lru
+    restart: unless-stopped
+
+volumes:
+  data:
+  caddy_data:
+  caddy_config:
+  pgdata:

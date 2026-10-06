@@ -3,12 +3,14 @@
 import { useCallback, useEffect, useState } from "react"
 import { signIn as authSignIn, useSession } from "next-auth/react"
 import { GOOGLE_WORKSPACE_SCOPES, loadIntegrations } from "@/lib/connectors"
+import { announcePersona, PERSONAS, type Persona } from "@/lib/personas"
 import { deviceTimeZone } from "@/lib/timezone"
 
 /**
  * The first-run walkthrough: three short steps, each skippable, so Today is
  * useful on day one.
- *   1. What should I call you? (+ city; the timezone is detected)
+ *   1. What should I call you? (+ city; the timezone is detected; and, optionally,
+ *      what describes them best: lib/personas.ts, which shapes prompts and the plan suggested)
  *   2. Connect Google? (Gmail + Calendar make the brief and reminders shine)
  *   3. A morning brief every day at 8:00? (weekly on the Free plan; daily is Plus)
  * Shown once: finishing or skipping calls POST /api/settings/onboarded. The
@@ -34,7 +36,8 @@ export function Onboarding() {
   const [city, setCity] = useState("")
   const [google, setGoogle] = useState(false)
   const [busy, setBusy] = useState(false)
-  const [weeklyOnly, setWeeklyOnly] = useState(false)     // Free plan with billing on: the brief is weekly
+  const [weeklyOnly, setWeeklyOnly] = useState(false)
+  const [persona, setPersona] = useState<Persona | null>(null)     // Free plan with billing on: the brief is weekly
 
   useEffect(() => {
     let alive = true
@@ -74,7 +77,9 @@ export function Onboarding() {
 
   const step1 = async () => {
     setBusy(true)
-    await saveSettings({ display_name: name.trim(), city: city.trim(), timezone: deviceTimeZone() ?? "UTC", timezone_auto: true })
+    await saveSettings({ display_name: name.trim(), city: city.trim(), timezone: deviceTimeZone() ?? "UTC", timezone_auto: true,
+      ...(persona ? { persona } : {}) })
+    if (persona) announcePersona(persona)
     setBusy(false)
     go(2)
   }
@@ -91,7 +96,7 @@ export function Onboarding() {
         // fit_plan: on Free the brief is weekly instead of refused (daily is Plus)
         title: "Morning brief", daily_at: "08:00", connectors: google ? ["gmail", "calendar"] : [], mode: "default", deliver_email: true, fit_plan: true,
         question: "Give me my morning brief for today, short and with headings: the weather where I live, today's calendar " +
-          "events, my reminders and to-do items, and any important unread emails from the last day. Skip any section you can't access.",
+          "events, my reminders and to-do items, and any important unread emails from the last day, and anyone who has been waiting more than a day for my reply. Skip any section you can't access.",
       }),
     }).catch(() => null)
     await finish()
@@ -114,10 +119,23 @@ export function Onboarding() {
         {step === 1 && (
           <form onSubmit={(e) => { e.preventDefault(); void step1() }} style={{ display: "flex", flexDirection: "column", gap: 10 }} data-testid="onboarding-1">
             <h2 className="h-display" style={{ fontSize: 22, margin: 0, textAlign: "center" }}>Welcome to Hangul</h2>
-            <p className="h-muted" style={{ fontSize: 13, margin: 0, textAlign: "center" }}>Two quick questions so I can help from day one.</p>
+            <p className="h-muted" style={{ fontSize: 13, margin: 0, textAlign: "center" }}>A few quick questions so I can help from day one.</p>
             <input className="h-input" placeholder="What should I call you?" value={name} onChange={(e) => setName(e.target.value)} maxLength={80} aria-label="Your name" autoFocus />
             <input className="h-input" placeholder="Your city (for weather and places near you)" value={city} onChange={(e) => setCity(e.target.value)} maxLength={80} aria-label="Your city" />
             <span className="h-muted" style={{ fontSize: 11 }}>Timezone: {deviceTimeZone() ?? "UTC"} (from this device)</span>
+            <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+              <span style={{ fontSize: 13 }}>What describes you best? <span className="h-muted" style={{ fontSize: 11 }}>(optional)</span></span>
+              <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }} role="group" aria-label="What describes you best" data-testid="onboarding-persona">
+                {PERSONAS.map((p) => (
+                  <button key={p.key} type="button" className="h-chip" aria-pressed={persona === p.key}
+                    onClick={() => setPersona(persona === p.key ? null : p.key)} data-testid={`persona-${p.key}`}
+                    style={{ display: "inline-flex", alignItems: "center", gap: 5,
+                      ...(persona === p.key ? { background: "var(--solid-bg)", color: "var(--solid-fg)", borderColor: "var(--solid-bg)" } : {}) }}>
+                    <i className={`ti ti-${p.icon}`} style={{ fontSize: 12 }} />{p.label}
+                  </button>
+                ))}
+              </div>
+            </div>
             <button className="h-btn-solid" type="submit" disabled={busy}>Continue</button>
           </form>
         )}

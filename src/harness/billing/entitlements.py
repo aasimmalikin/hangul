@@ -59,7 +59,7 @@ TRIAL_STATUSES = ("trialing", "trial_cancelling")
 def allowance_for(account: billing_db.Account, plan: Plan) -> Decimal:
     if plan.id != "free" and account.plan_status in TRIAL_STATUSES:
         return Decimal(str(get_settings().billing_allowance_trial))
-    return Decimal(str(plan.monthly_allowance_usd))
+    return Decimal(str(plan.allowance_usd(getattr(account, "plan_region", "intl") or "intl")))
 
 
 _per_message: tuple[float, Decimal] | None = None     # (fetched at, $) -- cached for 10 minutes
@@ -104,11 +104,28 @@ def free_pool_exhausted() -> bool:
     return ledger.free_pool_spent(month_start()) >= Decimal(str(pool))
 
 
+def _add_months(dt: datetime, months: int) -> datetime:
+    """Same day-of-month ``months`` later, clamped to the month's last day (31 Jan + 1 = 28/29 Feb)."""
+    import calendar
+    y, m = divmod(dt.month - 1 + months, 12)
+    year, month = dt.year + y, m + 1
+    return dt.replace(year=year, month=month, day=min(dt.day, calendar.monthrange(year, month)[1]))
+
+
 def period_start(account: billing_db.Account, now: datetime | None = None) -> datetime:
-    """Paid plans count from the last renewal; free counts per UTC calendar month."""
+    """Paid plans count from the last renewal; free counts per UTC calendar month.
+    A yearly plan's allowance is still monthly: it counts from the latest
+    monthly anniversary of the paid period's start."""
     now = now or datetime.now(timezone.utc)
     if account.plan != "free" and account.plan_period_start is not None:
-        return account.plan_period_start
+        start = account.plan_period_start
+        if getattr(account, "plan_interval", "month") == "year":
+            months = (now.year - start.year) * 12 + now.month - start.month
+            anniversary = _add_months(start, months)
+            if anniversary > now:
+                anniversary = _add_months(start, months - 1)
+            return max(anniversary, start)
+        return start
     return month_start(now)
 
 

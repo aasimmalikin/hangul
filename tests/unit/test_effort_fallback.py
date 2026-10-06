@@ -3,10 +3,12 @@ tools, retry the way the error asks (drop it, or send "none") and remember it.""
 import asyncio
 
 import httpx
+import openai
 import pytest
 from openai import BadRequestError
 
 from harness.providers import openai_provider as op
+from harness.providers.base import ModelUnavailable
 
 
 def refusal(msg: str) -> BadRequestError:
@@ -80,3 +82,49 @@ def test_other_errors_are_raised():
     p, _ = provider(lambda kw: True, "context length exceeded")
     with pytest.raises(BadRequestError):
         asyncio.run(p._create(p._base_kwargs([], TOOLS, None)))
+
+
+# ------------------------------------------------- service failures -> ModelUnavailable
+
+def _failing(exc):
+    class Comp:
+        async def create(self, **kwargs):
+            raise exc
+    client = type("C", (), {"chat": type("Ch", (), {"completions": Comp()})()})()
+    return op.OpenAIProvider(api_key="", model="m", client=client)
+
+
+def _status_error(cls, status, body):
+    req = httpx.Request("POST", "https://api.openai.com/v1/chat/completions")
+    return cls("err", response=httpx.Response(status, request=req), body=body)
+
+
+@pytest.mark.parametrize("exc,reason", [
+    (_status_error(openai.RateLimitError, 429, {"code": "credit_balance_exhausted", "type": "insufficient_quota"}),
+     "unavailable"),
+    (_status_error(openai.RateLimitError, 429, {"code": "rate_limit_exceeded"}), "busy"),
+    (_status_error(openai.AuthenticationError, 401, None), "unavailable"),
+    (_status_error(openai.InternalServerError, 500, None), "unreachable"),
+    (openai.APITimeoutError(request=httpx.Request("POST", "https://api.openai.com")), "timeout"),
+])
+def test_service_failures_become_a_plain_503_reason(exc, reason):
+    with pytest.raises(ModelUnavailable) as e:
+        asyncio.run(_failing(exc)._create({"model": "m", "messages": []}))
+    assert e.value.reason == reason
+    assert "platform.openai.com" not in str(e.value) and "credits" not in str(e.value)   # never the vendor's text
+
+
+def test_the_api_answers_503_with_the_sentence():
+    from fastapi import FastAPI
+    from fastapi.testclient import TestClient
+
+    from harness.api import app as app_mod
+    app = FastAPI()
+    app.add_exception_handler(ModelUnavailable, app_mod.create_app().exception_handlers[ModelUnavailable])
+
+    @app.get("/x")
+    async def x():
+        raise ModelUnavailable("busy")
+    r = TestClient(app).get("/x")
+    assert r.status_code == 503 and r.headers["x-reason"] == "model_busy"
+    assert r.json()["detail"] == ModelUnavailable.MESSAGES["busy"]

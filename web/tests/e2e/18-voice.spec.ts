@@ -31,6 +31,16 @@ test.describe("voice", () => {
     expect(s.asks.at(-1).question).toBe("SHOPPING add milk and eggs")
   })
 
+  test("a recording can be discarded instead of sent", async ({ page }) => {
+    await page.goto("/chat")
+    await page.getByTestId("mic-button").click()
+    await expect(page.getByTestId("mic-button")).toHaveAttribute("data-state", "recording")
+    await expect(page.getByTestId("mic-button")).toContainText("Stop")
+    await page.getByTestId("mic-cancel").click()
+    await expect(page.getByTestId("mic-button")).toHaveAttribute("data-state", "idle")
+    expect((await backend("/__state")).transcribed).toHaveLength(0)
+  })
+
   test("an answer can be read aloud", async ({ page }) => {
     await page.goto("/chat")
     await page.getByTestId("chat-composer").fill("WEATHER in Pune")
@@ -46,6 +56,7 @@ test.describe("voice", () => {
     await page.getByTestId("voice-mode-button").click()
     const vm = page.getByTestId("voice-mode")
     await expect(vm).toHaveAttribute("data-phase", "listening")
+    await expect(page.getByTestId("speaking-stag")).toHaveAttribute("data-phase", "listening")
     await page.waitForTimeout(800)
     await page.getByTestId("voice-orb").click()                 // done talking
     // the run pauses for approval -> it is asked out loud, then it listens again

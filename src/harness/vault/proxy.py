@@ -41,6 +41,11 @@ class ProxyResponse:
     headers: dict[str, str] = field(default_factory=dict)
     truncated: bool = False
     ms: int = 0
+    raw: bytes | None = None      # the undecoded body, only when asked for (media downloads)
+
+
+# binary downloads (want_bytes=True): WhatsApp voice notes, photos and documents are at most 16 MB
+MAX_MEDIA_BYTES = 16 * 1024 * 1024
 
 
 def inject(spec: ProviderSpec, secret: str, headers: dict[str, str], params: dict[str, str]) -> None:
@@ -73,6 +78,7 @@ async def proxy_request(
     body: bytes | str | None = None,
     max_body_bytes: int = 1_000_000,
     audit=None,
+    want_bytes: bool = False,
 ) -> ProxyResponse:
     method = method.upper()
     raw_body = body.encode() if isinstance(body, str) else (body or b"")
@@ -112,6 +118,12 @@ async def proxy_request(
     ms = int((time.perf_counter() - started) * 1000)
 
     content = resp.content
+    if want_bytes:
+        # media is not text: hand back the bytes (capped), never scrubbed or decoded
+        keep = {k: v for k, v in resp.headers.items() if k.lower() in PASS_RESPONSE_HEADERS}
+        _audit(audit, grant, spec, method, path, status=resp.status_code, ms=ms)
+        return ProxyResponse(status=resp.status_code, body="", headers=keep, truncated=len(content) > MAX_MEDIA_BYTES,
+                             ms=ms, raw=content[:MAX_MEDIA_BYTES])
     truncated = len(content) > max_body_bytes
     text = content[:max_body_bytes].decode(resp.encoding or "utf-8", errors="replace")
     text = redactor.scrub_text(text)

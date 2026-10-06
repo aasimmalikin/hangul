@@ -1,5 +1,5 @@
-from datetime import datetime
-from sqlalchemy import Boolean, Index, UniqueConstraint, DateTime, Integer, String, Text, func
+from datetime import date, datetime
+from sqlalchemy import Boolean, Date, Index, UniqueConstraint, DateTime, Integer, String, Text, func
 from sqlalchemy import Numeric
 from decimal import Decimal
 from sqlalchemy.dialects.postgresql import JSONB
@@ -63,6 +63,10 @@ class User(Base):
     plan_ends_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     billing_customer_id: Mapped[str | None] = mapped_column(String(64), nullable=True, index=True)
     billing_subscription_id: Mapped[str | None] = mapped_column(String(64), nullable=True, index=True)
+    # which price the plan was bought at: "in" (rupees, smaller allowance) or "intl";
+    # and "month" or "year" (a yearly plan still gets its allowance month by month)
+    plan_region: Mapped[str] = mapped_column(String(8), nullable=False, default="intl", server_default="intl")
+    plan_interval: Mapped[str] = mapped_column(String(8), nullable=False, default="month", server_default="month")
 
 class BillingEvent(Base):
     """One row per payment-provider webhook delivery (id = its `webhook-id`),
@@ -70,6 +74,43 @@ class BillingEvent(Base):
     __tablename__ = "billing_events"
     id: Mapped[str] = mapped_column(String(128), primary_key=True)
     event_name: Mapped[str] = mapped_column(String(64), nullable=False)
+    received_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+
+class WhatsAppLink(Base):
+    """A user's WhatsApp number (harness/whatsapp). Linking: the app shows a code,
+    the user sends it from WhatsApp, and that number is tied to the account.
+    ``last_inbound_at`` decides whether free-form replies are still allowed
+    (Meta's 24-hour window); ``pending_text`` holds a brief that had to wait for it."""
+    __tablename__ = "whatsapp_links"
+    user_id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    phone: Mapped[str | None] = mapped_column(String(20), nullable=True, unique=True)          # E.164 digits, no "+"
+    link_code_hash: Mapped[str | None] = mapped_column(String(64), nullable=True, index=True)
+    link_code_expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    linked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    conversation_id: Mapped[str | None] = mapped_column(String(32), nullable=True)            # the WhatsApp chat in Chats
+    last_inbound_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    pending_text: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+
+class PushSubscription(Base):
+    """One browser or installed app that agreed to notifications (harness/push.py).
+    ``endpoint`` is the push service's address for that device; ``p256dh``/``auth``
+    encrypt the message so the push service can't read it. A device belongs to
+    whoever subscribed it last (a shared browser that signs in as someone else)."""
+    __tablename__ = "push_subscriptions"
+    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    user_id: Mapped[int] = mapped_column(Integer, nullable=False, index=True)
+    endpoint: Mapped[str] = mapped_column(String(1024), nullable=False, unique=True)
+    p256dh: Mapped[str] = mapped_column(String(255), nullable=False)
+    auth: Mapped[str] = mapped_column(String(64), nullable=False)
+    user_agent: Mapped[str | None] = mapped_column(String(200), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+    last_sent_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+class WhatsAppInbound(Base):
+    """Message ids already handled: Meta retries deliveries, a message is answered once."""
+    __tablename__ = "whatsapp_inbound"
+    wamid: Mapped[str] = mapped_column(String(128), primary_key=True)
     received_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
 
 class ChurnFeedback(Base):
@@ -83,6 +124,18 @@ class ChurnFeedback(Base):
     detail: Mapped[str] = mapped_column(String(1000), nullable=False, default="", server_default="")
     outcome: Mapped[str] = mapped_column(String(16), nullable=False)      # kept | downgraded | cancelled
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False, index=True)
+
+class MoodCheckin(Base):
+    """The morning check-in on Today: how the user said they feel, once per
+    local day. The run of consecutive days is the "mornings together" streak,
+    and today's mood shapes how Hangul plans and words things (db/checkins.py)."""
+    __tablename__ = "mood_checkins"
+    __table_args__ = (UniqueConstraint("user_id", "day", name="uq_mood_checkins_user_day"),)
+    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    user_id: Mapped[str] = mapped_column(String(64), nullable=False, index=True)       # the JWT sub, like conversations.user_id
+    day: Mapped[str] = mapped_column(String(10), nullable=False)                         # local date, YYYY-MM-DD
+    mood: Mapped[str] = mapped_column(String(16), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
 
 class Account(Base):
     __tablename__ = "accounts"
@@ -133,6 +186,9 @@ class UserMemory(Base):
     active: Mapped[bool] = mapped_column(nullable = False, default = True)   # supersede-don't-delete
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone = True), server_default = func.now(), nullable = False)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone = True), server_default = func.now(), onupdate = func.now(), nullable = False)
+    # where it came from (harness/provenance.py): the chat and the user's words, for the Kept tab
+    conversation_id: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    said: Mapped[str | None] = mapped_column(String(500), nullable=True)
 
 
 class Episode(Base):
@@ -309,6 +365,10 @@ class UserSettings(Base):
     timezone_auto: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True, server_default="true")
     # home city: the Today screen's weather, and the default for "near me"
     city: Mapped[str] = mapped_column(String(80), nullable=False, default="", server_default="")
+    # where the user usually sets off from: the Today screen's "Leave by" (sent to OpenStreetMap to route)
+    home_address: Mapped[str] = mapped_column(String(200), nullable=False, default="", server_default="")
+    # who they are (db/settings.PERSONAS): shapes answers, starter prompts and the plan we suggest
+    persona: Mapped[str] = mapped_column(String(16), nullable=False, default="", server_default="")
     # finished (or skipped) the first-run walkthrough
     onboarded: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False, server_default="false")
     language: Mapped[str] = mapped_column(String(16), nullable=False, default="")
@@ -329,6 +389,10 @@ class ScheduledTask(Base):
     mode: Mapped[str] = mapped_column(String(16), nullable=False, default="default")
     # also email each result to the user (a "daily brief"), via harness.notify
     deliver_email: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False, server_default="false")
+    # with daily_at: run only on these weekdays (bit 0 = Monday … bit 6 = Sunday), e.g. 31 = weekdays
+    days: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    # with daily_at: run once, on this local date, then switch off
+    run_on: Mapped[date | None] = mapped_column(Date, nullable=True)
     enabled: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
     next_run_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True, index=True)
     last_run_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
@@ -350,6 +414,9 @@ class Reminder(Base):
     sent_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     emailed: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False, server_default="false")
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+    # where it came from (harness/provenance.py): the chat and the user's words, for the Kept tab
+    conversation_id: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    said: Mapped[str | None] = mapped_column(String(500), nullable=True)
 
 
 class TodoItem(Base):
@@ -362,6 +429,9 @@ class TodoItem(Base):
     done: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False, server_default="false")
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
     done_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    # where it came from (harness/provenance.py): the chat and the user's words, for the Kept tab
+    conversation_id: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    said: Mapped[str | None] = mapped_column(String(500), nullable=True)
 
 
 class Note(Base):
@@ -370,4 +440,23 @@ class Note(Base):
     id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
     user_id: Mapped[int] = mapped_column(Integer, nullable=False, index=True)
     text: Mapped[str] = mapped_column(String(4000), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+    # where it came from (harness/provenance.py): the chat and the user's words, for the Kept tab
+    conversation_id: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    said: Mapped[str | None] = mapped_column(String(500), nullable=True)
+
+
+class KeptAction(Base):
+    """Something Hangul did outside the chat because the user asked: an email
+    sent, an event added, a file made. Reminders, lists, notes and memories
+    have their own rows; this is the record for everything else (Kept tab)."""
+    __tablename__ = "kept_actions"
+    __table_args__ = (Index("ix_kept_actions_user_created", "user_id", "created_at"),)
+    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    user_id: Mapped[str] = mapped_column(String(64), nullable=False)          # JWT sub
+    conversation_id: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    said: Mapped[str | None] = mapped_column(String(500), nullable=True)
+    tool: Mapped[str] = mapped_column(String(100), nullable=False)
+    app: Mapped[str] = mapped_column(String(32), nullable=False)
+    did: Mapped[str] = mapped_column(String(300), nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)

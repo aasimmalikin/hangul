@@ -19,6 +19,7 @@ from harness.tools.builtin.web_search import WEB_SEARCH_TOOL
 from harness.tools.builtin.ask_user import ASK_USER_TOOL
 from harness.tools.builtin.search_docs_session import make_search_docs_tool
 from harness.tools.builtin.vault_request import build_vault_tools
+from harness import provenance
 from harness.tools.builtin.daily import build_daily_tools, daily_tools_for
 from harness.connectors import tools_for, validate_keys
 from harness.security import get_guard
@@ -53,6 +54,7 @@ from decimal import Decimal
 
 from dataclasses import dataclass
 
+from harness.db import checkins
 from harness.db.memory import profile_text
 from harness.db.episodes import store_episode
 from harness.db.settings import get_settings as user_prefs
@@ -177,6 +179,19 @@ RESEARCH_INSTRUCTION = (
     "when the topic is scientific -- and read the most relevant results; (3) reconcile conflicting sources "
     "and note uncertainty; (4) answer with numbered citations [1], [2]... and finish with a 'Sources' list "
     "giving each citation's title and URL/id. Prefer primary sources. Do not stop after one search.\n"
+    "=== END ==="
+)
+
+
+UNATTENDED_INSTRUCTION = (
+    "\n\n=== SCHEDULED RUN ===\n"
+    "This is a scheduled task: the user set it up earlier and is not watching now, so nobody can answer a "
+    "question mid-run. Do not ask; make the most reasonable assumption and state it in one line. If an "
+    "action needs approval, still call it with everything filled in (the event, the full email text): the "
+    "user approves it later with one tap, so it must be complete and make sense on its own. Finish with a "
+    "short answer that says what you did and what is waiting for them. Calendar actions and saving email "
+    "drafts run without asking in a scheduled run; sending email and other changes (GitHub, Slack, Notion, "
+    "Docs, Sheets) wait for the user's OK.\n"
     "=== END ==="
 )
 
@@ -333,15 +348,17 @@ async def _persist_turn(conversation_id: str, run_id: str, question: str) -> Non
                   run_id=run_id, error=str(e))
 
 
-async def _build_and_run(req: AskRequest, user_id: str, on_event=None) -> RunOutcome:
+async def _build_and_run(req: AskRequest, user_id: str, on_event=None, *, unattended: bool = False) -> RunOutcome:
     """One question, with a cost meter open around it (billing/meter.py), so
-    searches, embeddings and summaries it causes are charged with its model cost."""
+    searches, embeddings and summaries it causes are charged with its model cost.
+    unattended: a scheduled run nobody is watching -- no ask_user, the model is told so,
+    and calendar / email actions run without a tap (harness.preapproval)."""
     from harness.billing import meter
     async with meter.metering(user_id):
-        return await _run_question(req, user_id, on_event)
+        return await _run_question(req, user_id, on_event, unattended=unattended)
 
 
-async def _run_question(req: AskRequest, user_id: str, on_event=None) -> RunOutcome:
+async def _run_question(req: AskRequest, user_id: str, on_event=None, *, unattended: bool = False) -> RunOutcome:
     security = get_guard()
     if security.is_throttled(user_id):
         # repeat offender: too many injection-like messages in the window
@@ -428,7 +445,8 @@ async def _run_question(req: AskRequest, user_id: str, on_event=None) -> RunOutc
     if not docs_only:
         session_registry.registry(CALCULATOR_TOOL)
         session_registry.registry(WEB_SEARCH_TOOL)
-        session_registry.registry(ASK_USER_TOOL)
+        if not unattended:           # a question nobody is there to answer would strand the run
+            session_registry.registry(ASK_USER_TOOL)
         for t in await build_vault_tools(user_id, run.run_id):
             session_registry.registry(t)
         for t in await daily_tools_for(user_id, prefs.timezone if prefs else "UTC", run.run_id):
@@ -471,8 +489,13 @@ async def _run_question(req: AskRequest, user_id: str, on_event=None) -> RunOutc
         prompt_text = prompt_text + "\n\n=== USER PROFILE ===\n" + profile
 
     # personalisation: name, timezone/local time, tone, custom instructions
+    mood = None
     if prefs is not None:
         prompt_text = prompt_text + "\n\n" + prefs_block(prefs)
+        # today's check-in on Today ("tired" -> lighter plans, gentler wording); also in the cache key below
+        mood = await asyncio.to_thread(checkins.mood_now, user_id, prefs.timezone)
+        if mood:
+            prompt_text = prompt_text + "\n" + checkins.prompt_line(mood)
 
     if docs_only:
         prompt_text = prompt_text + DOCS_ONLY_INSTRUCTION
@@ -481,6 +504,13 @@ async def _run_question(req: AskRequest, user_id: str, on_event=None) -> RunOutc
         budget = budget.__class__(max_steps=budget.max_steps * 2, max_tokens=budget.max_tokens * 2)
     if connector_note:
         prompt_text = prompt_text + "\n\n=== CONNECTORS ===\n" + connector_note
+    if unattended:
+        prompt_text = prompt_text + UNATTENDED_INSTRUCTION
+    # a scheduled run doesn't stop for calendar / email actions; other approvals still wait
+    pre_approved = None
+    if unattended:
+        from harness import preapproval
+        pre_approved = preapproval.allows
 
     # ---------------------------------------------------------------- context
     # With a conversation, the server owns the transcript: the seed comes from
@@ -538,12 +568,18 @@ async def _run_question(req: AskRequest, user_id: str, on_event=None) -> RunOutc
         docs_only=docs_only,
         effort=effort,
         mode=mode,
-        prefs_version=hashlib.sha256(json.dumps(prefs.as_dict(), sort_keys=True).encode()).hexdigest()[:12] if prefs else "",
+        prefs_version=hashlib.sha256(json.dumps({**prefs.as_dict(), "mood": mood}, sort_keys=True).encode()).hexdigest()[:12] if prefs else "",
     )
 
     trace = Trace(trace_id=run.run_id)
 
     async def _go():
+        # what this run creates (a reminder, a sent email…) records this chat
+        # and these words, so the Kept tab can show and open them
+        with provenance.source(user_id, conversation_id, req.question):
+            return await _agent()
+
+    async def _agent():
         return await run_agent(
             question=req.question,
             prompt_text=prompt_text,
@@ -570,6 +606,7 @@ async def _run_question(req: AskRequest, user_id: str, on_event=None) -> RunOutc
             # per-run one would leave stale canaries in replayed messages that
             # guard_output no longer strips.
             security_scope=conversation_id,
+            pre_approved=pre_approved,
             conversation_id=conversation_id,
             persisted_upto=persisted_upto,
         )
@@ -580,6 +617,14 @@ async def _run_question(req: AskRequest, user_id: str, on_event=None) -> RunOutc
         # One run at a time per conversation, or the message list interleaves
         # and the NEXT turn is the one the provider rejects.
         async with conversation_slot(conversation_id, run.run_id):
+            if conv is not None and req.conversation_id:
+                # a new message means the user moved on: close approvals still
+                # waiting in this chat (inside the slot, so no /approve races it)
+                try:
+                    if n := await asyncio.to_thread(_store.expire_pending, conversation_id, user_id, run.run_id):
+                        log.info("expired waiting approvals", conversation_id=conversation_id, count=n)
+                except Exception as e:  # noqa: BLE001 - tidying must never fail the question
+                    log.warning("expiring approvals failed", conversation_id=conversation_id, error=str(e))
             result = await _go()
 
     for ev in result.security_events:
@@ -650,7 +695,9 @@ async def ask(req: AskRequest, user: dict = Depends(get_current_user)) -> AskRes
         add_connector_tools(session_registry, connectors_or_422(req.connectors), user_id)
     prefs_v = ""
     try:
-        prefs_v = hashlib.sha256(json.dumps((await asyncio.to_thread(user_prefs, user_id)).as_dict(), sort_keys=True).encode()).hexdigest()[:12]
+        p = await asyncio.to_thread(user_prefs, user_id)
+        mood = await asyncio.to_thread(checkins.mood_now, user_id, p.timezone)
+        prefs_v = hashlib.sha256(json.dumps({**p.as_dict(), "mood": mood}, sort_keys=True).encode()).hexdigest()[:12]
     except Exception:  # noqa: BLE001
         pass
     key = answer_key(

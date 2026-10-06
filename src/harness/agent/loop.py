@@ -80,6 +80,7 @@ async def run_agent(
     conversation_id: str | None = None,
     persisted_upto: int = 0,
     security_state: dict | None = None,
+    pre_approved=None,
 ) -> AgentResult:
     """Run the tool-calling loop.
 
@@ -106,6 +107,11 @@ async def run_agent(
     user/assistant only) uploaded by the client and placed between the system
     prompt and the new question on a *fresh* run. Ignored when resuming, and
     ignored entirely when initial_messages is given.
+
+    pre_approved(name, args) -> bool: what a scheduled run may do without a tap
+    (harness.preapproval: calendar and email). A call it covers runs without
+    pausing -- unless the run is tainted or the action guard flags its arguments,
+    which still ask.
 
     conversation_id / persisted_upto are recorded on a fresh checkpoint so
     /approve can resume into the right conversation and append only the part of
@@ -343,6 +349,10 @@ async def run_agent(
                         # the UI already streamed the raw text; give it the guarded answer to show instead
                         emit("security", **ev.as_dict(), answer=answer)
                     cp.security = sec.snapshot()
+                # The answer is part of the conversation: without it the transcript holds the
+                # questions and tool results but none of the replies, so a follow-up ("shorten
+                # that") can't see what was said and a reopened chat shows no answers.
+                messages.append({"role": "assistant", "content": answer})
                 cp.status = "done"
                 cp.step = step
                 await persist()
@@ -374,13 +384,18 @@ async def run_agent(
 
             # find the first tool call that needs approval (and isn't pre-approved)
             pending_idx = None
+            auto_ok: set[str] = set()       # calls the task's standing permission covers
             for i, tc in enumerate(turn.tool_calls):
                 is_approved = (approved_action is not None
                                and approved_action.get("tool_call_id") == tc.id)
                 stub = any(t.name == tc.name and t.upgrade_stub for t in registry.list())
                 if policy.decide(tc.name) == Decision.NEEDS_APPROVAL and not is_approved and not stub:
-                    pending_idx = i
-                    break
+                    if (pre_approved is not None and not (sec is not None and sec.tainted)
+                            and pre_approved(tc.name, tc.arguments)):
+                        auto_ok.add(tc.id)      # still screened by Layer 5 just below
+                    else:
+                        pending_idx = i
+                        break
                 # Layer 5: a tainted context turns consequential calls into approvals
                 if sec is not None and not is_approved:
                     v = security.check_action(sec, tc.name, tc.arguments, step=step)
@@ -432,8 +447,10 @@ async def run_agent(
 
             # no approval needed this turn — run every tool normally
             for tc in turn.tool_calls:
-                is_approved = (approved_action is not None
-                               and approved_action.get("tool_call_id") == tc.id)
+                is_approved = tc.id in auto_ok or (approved_action is not None
+                                                   and approved_action.get("tool_call_id") == tc.id)
+                if tc.id in auto_ok:
+                    log.info("pre-approved by the task", tool=tc.name, thread_id=thread_id)
                 content = await _run_one_tool(tc, is_approved=is_approved)
 
                 if "approval" in content.lower() or "not executed" in content.lower():

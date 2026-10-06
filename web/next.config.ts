@@ -19,6 +19,12 @@ const csp = [
 ].join("; ");
 
 const nextConfig: NextConfig = {
+  // The Docker image (web/Dockerfile) builds with NEXT_OUTPUT=standalone: a
+  // self-contained server.js with only the files it needs. Local `next start`
+  // and the e2e tests keep the normal output.
+  output: process.env.NEXT_OUTPUT === "standalone" ? "standalone" : undefined,
+  // trace from web/ itself (the repo root has its own lockfile), so server.js lands at .next/standalone/
+  outputFileTracingRoot: process.cwd(),
   async headers() {
     return [
       {
@@ -45,9 +51,10 @@ const nextConfig: NextConfig = {
         ],
       },
       {
-        // The admin console: never cached by a browser or a shared proxy,
-        // never indexed, never framed (already), and Referer never leaves it.
-        source: "/(admin|api/admin)(.*)",
+        // The admin console and approve-by-link pages (the link is a credential):
+        // never cached by a browser or a shared proxy, never indexed, never framed
+        // (already), and Referer never leaves them.
+        source: "/(admin|api/admin|approve|api/approval-links)(.*)",
         headers: [
           { key: "Cache-Control", value: "private, no-store, max-age=0" },
           { key: "X-Robots-Tag", value: "noindex, nofollow" },

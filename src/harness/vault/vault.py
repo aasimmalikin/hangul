@@ -214,7 +214,8 @@ class Vault:
     # ---------------------------------------------------------------- proxy
 
     async def proxy(self, token: str, *, method: str, path: str, headers: dict | None = None,
-                    query: dict | None = None, body: bytes | str | None = None) -> ProxyResponse:
+                    query: dict | None = None, body: bytes | str | None = None,
+                    want_bytes: bool = False) -> ProxyResponse:
         try:
             grant = await self.grants.lookup(token)
         except GrantError as e:
@@ -227,18 +228,20 @@ class Vault:
             grant=grant, credential=cred, spec=spec, cipher=self.cipher, grants=self.grants,
             policy=self.policy, redactor=self.redactor, http=self.http, method=method, path=path,
             headers=headers, query=query, body=body, max_body_bytes=self.max_body_bytes,
-            audit=self.audit,
+            audit=self.audit, want_bytes=want_bytes,
         )
 
     async def call(self, *, subject: str, provider: str, method: str, path: str, thread_id: str | None = None,
                    headers: dict | None = None, query: dict | None = None,
-                   body: bytes | str | None = None) -> ProxyResponse:
-        """Mint a one-off grant and proxy through it (in-process callers)."""
+                   body: bytes | str | None = None, want_bytes: bool = False) -> ProxyResponse:
+        """Mint a one-off grant and proxy through it (in-process callers).
+        ``want_bytes`` returns the raw body in ``.raw`` (media downloads)."""
         spec = self.spec(provider)
         write = spec.classify(method, path) == "write"
         token, _ = await self.mint_grant(subject=subject, provider=provider, thread_id=thread_id, write=write)
         try:
-            return await self.proxy(token, method=method, path=path, headers=headers, query=query, body=body)
+            return await self.proxy(token, method=method, path=path, headers=headers, query=query, body=body,
+                                    want_bytes=want_bytes)
         finally:
             await self.revoke_grant(token)
 

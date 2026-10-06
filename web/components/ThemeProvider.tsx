@@ -10,9 +10,9 @@ const listeners = new Set<() => void>()
 function read(): Theme {
   try {
     const t = localStorage.getItem(KEY)
-    return t === "light" ? "light" : "dark"
+    return t === "dark" ? "dark" : "light"
   } catch {
-    return "dark"
+    return "light"
   }
 }
 
@@ -31,7 +31,7 @@ function subscribe(l: () => void) {
 }
 
 const ThemeContext = createContext<{ theme: Theme; setTheme: (t: Theme) => void }>({
-  theme: "dark",
+  theme: "light",
   setTheme: () => {},
 })
 
@@ -41,7 +41,7 @@ const ThemeContext = createContext<{ theme: Theme; setTheme: (t: Theme) => void 
  * first paint, and this store keeps React in sync after hydration.
  */
 export function ThemeProvider({ children }: { children: React.ReactNode }) {
-  const theme = useSyncExternalStore(subscribe, read, () => "dark" as Theme)
+  const theme = useSyncExternalStore(subscribe, read, () => "light" as Theme)
   const setTheme = useCallback((t: Theme) => write(t), [])
   return <ThemeContext.Provider value={{ theme, setTheme }}>{children}</ThemeContext.Provider>
 }
