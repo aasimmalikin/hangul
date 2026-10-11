@@ -80,7 +80,7 @@ export function WhatsAppLink({ frame }: { frame: (content: React.ReactNode) => R
         </div>
       ) : (
         <div style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
-          <span className="h-muted" style={{ flex: 1 }}>Chat with Hangul on WhatsApp, and get your reminders and brief there. Part of Plus and Pro.</span>
+          <span className="h-muted" style={{ flex: 1 }}>Log sales, add customers and set reminders on WhatsApp, free. Plus and Pro add everything else, and your brief there.</span>
           <button className="h-btn-solid" onClick={() => void start()} disabled={busy} data-testid="whatsapp-start">
             <i className="ti ti-brand-whatsapp" style={{ marginRight: 6 }} />Link WhatsApp
           </button>

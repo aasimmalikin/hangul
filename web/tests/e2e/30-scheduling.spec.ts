@@ -4,7 +4,7 @@ import { backend, freshUser, signInAs } from "./helpers"
 /**
  * Scheduled tasks made easy: the three-step form (what / when / how) with a plain
  * summary, weekday and one-off schedules, apps picked from the words, the one rule
- * (calendar and email just happen; GitHub & co. ask on WhatsApp 5 minutes early)
+ * (calendar and email just happen; Sheets and Docs changes ask on WhatsApp 5 minutes early)
  * -- and approving a waiting action from a link, signed out.
  */
 test.describe("scheduling", () => {
@@ -74,12 +74,12 @@ test.describe("scheduling", () => {
     await expect(page.getByTestId("task-1")).toContainText("Asks you 5 minutes before — sending email — on WhatsApp")
   })
 
-  test("reading email doesn't ask; a GitHub change does", async ({ page, context, baseURL }) => {
+  test("reading email doesn't ask; a Sheets change does", async ({ page, context, baseURL }) => {
     await signInAs(context, me, baseURL!)
     await page.goto("/settings")
     await page.getByLabel("Task question").fill("Summarise my inbox")
     await expect(page.getByTestId("task-summary")).not.toContainText("your OK")
-    await page.getByLabel("Task question").fill("Comment on my open GitHub issue with today's status")
+    await page.getByLabel("Task question").fill("Add today's sales to my spreadsheet")
     await expect(page.getByTestId("task-rule")).toContainText("changes need your OK, so this task starts 5 minutes early")
   })
 

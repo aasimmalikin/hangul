@@ -1,6 +1,4 @@
 import asyncio
-import hashlib
-import json
 from fastapi import APIRouter, Depends, HTTPException
 from typing import Literal
 from pydantic import BaseModel, Field
@@ -20,14 +18,12 @@ from harness.tools.builtin.ask_user import ASK_USER_TOOL
 from harness.tools.builtin.search_docs_session import make_search_docs_tool
 from harness.tools.builtin.vault_request import build_vault_tools
 from harness import provenance
-from harness.tools.builtin.daily import build_daily_tools, daily_tools_for
+from harness.tools.builtin.daily import daily_tools_for
 from harness.connectors import tools_for, validate_keys
 from harness.security import get_guard
 from harness.tools.builtin.recall import make_recall_tool
 from harness.tools.builtin.remember import make_remember_tool
 from harness.tools.builtin.recall_episodes import make_recall_episodes_tool
-from harness.cache.keys import answer_key
-from harness.cache.redis_cache import RedisCache
 from harness.policy.policy import ToolPolicy
 from harness.policy.tiers import Tier
 from harness.policy.audit import AuditLog
@@ -46,6 +42,7 @@ from harness.db.conversations import (
     get_conversation,
     load_messages,
     save_security,
+    set_brand,
     set_summary,
     set_title,
 )
@@ -58,6 +55,7 @@ from harness.db import checkins
 from harness.db.memory import profile_text
 from harness.db.episodes import store_episode
 from harness.db.settings import get_settings as user_prefs
+from harness.sales import shop_state
 from harness.db.settings import prompt_block as prefs_block
 
 _audit = AuditLog()
@@ -91,6 +89,11 @@ _policy = ToolPolicy(tiers={
     "generate_image": Tier.SAFE,         # draws into the user's own folder; metered per image
     "maps_search": Tier.SAFE,
     "travel_time": Tier.SAFE,
+    "launch_plan": Tier.SAFE,            # saves a plan for the user; its searches are metered
+    "business": Tier.SAFE,               # the user's own sales figures; no outbound text
+    "promises": Tier.SAFE,               # the user's own promise rows; chasing only drafts (sends wait)
+    "customers": Tier.SAFE,              # the user's own customer list; never messages anyone
+    "more_tools": Tier.SAFE,             # only adds already-built, plan-gated tools to the run (agent/tool_router.py)
 }, patterns=[
     # Google Workspace bundle (official MCP servers): anything that sends,
     # creates, changes or deletes pauses for approval; reads run.
@@ -104,6 +107,8 @@ _policy = ToolPolicy(tiers={
     ("docs__*replace*", Tier.DESTRUCTIVE), ("docs__*delete*", Tier.DESTRUCTIVE), ("docs__*append*", Tier.DESTRUCTIVE),
     ("sheets__*append*", Tier.DESTRUCTIVE), ("sheets__*create*", Tier.DESTRUCTIVE), ("sheets__*update*", Tier.DESTRUCTIVE),
     ("sheets__*clear*", Tier.DESTRUCTIVE), ("sheets__*", Tier.SENSITIVE), ("contacts__*", Tier.SENSITIVE),
+    # a new Meet link notifies nobody and sends nothing, so even creating one runs without a tap
+    ("meet__*", Tier.SENSITIVE),
     ("github__create*", Tier.DESTRUCTIVE), ("github__comment*", Tier.DESTRUCTIVE), ("github__*", Tier.SENSITIVE),
     ("notion__append*", Tier.DESTRUCTIVE), ("notion__create*", Tier.DESTRUCTIVE), ("notion__*", Tier.SENSITIVE),
     ("slack__send*", Tier.DESTRUCTIVE), ("slack__*", Tier.SENSITIVE),
@@ -118,7 +123,6 @@ _registry.registry(SEARCH_DOCS_TOOL)
 _registry.registry(WEB_SEARCH_TOOL)
 _registry.registry(ASK_USER_TOOL)
 
-_cache = RedisCache()
 
 DOCS_ONLY_INSTRUCTION = ("\n\nYou are in DOCUMENTS-ONLY mode. You have exactly one tool: search_docs. "
     "For EVERY question you MUST immediately call the search_docs tool with a query "
@@ -170,6 +174,47 @@ class AskRequest(BaseModel):
     # top of any switched on by hand. The web app sends true unless the user
     # turned "use my apps automatically" off.
     connectors_auto: bool = False
+    # The brand to make things for (brands.id). None = the conversation's, or
+    # one named in the message when connectors_auto is on; 0 = none.
+    brand_id: int | None = Field(default=None, ge=0)
+
+
+async def check_brand_request(req: "AskRequest", user_id: str):
+    """A brand the caller asked for by id must be theirs and usable: else 402
+    (no brands on this plan) or 422 ``brand_unavailable``. Called before a
+    stream starts, like the plan check, so the refusal is a real status."""
+    if not req.brand_id:
+        return None
+    from harness.db import brands as brands_db
+    b = await asyncio.to_thread(brands_db.usable, user_id, req.brand_id)
+    if b is not None:
+        return b
+    if await asyncio.to_thread(brands_db.slots, user_id) == 0:
+        raise HTTPException(status_code=402, headers={"X-Reason": "plan_required"},
+                            detail={"detail": "Brands are part of the Plus and Pro plans.", "code": "plan_required",
+                                    "plan_needed": "plus"})
+    raise HTTPException(status_code=422, headers={"X-Reason": "brand_unavailable"},
+                        detail="That brand isn't available: it was removed, or it's paused on your plan.")
+
+
+async def resolve_brand(req: "AskRequest", user_id: str, conv=None):
+    """The run's brand: the one asked for, else the conversation's (quietly
+    dropped if it's gone or paused), else one the message names by name."""
+    if req.brand_id == 0:
+        return None
+    from harness.db import brands as brands_db
+    try:
+        if req.brand_id:
+            return await check_brand_request(req, user_id)
+        if conv is not None and getattr(conv, "brand_id", None):
+            return await asyncio.to_thread(brands_db.usable, user_id, conv.brand_id)
+        if req.connectors_auto:
+            return await asyncio.to_thread(brands_db.match_name, user_id, req.question)
+    except HTTPException:
+        raise
+    except Exception as e:  # noqa: BLE001 - a brand is a nicety; the run goes on without it
+        log.warning("brand lookup failed", error=str(e))
+    return None
 
 
 RESEARCH_INSTRUCTION = (
@@ -192,6 +237,17 @@ UNATTENDED_INSTRUCTION = (
     "short answer that says what you did and what is waiting for them. Calendar actions and saving email "
     "drafts run without asking in a scheduled run; sending email and other changes (GitHub, Slack, Notion, "
     "Docs, Sheets) wait for the user's OK.\n"
+    "=== END ==="
+)
+
+
+# A run limited to a few tools (only_tools), e.g. WhatsApp on the Free plan: the shop basics.
+BASICS_INSTRUCTION = (
+    "\n\n=== SHOP BASICS ===\n"
+    "This chat is on the Free plan, which here covers the shop basics: logging sales (also from a photo of a "
+    "bill or day-end report), reminders, lists, notes, promises and the customer list. Do those fully. For "
+    "anything else (email, calendar, posts, files, the forecast, web search) say in one short line that it is "
+    "part of Plus, with this link: {upgrade_url}\n"
     "=== END ==="
 )
 
@@ -243,6 +299,9 @@ class AskResponse(BaseModel):
     pending_tool: dict | None = None
     # what the prompt-injection layers flagged (harness.security)
     security_events: list[dict] = []
+    # the brand the run made things for (harness.brands)
+    brand_id: int | None = None
+    brand_name: str | None = None
 
 @dataclass
 class RunOutcome:
@@ -251,9 +310,10 @@ class RunOutcome:
     prompt_version: object
     model: str
     run_cost: float
-    cache_key: str
     effort: str | None = None
     conversation_id: str | None = None
+    brand_id: int | None = None
+    brand_name: str | None = None
 
 async def _summarize_thread(result: object, question: str) -> str:
     """Summarize the thread for episodic memory storage."""
@@ -271,14 +331,11 @@ def _spawn_bookkeeping(coro) -> None:
 
 
 async def _finish_run(req: AskRequest, user_id: str, run: RunRecord,
-                      result: object, key: str, run_cost: float, *,
-                      conversation_id: str | None = None,
-                      cacheable: bool = True) -> None:
-    """Post-answer bookkeeping: ledger, answer cache, episodic memory.
-
-    ``cacheable`` is False once the conversation has earlier turns: the answer
-    then depends on the whole transcript, which the key does not hash, so
-    caching it would serve it to a different question's context.
+                      result: object, run_cost: float, *,
+                      conversation_id: str | None = None) -> None:
+    """Post-answer bookkeeping: ledger and episodic memory. (There is no answer
+    cache: a chat answer depends on the transcript, the shop block and the hour,
+    so the same words almost never deserve the same answer.)
 
     The episode is keyed by the CONVERSATION, not the run. It used to be keyed
     by run_id with an empty title, which made a titleless duplicate rail row per
@@ -291,19 +348,6 @@ async def _finish_run(req: AskRequest, user_id: str, run: RunRecord,
             await asyncio.to_thread(entitlements.settle, user_id, cost, run.run_id)
         except Exception as e:  # noqa: BLE001
             log.warning("ledger write failed", error=str(e))
-
-    if cacheable:
-        try:
-            await _cache.set(key, json.dumps({
-                "answer": result.answer,
-                "steps": result.steps,
-                "stopped_reason": result.stopped_reason,
-                "tools_used": result.tools_used,
-                "safety_blocked": result.safety_blocked,
-                "budget_used": result.budget_used,
-            }))
-        except Exception as e:  # noqa: BLE001
-            log.warning("answer cache write failed", error=str(e))
 
     if result.pending_tool is None and result.answer:
         try:
@@ -348,17 +392,22 @@ async def _persist_turn(conversation_id: str, run_id: str, question: str) -> Non
                   run_id=run_id, error=str(e))
 
 
-async def _build_and_run(req: AskRequest, user_id: str, on_event=None, *, unattended: bool = False) -> RunOutcome:
+async def _build_and_run(req: AskRequest, user_id: str, on_event=None, *, unattended: bool = False,
+                         only_tools: frozenset[str] | None = None) -> RunOutcome:
     """One question, with a cost meter open around it (billing/meter.py), so
     searches, embeddings and summaries it causes are charged with its model cost.
     unattended: a scheduled run nobody is watching -- no ask_user, the model is told so,
-    and calendar / email actions run without a tap (harness.preapproval)."""
+    and calendar / email actions run without a tap (harness.preapproval).
+    only_tools: keep just these tools and no connectors (WhatsApp on Free: BASICS_INSTRUCTION).
+    Pick tools that don't pause for approval: a resume through /approve rebuilds the plan's
+    normal (still plan-gated) toolset, not this subset."""
     from harness.billing import meter
     async with meter.metering(user_id):
-        return await _run_question(req, user_id, on_event, unattended=unattended)
+        return await _run_question(req, user_id, on_event, unattended=unattended, only_tools=only_tools)
 
 
-async def _run_question(req: AskRequest, user_id: str, on_event=None, *, unattended: bool = False) -> RunOutcome:
+async def _run_question(req: AskRequest, user_id: str, on_event=None, *, unattended: bool = False,
+                        only_tools: frozenset[str] | None = None) -> RunOutcome:
     security = get_guard()
     if security.is_throttled(user_id):
         # repeat offender: too many injection-like messages in the window
@@ -433,6 +482,14 @@ async def _run_question(req: AskRequest, user_id: str, on_event=None, *, unatten
     except Exception as e:  # noqa: BLE001 - a DB blip must not fail the question
         log.warning("user settings load failed", error=str(e))
 
+    # the brand this chat makes things for: its tools and the prompt follow it
+    brand = None if docs_only else await resolve_brand(req, user_id, conv)
+    if conv is not None and (brand.id if brand else None) != (conv.brand_id or None) and (brand or req.brand_id == 0 or conv.brand_id):
+        try:
+            await asyncio.to_thread(set_brand, conv.id, brand.id if brand else None)
+        except Exception as e:  # noqa: BLE001
+            log.warning("conversation brand not saved", error=str(e))
+
     session_registry = ToolRegistry()
 
     # search_docs is ALWAYS available — it is the one tool docs-only mode needs
@@ -449,10 +506,12 @@ async def _run_question(req: AskRequest, user_id: str, on_event=None, *, unatten
             session_registry.registry(ASK_USER_TOOL)
         for t in await build_vault_tools(user_id, run.run_id):
             session_registry.registry(t)
-        for t in await daily_tools_for(user_id, prefs.timezone if prefs else "UTC", run.run_id):
+        for t in await daily_tools_for(user_id, prefs.timezone if prefs else "UTC", run.run_id, brand):
             session_registry.registry(t)
     connectors = list(connectors_or_422(req.connectors or (list(conv.connectors) if conv else [])))
-    if req.connectors_auto and not docs_only:
+    if only_tools is not None:
+        connectors = []                   # the basics never switch apps on
+    elif req.connectors_auto and not docs_only:
         from harness.connectors.auto import connected_apps, route
         try:
             for key in route(req.question, await connected_apps(user_id)):
@@ -471,6 +530,12 @@ async def _run_question(req: AskRequest, user_id: str, on_event=None, *, unatten
     
     # the plan decides which of these tools are real and which are upgrade cards
     await entitlements.gate_registry(user_id, session_registry)
+    if only_tools is not None:
+        kept = ToolRegistry()
+        for t in session_registry.list():
+            if t.name in only_tools:
+                kept.registry(t)
+        session_registry = kept
 
     # the user's folder (create_file, my_files, uploads); tools take bare file names
     (Path("data/sessions") / user_id).resolve().mkdir(parents=True, exist_ok=True)
@@ -497,6 +562,15 @@ async def _run_question(req: AskRequest, user_id: str, on_event=None, *, unatten
         if mood:
             prompt_text = prompt_text + "\n" + checkins.prompt_line(mood)
 
+    # what Hangul already knows about their business (sales, tomorrow, what's due): no tool call needed
+    shop = "" if docs_only else await shop_state.shop_block(user_id)
+    if shop:
+        prompt_text = prompt_text + "\n\n" + shop
+
+    if brand is not None:
+        from harness.brands.prompt import brand_block
+        prompt_text = prompt_text + "\n\n" + brand_block(brand)
+
     if docs_only:
         prompt_text = prompt_text + DOCS_ONLY_INSTRUCTION
     if mode == "research":
@@ -506,6 +580,10 @@ async def _run_question(req: AskRequest, user_id: str, on_event=None, *, unatten
         prompt_text = prompt_text + "\n\n=== CONNECTORS ===\n" + connector_note
     if unattended:
         prompt_text = prompt_text + UNATTENDED_INSTRUCTION
+    if only_tools is not None:
+        from harness.config import get_settings as app_settings
+        prompt_text = prompt_text + BASICS_INSTRUCTION.format(
+            upgrade_url=app_settings().app_url.rstrip("/") + "/billing?upgrade=plus")
     # a scheduled run doesn't stop for calendar / email actions; other approvals still wait
     pre_approved = None
     if unattended:
@@ -522,7 +600,7 @@ async def _run_question(req: AskRequest, user_id: str, on_event=None, *, unatten
     initial_messages = None
     persisted_upto = 0
     conversation_id = conv.id if conv else None
-    started_empty = True
+    recent_tools: set[str] = set()                # tools this chat used lately (tool_router keeps their group)
 
     if conv is not None:
         try:
@@ -532,7 +610,8 @@ async def _run_question(req: AskRequest, user_id: str, on_event=None, *, unatten
             # is worse than failing loudly on a question the user can retry.
             log.error("transcript load failed", conversation_id=conv.id, error=str(e))
             raise HTTPException(status_code=503, detail="Could not load this conversation.")
-        started_empty = not rows and conv.next_seq == 0
+        from harness.agent.tool_router import recent_tool_names
+        recent_tools = recent_tool_names(rows)
         initial_messages, dropped = ctx.build_messages(
             prompt_text=prompt_text, question=req.question,
             summary=conv.summary_text, history=rows,
@@ -558,18 +637,11 @@ async def _run_question(req: AskRequest, user_id: str, on_event=None, *, unatten
             if text and text != conv.summary_text:
                 await asyncio.to_thread(set_summary, conv.id, text, through)
 
-    key = answer_key(
-        question=req.question,
-        prompt_version=prompt_version.version,
-        model=model,
-        tool_names=[t.name for t in session_registry.list()],
-        session_id = user_id,
-        history=history,
-        docs_only=docs_only,
-        effort=effort,
-        mode=mode,
-        prefs_version=hashlib.sha256(json.dumps({**prefs.as_dict(), "mood": mood}, sort_keys=True).encode()).hexdigest()[:12] if prefs else "",
-    )
+    # start with the shop's core tools plus what this message needs; more_tools loads the rest
+    if not docs_only and only_tools is None:
+        from harness.agent import tool_router
+        session_registry = tool_router.narrow(session_registry, req.question, recent_tools, mode)
+
 
     trace = Trace(trace_id=run.run_id)
 
@@ -655,9 +727,8 @@ async def _run_question(req: AskRequest, user_id: str, on_event=None, *, unatten
     # several seconds the user would otherwise wait for after the answer has
     # already been produced -- so they run as a background task and the
     # response (or the SSE `done` event) goes out immediately.
-    _spawn_bookkeeping(_finish_run(req, user_id, run, result, key, run_cost,
-                                   conversation_id=conversation_id,
-                                   cacheable=started_empty))
+    _spawn_bookkeeping(_finish_run(req, user_id, run, result, run_cost,
+                                   conversation_id=conversation_id))
 
     return RunOutcome(
         result = result,
@@ -665,9 +736,10 @@ async def _run_question(req: AskRequest, user_id: str, on_event=None, *, unatten
         prompt_version = prompt_version, 
         model = model,
         run_cost = run_cost,
-        cache_key = key,
         effort = effort,
         conversation_id = conversation_id,
+        brand_id = brand.id if brand else None,
+        brand_name = brand.name if brand else None,
     )
 
 
@@ -676,53 +748,6 @@ async def _run_question(req: AskRequest, user_id: str, on_event=None, *, unatten
 @router.post("/ask", response_model=AskResponse)
 async def ask(req: AskRequest, user: dict = Depends(get_current_user)) -> AskResponse:
     user_id = user["user_id"]
-
-    # cache-hit shortcut stays here — it's specific to the JSON route
-    prompt_version = get_prompt("system_agent")
-    # checked before the cache too: a cached answer is still the paid model's
-    spec, effort = await entitlements.aresolve_for_user(user_id, req.model, req.effort, mode=req.mode, question=req.question)
-    model = spec.id
-    session_registry = ToolRegistry()
-    session_registry.registry(make_search_docs_tool(user_id))
-    if not req.docs_only:
-        session_registry.registry(CALCULATOR_TOOL)
-        session_registry.registry(WEB_SEARCH_TOOL)
-        session_registry.registry(ASK_USER_TOOL)
-        for t in await build_vault_tools(user_id, None):
-            session_registry.registry(t)
-        for t in build_daily_tools(user_id):
-            session_registry.registry(t)
-        add_connector_tools(session_registry, connectors_or_422(req.connectors), user_id)
-    prefs_v = ""
-    try:
-        p = await asyncio.to_thread(user_prefs, user_id)
-        mood = await asyncio.to_thread(checkins.mood_now, user_id, p.timezone)
-        prefs_v = hashlib.sha256(json.dumps({**p.as_dict(), "mood": mood}, sort_keys=True).encode()).hexdigest()[:12]
-    except Exception:  # noqa: BLE001
-        pass
-    key = answer_key(
-        question=req.question, prompt_version=prompt_version.version, model=model,
-        tool_names=[t.name for t in session_registry.list()], session_id=user_id,
-        history=[m.model_dump() for m in req.history], docs_only=req.docs_only, mode=req.mode, prefs_version=prefs_v,
-        effort=effort,
-    )
-    # The cache only ever serves a FIRST turn. Past that the answer depends on
-    # the transcript, which the key does not hash -- a hit would be an answer
-    # from a different context. _finish_run applies the same rule on the write.
-    cached_raw = None
-    if req.conversation_id is None:
-        cached_raw = await _cache.get(key)
-    if cached_raw is not None:
-        data = json.loads(cached_raw)
-        log.info("cache hit", key=key)
-        return AskResponse(
-            answer=data["answer"], run_id="cached", conversation_id=None,
-            prompt_version=prompt_version.version, model=model, effort=effort,
-            steps=data["steps"], stopped_reason=data["stopped_reason"],
-            cached=True, tools_used=data.get("tools_used", []),
-            safety_blocked=data.get("safety_blocked", []),
-            budget_used=data.get("budget_used", {}), cost_usd=0.0, resumed_from_step=0,
-        )
 
     async with run_slot(user_id):
         outcome = await _build_and_run(req, user_id)

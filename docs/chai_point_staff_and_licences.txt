@@ -1,0 +1,13 @@
+Chai Point - staff and licences
+
+Staff
+- Ravi (counter and tea), 7 am to 3 pm, salary Rs 14,000 a month
+- Pooja (counter and billing), 2 pm to 10 pm, salary Rs 14,000 a month
+- Salim (snacks and cleaning), 8 am to 5 pm, salary Rs 12,000 a month
+Salaries are paid on the 1st of each month. Each staff member has one weekly off (Tuesday, when the shop is closed).
+
+Licences
+- FSSAI basic registration no. 21526012345678, valid until 15 March 2027. Renewal fee Rs 100 a year; apply at least 30 days before expiry.
+- Pune Municipal Corporation shop and establishment licence, valid until 31 December 2026.
+- GST: not registered (annual turnover below Rs 40 lakh).
+- Fire safety: extinguisher last refilled on 10 June 2026; next refill due by 10 June 2027.

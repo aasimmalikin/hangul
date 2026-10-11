@@ -104,10 +104,22 @@ export default function YouPage() {
             <div className="h-muted" style={{ fontSize: 13 }}>{user?.email}</div>
           </div>
         </div>
+        <Row href="/kept" icon="bookmark" title="Kept" testId="you-kept"
+          detail="What Hangul did for you, and anything waiting for your OK" />
         <Row href="/settings" icon="adjustments" title="Profile & preferences" testId="you-preferences"
           detail="Your name, city, tone, timezone, custom instructions and scheduled tasks" />
         <Row href="/vault" icon="plug-connected" title="Connected apps" testId="you-apps"
-          detail={apps.length ? `Connected: ${apps.join(", ")}` : "Connect Google, GitHub, Notion or Slack"} />
+          detail={apps.length ? `Connected: ${apps.join(", ")}` : "Connect Google: Gmail, Calendar, Drive, Docs, Sheets"} />
+        <Row href="/brands" icon="palette" title="Brands" testId="you-brands"
+          detail="Your business's colours, font and logo, used for posts, posters and files" />
+        <Row href="/business" icon="trending-up" title="How's business" testId="you-business"
+          detail="Your sales, tomorrow's forecast, and what to do about a slow day" />
+        <Row href="/customers" icon="users" title="Customers" testId="you-customers"
+          detail="Your regulars, their birthdays, and who hasn't been in for a while" />
+        <Row href="/missions" icon="checklist" title="Slow days, handled" testId="you-missions"
+          detail="Hangul makes the offer, asks you once, and shows what it earned" />
+        <Row href="/launch" icon="rocket" title="Start a business" testId="you-launch"
+          detail="What you'd need, what it costs, and when it breaks even" />
         <Row href="/billing" icon="credit-card" title="Plan & billing" testId="you-plan"
           detail={billing?.enabled ? `You're on ${billing.plan_label ?? billing.plan}` : "Your plan and usage"} />
         {status === "authenticated" && <Memories />}

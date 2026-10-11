@@ -116,22 +116,22 @@ test.describe("conversation", () => {
 
     // back to the landing page, pick another prompt → only the new exchange is shown
     await page.goto("/")
-    await page.getByRole("button", { name: "Search my documents" }).click()
-    await expectReply(page, "Reply to: Search my documents")
+    await page.getByRole("button", { name: "How's business?" }).click()
+    await expectReply(page, "Reply to: How's business this week, and what does tomorrow look like?")
     await expect(page.locator(".h-prose")).toHaveCount(2)
     // Scoped to the thread: the Chats rail lists "Plan my day" as past history,
     // which is correct — what must not happen is it being in THIS conversation.
     await expect(page.getByTestId("thread")).not.toContainText("Plan my day")
     // and the backend got it with no history from the earlier thread
     const asks = (await backendState()).asks
-    expect(asks.at(-1)).toMatchObject({ question: "Search my documents", history: 0 })
+    expect(asks.at(-1)).toMatchObject({ question: "How's business this week, and what does tomorrow look like?", history: 0 })
 
     // a prompt again, same rule
     await page.goto("/")
     await page.getByRole("button", { name: "Plan my day" }).click()
     await expectReply(page, "Reply to: Plan my day")
     await expect(page.locator(".h-prose")).toHaveCount(2)
-    await expect(page.getByTestId("thread")).not.toContainText("Search my documents")
+    await expect(page.getByTestId("thread")).not.toContainText("How's business this week, and what does tomorrow look like?")
 
     // a plain refresh (no ?q=) still restores the current thread
     await page.reload()

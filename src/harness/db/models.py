@@ -67,6 +67,8 @@ class User(Base):
     # and "month" or "year" (a yearly plan still gets its allowance month by month)
     plan_region: Mapped[str] = mapped_column(String(8), nullable=False, default="intl", server_default="intl")
     plan_interval: Mapped[str] = mapped_column(String(8), nullable=False, default="month", server_default="month")
+    # brand slots bought on top of the plan's (one-time purchases, harness.brands)
+    extra_brands: Mapped[int] = mapped_column(Integer, nullable=False, default=0, server_default="0")
 
 class BillingEvent(Base):
     """One row per payment-provider webhook delivery (id = its `webhook-id`),
@@ -135,6 +137,20 @@ class MoodCheckin(Base):
     user_id: Mapped[str] = mapped_column(String(64), nullable=False, index=True)       # the JWT sub, like conversations.user_id
     day: Mapped[str] = mapped_column(String(10), nullable=False)                         # local date, YYYY-MM-DD
     mood: Mapped[str] = mapped_column(String(16), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+
+class WaitlistEntry(Base):
+    """Pre-registration before launch (/join, db/waitlist.py): an email, not an
+    account. Who they are and which plan interests them are optional; source is
+    the ?ref= / utm_source the visitor arrived with (e.g. "x")."""
+    __tablename__ = "waitlist"
+    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    email: Mapped[str] = mapped_column(String(254), nullable=False, unique=True)          # lower-cased
+    persona: Mapped[str] = mapped_column(String(16), nullable=False, server_default="")    # db/settings.PERSONAS key or ""
+    interest: Mapped[str] = mapped_column(String(8), nullable=False, server_default="")    # free / plus / pro or ""
+    source: Mapped[str] = mapped_column(String(40), nullable=False, server_default="")
+    trade: Mapped[str] = mapped_column(String(16), nullable=False, server_default="")      # kind of business (web BUSINESS_KINDS) or ""
+    city: Mapped[str] = mapped_column(String(80), nullable=False, server_default="")
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
 
 class Account(Base):
@@ -235,6 +251,8 @@ class Conversation(Base):
     connectors: Mapped[list] = mapped_column(JSONB, nullable = False, default = list, server_default = "[]")
     mode: Mapped[str] = mapped_column(String(16), nullable = False, default = "default", server_default = "default")
     docs_only: Mapped[bool] = mapped_column(Boolean, nullable = False, default = False, server_default = "false")
+    # the brand (brands.id) the chat makes things for; NULL = none
+    brand_id: Mapped[int | None] = mapped_column(Integer, nullable = True)
     # Rolling compaction of everything at or below summary_through_seq, so the
     # summarising call happens only when the window actually advances.
     summary_text: Mapped[str] = mapped_column(Text, nullable = False, default = "", server_default = "")
@@ -460,3 +478,248 @@ class KeptAction(Base):
     app: Mapped[str] = mapped_column(String(32), nullable=False)
     did: Mapped[str] = mapped_column(String(300), nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+
+
+class Brand(Base):
+    """A business look the user set up once (harness.brands): colours, style,
+    voice, font and logo, applied to what Hangul makes while the brand is on.
+    Hidden, not deleted (``active``); a hidden brand frees its slot."""
+    __tablename__ = "brands"
+    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    user_id: Mapped[int] = mapped_column(Integer, nullable=False, index=True)
+    name: Mapped[str] = mapped_column(String(80), nullable=False)
+    kind: Mapped[str] = mapped_column(String(32), nullable=False, default="", server_default="")
+    look: Mapped[str] = mapped_column(String(48), nullable=False, default="", server_default="")
+    colors: Mapped[list] = mapped_column(JSONB, nullable=False, default=list, server_default="[]")   # [{role, hex}]
+    style: Mapped[str] = mapped_column(String(300), nullable=False, default="", server_default="")
+    voice: Mapped[str] = mapped_column(String(300), nullable=False, default="", server_default="")
+    font: Mapped[str] = mapped_column(String(32), nullable=False, default="sans", server_default="sans")
+    logo: Mapped[str] = mapped_column(String(200), nullable=False, default="", server_default="")    # basename in the user folder
+    # the kit an agency fills in once per client (brands v2)
+    logo_dark: Mapped[str] = mapped_column(String(200), nullable=False, default="", server_default="")   # for dark backgrounds
+    handle: Mapped[str] = mapped_column(String(60), nullable=False, default="", server_default="")       # @chinarcafe
+    website: Mapped[str] = mapped_column(String(200), nullable=False, default="", server_default="")
+    cta: Mapped[str] = mapped_column(String(60), nullable=False, default="", server_default="")          # "Order on Zomato"
+    footer: Mapped[str] = mapped_column(String(120), nullable=False, default="", server_default="")      # address / phone line
+    hashtags: Mapped[list] = mapped_column(JSONB, nullable=False, default=list, server_default="[]")    # [{name, tags: [..]}]
+    active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True, server_default="true")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False)
+
+
+class BrandAsset(Base):
+    """A photo in a brand's library (the file lives in the user folder), so a
+    social media manager uploads product shots once and reuses them."""
+    __tablename__ = "brand_assets"
+    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    brand_id: Mapped[int] = mapped_column(Integer, nullable=False, index=True)
+    user_id: Mapped[int] = mapped_column(Integer, nullable=False, index=True)
+    name: Mapped[str] = mapped_column(String(200), nullable=False)
+    width: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    height: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True, server_default="true")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+
+
+class BrandPost(Base):
+    """One post made for a brand: the words and layout, every size rendered (a
+    carousel has one file per slide and size), the captions written for it,
+    and the client's review (review links, harness.brands.review)."""
+    __tablename__ = "brand_posts"
+    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    brand_id: Mapped[int] = mapped_column(Integer, nullable=False, index=True)
+    user_id: Mapped[int] = mapped_column(Integer, nullable=False, index=True)
+    kind: Mapped[str] = mapped_column(String(16), nullable=False, default="single", server_default="single")  # single | carousel
+    layout: Mapped[str] = mapped_column(String(24), nullable=False, default="band", server_default="band")
+    words: Mapped[dict] = mapped_column(JSONB, nullable=False, default=dict, server_default="{}")
+    slides: Mapped[list] = mapped_column(JSONB, nullable=False, default=list, server_default="[]")
+    sizes: Mapped[list] = mapped_column(JSONB, nullable=False, default=list, server_default="[]")
+    files: Mapped[list] = mapped_column(JSONB, nullable=False, default=list, server_default="[]")
+    captions: Mapped[dict] = mapped_column(JSONB, nullable=False, default=dict, server_default="{}")
+    review_status: Mapped[str] = mapped_column(String(16), nullable=False, default="none", server_default="none")  # none | waiting | approved | changes
+    review_comment: Mapped[str] = mapped_column(Text, nullable=False, default="", server_default="")
+    reviewed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True, server_default="true")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+
+
+class LaunchPlan(Base):
+    """A plan for starting a business (harness.launch): the user's answers, the
+    checklist with prices (estimates until sourced), the assumptions they edit,
+    industry benchmarks and nearby suppliers. The numbers are computed from
+    these on every read (launch/economics.py), never stored. Hidden, not
+    deleted (``active``)."""
+    __tablename__ = "launch_plans"
+    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    user_id: Mapped[int] = mapped_column(Integer, nullable=False, index=True)
+    conversation_id: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    title: Mapped[str] = mapped_column(String(120), nullable=False)
+    kind: Mapped[str] = mapped_column(String(32), nullable=False)
+    city: Mapped[str] = mapped_column(String(80), nullable=False, default="", server_default="")
+    area: Mapped[str] = mapped_column(String(120), nullable=False, default="", server_default="")
+    answers: Mapped[dict] = mapped_column(JSONB, nullable=False, default=dict, server_default="{}")
+    items: Mapped[list] = mapped_column(JSONB, nullable=False, default=list, server_default="[]")
+    assumptions: Mapped[dict] = mapped_column(JSONB, nullable=False, default=dict, server_default="{}")
+    benchmarks: Mapped[list] = mapped_column(JSONB, nullable=False, default=list, server_default="[]")
+    suppliers: Mapped[list] = mapped_column(JSONB, nullable=False, default=list, server_default="[]")
+    status: Mapped[str] = mapped_column(String(16), nullable=False, default="ready", server_default="ready")  # ready | sourcing | failed
+    sourced: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False, server_default="false")    # counts against the plan's monthly sourced plans
+    sourced_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    progress: Mapped[dict] = mapped_column(JSONB, nullable=False, default=dict, server_default="{}")          # {stage, done, total}
+    refreshes: Mapped[int] = mapped_column(Integer, nullable=False, default=0, server_default="0")
+    error: Mapped[str] = mapped_column(String(300), nullable=False, default="", server_default="")
+    cost_usd: Mapped[Decimal] = mapped_column(Numeric(12, 6), nullable=False, default=Decimal("0"), server_default="0")
+    active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True, server_default="true")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False)
+
+
+class Customer(Base):
+    """A shop's customer (db/customers.py): the owner's own list of regulars, with a
+    phone, a birthday (the year is optional) and how often they come in. Hidden,
+    not deleted (``active``)."""
+    __tablename__ = "customers"
+    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    user_id: Mapped[int] = mapped_column(Integer, nullable=False, index=True)
+    business_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    name: Mapped[str] = mapped_column(String(80), nullable=False)
+    phone: Mapped[str] = mapped_column(String(20), nullable=False, default="", server_default="")    # +91… or ""
+    birth_month: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    birth_day: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    birth_year: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    note: Mapped[str] = mapped_column(String(200), nullable=False, default="", server_default="")
+    visits: Mapped[int] = mapped_column(Integer, nullable=False, default=0, server_default="0")
+    last_visit: Mapped[date | None] = mapped_column(Date, nullable=True)
+    active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True, server_default="true")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+    conversation_id: Mapped[str | None] = mapped_column(String(32), nullable=True)    # provenance, like reminders
+    said: Mapped[str | None] = mapped_column(String(500), nullable=True)
+
+
+class Business(Base):
+    """A business the user runs (harness.sales, "How's business"): what it is,
+    where (for its weather), and optionally the launch plan it came from (its
+    break-even and margins) and the brand its posts use. Hidden, not deleted."""
+    __tablename__ = "businesses"
+    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    user_id: Mapped[int] = mapped_column(Integer, nullable=False, index=True)
+    name: Mapped[str] = mapped_column(String(80), nullable=False)
+    kind: Mapped[str] = mapped_column(String(32), nullable=False, default="retail_shop", server_default="retail_shop")
+    city: Mapped[str] = mapped_column(String(80), nullable=False, default="", server_default="")
+    lat: Mapped[float | None] = mapped_column(Numeric(9, 5), nullable=True)
+    lon: Mapped[float | None] = mapped_column(Numeric(9, 5), nullable=True)
+    brand_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    launch_plan_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    nudges: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True, server_default="true")   # evening slow-day alert
+    nudged: Mapped[list] = mapped_column(JSONB, nullable=False, default=list, server_default="[]")       # ISO dates alerted (last few)
+    active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True, server_default="true")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+
+
+class BusinessDay(Base):
+    """One day's takings for a business: what the owner logged or imported,
+    and that day's weather (filled in later, for the forecast)."""
+    __tablename__ = "business_days"
+    __table_args__ = (UniqueConstraint("business_id", "day", name="uq_business_day"),)
+    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    business_id: Mapped[int] = mapped_column(Integer, nullable=False, index=True)
+    day: Mapped[date] = mapped_column(Date, nullable=False)
+    sales: Mapped[Decimal] = mapped_column(Numeric(14, 2), nullable=False, default=Decimal(0))
+    bills: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    closed: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False, server_default="false")
+    partial: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False, server_default="false")   # not the whole day: kept out of the forecast
+    promo: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False, server_default="false")     # an offer ran that day
+    source: Mapped[str] = mapped_column(String(16), nullable=False, default="chat", server_default="chat")  # chat | page | import | photo
+    note: Mapped[str] = mapped_column(String(200), nullable=False, default="", server_default="")
+    rain_mm: Mapped[float | None] = mapped_column(Numeric(6, 1), nullable=True)
+    tmax: Mapped[float | None] = mapped_column(Numeric(5, 1), nullable=True)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False)
+
+
+class BusinessEvent(Base):
+    """Things that happened to a business on a day: a suggestion the owner used
+    (counts against Plus's weekly one), an offer they planned, a note."""
+    __tablename__ = "business_events"
+    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    business_id: Mapped[int] = mapped_column(Integer, nullable=False, index=True)
+    day: Mapped[date] = mapped_column(Date, nullable=False)
+    kind: Mapped[str] = mapped_column(String(24), nullable=False)          # suggestion_used | offer
+    detail: Mapped[dict] = mapped_column(JSONB, nullable=False, default=dict, server_default="{}")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+
+
+class Mission(Base):
+    """A job Hangul carries through on its own over days (harness.missions):
+    a fixed list of steps it ticks off, pausing only where the owner must
+    decide. ``kind`` picks the template (``slow_day``, ``monthly_report``);
+    one mission per (user, kind, business, day), so a tick that runs twice
+    never starts the same job twice."""
+    __tablename__ = "missions"
+    __table_args__ = (UniqueConstraint("user_id", "kind", "business_id", "target_day", name="uq_mission"),)
+    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    user_id: Mapped[int] = mapped_column(Integer, nullable=False, index=True)
+    kind: Mapped[str] = mapped_column(String(24), nullable=False)
+    business_id: Mapped[int] = mapped_column(Integer, nullable=False, default=0, server_default="0")   # 0 = none
+    target_day: Mapped[date] = mapped_column(Date, nullable=False)
+    status: Mapped[str] = mapped_column(String(16), nullable=False, default="active", server_default="active")  # active | waiting | done | cancelled | expired
+    steps: Mapped[list] = mapped_column(JSONB, nullable=False, default=list, server_default="[]")
+    data: Mapped[dict] = mapped_column(JSONB, nullable=False, default=dict, server_default="{}")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False)
+
+
+class MissionTrust(Base):
+    """Earned autonomy: how many times in a row the owner approved one kind of
+    action (``scope``, e.g. ``slow_day:12``), and whether they let Hangul go
+    ahead without asking. Revocable at any time; a rejection resets the run."""
+    __tablename__ = "mission_trust"
+    __table_args__ = (UniqueConstraint("user_id", "scope", name="uq_mission_trust"),)
+    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    user_id: Mapped[int] = mapped_column(Integer, nullable=False, index=True)
+    scope: Mapped[str] = mapped_column(String(48), nullable=False)
+    streak: Mapped[int] = mapped_column(Integer, nullable=False, default=0, server_default="0")
+    auto: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False, server_default="false")
+    offered: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False, server_default="false")
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False)
+
+
+class Promise(Base):
+    """Something someone said they'd do (harness.promises): ``mine`` = the user
+    promised it, ``theirs`` = someone promised the user. Found in email, told
+    after a meeting, or added in chat. ``status``: open -> done | dropped.
+    ``last_contact_at``: the other side wrote back (theirs) or the user wrote
+    to them (mine) after the promise, so it may already be kept."""
+    __tablename__ = "promises"
+    __table_args__ = (Index("ix_promises_user_status", "user_id", "status"),)
+    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    user_id: Mapped[int] = mapped_column(Integer, nullable=False)
+    direction: Mapped[str] = mapped_column(String(8), nullable=False)              # mine | theirs
+    what: Mapped[str] = mapped_column(String(300), nullable=False)
+    who: Mapped[str] = mapped_column(String(120), nullable=False, default="", server_default="")
+    who_email: Mapped[str] = mapped_column(String(255), nullable=False, default="", server_default="")
+    due_on: Mapped[date | None] = mapped_column(Date, nullable=True)                # the user's local date
+    source: Mapped[str] = mapped_column(String(16), nullable=False)                 # email | meeting | chat
+    source_ref: Mapped[str] = mapped_column(String(128), nullable=False, default="", server_default="")  # message / event id
+    thread_ref: Mapped[str] = mapped_column(String(128), nullable=False, default="", server_default="")  # Gmail thread
+    quote: Mapped[str] = mapped_column(String(500), nullable=False, default="", server_default="")
+    status: Mapped[str] = mapped_column(String(16), nullable=False, default="open", server_default="open")
+    last_contact_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    nudged_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    chased_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    done_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+    # where it came from (harness/provenance.py): the chat and the user's words, for the Kept tab
+    conversation_id: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    said: Mapped[str | None] = mapped_column(String(500), nullable=True)
+
+
+class PromiseScan(Base):
+    """Per user: when email was last read for promises, which messages and
+    meetings were already handled, and whether email reading is switched on."""
+    __tablename__ = "promise_scans"
+    user_id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    email_on: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True, server_default="true")
+    email_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    meetings_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    seen: Mapped[list] = mapped_column(JSONB, nullable=False, default=list, server_default="[]")       # Gmail message ids
+    asked: Mapped[list] = mapped_column(JSONB, nullable=False, default=list, server_default="[]")      # [{id, summary, with, emails, at}]

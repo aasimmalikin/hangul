@@ -13,7 +13,7 @@ test.describe("hearth homepage", () => {
   test("signed out: the homepage, its buttons open sign-up, the stag answers a tap", async ({ page }) => {
     await page.goto("/")
     await expect(page.getByTestId("home-landing")).toBeVisible()
-    await expect(page.getByRole("heading", { name: /Your own assistant/ })).toBeVisible()
+    await expect(page.getByRole("heading", { name: /Your shop.s own assistant/ })).toBeVisible()
 
     await page.getByTestId("home-start").click()
     await expect(page.getByRole("dialog")).toContainText("Create your account")

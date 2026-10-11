@@ -17,7 +17,7 @@ export async function userProxy(req: Request, path: string, init: { method: "GET
   let res: Response
   try {
     res = await upstream(path, who.userId, { method: init.method, body: init.body, headers: init.body ? { "Content-Type": "application/json" } : undefined, cache: "no-store" },
-      { timeoutMs: init.method === "POST" && path.endsWith("/run") ? 120_000 : 15_000, signal: req.signal })
+      { timeoutMs: init.method === "POST" && path.endsWith("/run") ? 120_000 : path === "/promises/capture" ? 45_000 : 15_000, signal: req.signal })
   } catch (e) {
     if (e instanceof UpstreamError) return jsonError(e.status, e.code, e.message)
     throw e

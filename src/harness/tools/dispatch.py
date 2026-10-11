@@ -3,7 +3,8 @@ from jsonschema import ValidationError, validate
 from harness.tools.base import Tool, ToolOutput, ToolResult
 
 
-async def dispatch(tool: Tool, args: dict, timeout: float = 30.0) -> ToolResult:
+async def dispatch(tool: Tool, args: dict, timeout: float | None = None) -> ToolResult:
+    timeout = timeout or tool.timeout or 30.0
     try:
         validate(instance=args, schema=tool.parameter)
     except ValidationError as e:

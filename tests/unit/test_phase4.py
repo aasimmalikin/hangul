@@ -46,8 +46,8 @@ def test_image_is_saved_shown_and_charged(folder, monkeypatch):
     monkeypatch.setattr(entitlements, "settle", lambda uid, cost, tid: charged.append((uid, cost)))
     out = run(images.make_generate_image_tool("7").handler(prompt="A watercolour of Pune at dawn", shape="landscape"))
     assert out.ui["kind"] == "image" and (folder / out.ui["name"]).read_bytes() == PNG
-    assert calls[0]["size"] == "1536x1024" and calls[0]["quality"] == "medium" and calls[0]["model"] == "gpt-image-1"
-    assert charged == [("7", Decimal("0.063"))]
+    assert calls[0]["size"] == "1536x1024" and calls[0]["quality"] == "high" and calls[0]["model"] == "gpt-image-1"
+    assert charged == [("7", Decimal("0.25"))]
 
 
 def test_image_refusal_is_explained(folder, monkeypatch):
@@ -60,6 +60,22 @@ def test_image_refusal_is_explained(folder, monkeypatch):
 
 
 # ------------------------------------------------------------------ maps
+
+def test_image_gets_a_longer_timeout_than_other_tools():
+    from harness.tools.base import Tool
+    from harness.tools.dispatch import dispatch
+
+    assert images.make_generate_image_tool("7").timeout >= 120
+
+    async def slow():
+        await asyncio.sleep(0.2)
+        return "drawn"
+
+    patient = Tool("slow", "", {"type": "object", "properties": {}}, slow, timeout=1.0)
+    hasty = Tool("slow", "", {"type": "object", "properties": {}}, slow, timeout=0.05)
+    assert run(dispatch(patient, {})).content == "drawn"
+    assert "timed out after 0.05s" in run(dispatch(hasty, {})).content
+
 
 def test_travel_time_route_and_directions_link(monkeypatch):
     async def fake_nominatim(client, q, limit=5):
@@ -306,7 +322,17 @@ def _client(monkeypatch, vault):
     return TestClient(app)
 
 
+def _offered(monkeypatch, *apps):
+    """GitHub, Notion and Slack are hidden now; these tests check the connect flow itself."""
+    import dataclasses
+
+    from harness.connectors import registry
+    for a in apps:
+        monkeypatch.setitem(registry.BUILTIN, a, dataclasses.replace(registry.BUILTIN[a], hidden=False))
+
+
 def test_a_working_token_is_kept_with_write_consent(monkeypatch):
+    _offered(monkeypatch, "github")
     v = ConnectVault(200)
     r = _client(monkeypatch, v).post("/integrations/apps/github", json={"token": "github_pat_abcdefgh"})
     assert r.status_code == 200 and v.revoked == []
@@ -314,9 +340,39 @@ def test_a_working_token_is_kept_with_write_consent(monkeypatch):
 
 
 def test_a_refused_token_is_thrown_away(monkeypatch):
+    _offered(monkeypatch, "slack")
     v = ConnectVault(401)
     r = _client(monkeypatch, v).post("/integrations/apps/slack", json={"token": "xoxp-wrongwrong"})
     assert r.status_code == 400 and "refused" in r.json()["detail"] and v.revoked == [5]
+
+
+def test_hidden_work_apps_are_not_offered(monkeypatch):
+    from harness.connectors import registry
+    listed = {c["key"] for c in registry.available()}
+    assert not {"github", "notion", "slack"} & listed
+    assert {"gmail", "calendar"} <= listed
+    v = ConnectVault(200)
+    r = _client(monkeypatch, v).post("/integrations/apps/notion", json={"token": "ntn_abcdefghijkl"})
+    assert r.status_code == 404 and "no longer offered" in r.json()["detail"] and v.added == []
+    assert registry.BUILTIN["github"].tools is not None              # still accepted for old conversations
+
+
+def test_auto_routing_never_switches_on_a_hidden_app(monkeypatch):
+    import asyncio
+
+    from harness.api.routes import integrations
+    from harness.connectors import auto
+
+    class NoGoogle:
+        async def status(self, uid):
+            return {"products": ["gmail"]}
+
+    async def apps(uid):
+        return {"github": True, "notion": True, "slack": True}
+
+    monkeypatch.setattr("harness.integrations.google_oauth.google_tokens", lambda: NoGoogle())
+    monkeypatch.setattr(integrations, "apps_status", apps)
+    assert asyncio.run(auto.connected_apps("7")) == ["gmail"]
 
 
 def test_unknown_app_is_404(monkeypatch):

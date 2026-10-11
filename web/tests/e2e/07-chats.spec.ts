@@ -32,12 +32,12 @@ test.describe("chats rail", () => {
     // first chat, from a landing-page prompt
     await page.goto("/")
     await expect(page.getByTestId("chats-panel")).toContainText("No chats yet")
-    await page.getByRole("button", { name: "Search my documents" }).click()
-    await expectReply(page, "Reply to: Search my documents")
+    await page.getByRole("button", { name: "How's business?" }).click()
+    await expectReply(page, "Reply to: How's business this week, and what does tomorrow look like?")
     // …listed on /chat as soon as the run ends, titled by the first question
     const items = page.getByTestId("chats-item")
     await expect(items).toHaveCount(1)
-    await expect(items.first()).toContainText("Search my documents")
+    await expect(items.first()).toContainText("How's business this week, and what does tomorrow look like?")
 
     // a follow-up continues the SAME conversation: one entry, and the second
     // ask carries the conversation id the first run created.
@@ -52,20 +52,20 @@ test.describe("chats rail", () => {
     expect(mineAsks[1].conversation_id).toBe(mine[0].id)       // follow-up continues it
     // the server owns the transcript, so both turns are in it
     const transcript = state.convMessages[mine[0].id].map((m) => m.content)
-    expect(transcript).toContain("Search my documents")
+    expect(transcript).toContain("How's business this week, and what does tomorrow look like?")
     expect(transcript).toContain("and add a title")
 
     // back on the landing page: the chat is in the rail
     await page.goto("/")
     await expect(page.getByTestId("chats-item")).toHaveCount(1)
-    await expect(page.getByTestId("chats-item").first()).toContainText("Search my documents")
+    await expect(page.getByTestId("chats-item").first()).toContainText("How's business this week, and what does tomorrow look like?")
 
     // second conversation → two entries, newest first
     await page.getByRole("button", { name: "Plan my day" }).click()
     await expectReply(page, "Reply to: Plan my day")
     await expect(page.getByTestId("chats-item")).toHaveCount(2)
     await expect(page.getByTestId("chats-item").first()).toContainText("Plan my day")
-    await expect(page.getByTestId("chats-item").last()).toContainText("Search my documents")
+    await expect(page.getByTestId("chats-item").last()).toContainText("How's business this week, and what does tomorrow look like?")
     await page.goto("/")
     await expect(page.getByTestId("chats-item")).toHaveCount(2)
 

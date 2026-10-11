@@ -14,7 +14,10 @@
 # holds a revocable grant and talks to the third party through the vault.
 
 servers:
+  # Off: no run registers filesystem__* any more (my_files and create_file replaced
+  # them), so it was only a Node process and an npm download at every boot.
   - name: filesystem
+    enabled: false
     transport: stdio
     command: npx
     args: ["-y", "@modelcontextprotocol/server-filesystem", "docs", "data/sessions"]

@@ -25,7 +25,9 @@ def _format(results: list[dict]) -> str:
     )
 
 
-async def web_search(query: str, max_results: int = 3) -> str:
+async def search_results(query: str, max_results: int = 3) -> list[dict] | str:
+    """Tavily's results ([{title, url, content}]), or an UNAVAILABLE message.
+    A search that was made is charged to the open meter."""
     vault = current_vault()
     if vault is None:
         return UNAVAILABLE.format(why="vault not configured")
@@ -40,9 +42,15 @@ async def web_search(query: str, max_results: int = 3) -> str:
     from harness.config import get_settings
     meter.add(get_settings().web_search_usd, "web_search")   # the search was made: it costs a credit
     try:
-        return _format(json.loads(resp.body).get("results", []))
+        results = json.loads(resp.body).get("results", [])
     except (json.JSONDecodeError, AttributeError):
         return UNAVAILABLE.format(why="bad response")
+    return [r for r in results if isinstance(r, dict)]
+
+
+async def web_search(query: str, max_results: int = 3) -> str:
+    results = await search_results(query, max_results)
+    return results if isinstance(results, str) else _format(results)
 
 
 WEB_SEARCH_TOOL = Tool(

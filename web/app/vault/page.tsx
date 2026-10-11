@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useState } from "react"
 import { signIn as authSignIn, useSession } from "next-auth/react"
-import { GOOGLE_WORKSPACE_SCOPES, loadIntegrations, type Integrations } from "@/lib/connectors"
+import { googleScopes, loadIntegrations, type Integrations } from "@/lib/connectors"
 import { WorkApps } from "@/components/hangul/WorkApps"
 import { AppHeader } from "@/components/hangul/AppHeader"
 import { SignInModal, type AuthMode } from "@/components/hangul/SignInModal"
@@ -21,6 +21,9 @@ type Consent = { id: number; provider: string; credential_id: number | null; all
 type AuditRow = { ts: number; provider: string; method: string; path: string; status: number; ms: number; denied?: string }
 
 const mono = { fontFamily: "var(--font-geist-mono)" } as const
+/** Pasting your own API keys and granting the agent raw API access is a developer's tool, so it's
+ * hidden (backend: settings.vault_advanced, off). Flip both to bring it back. */
+const SHOW_ADVANCED = false
 
 async function api<T>(path: string, init?: RequestInit): Promise<T> {
   const res = await fetch(`/api/vault/${path}`, { ...init, headers: { "Content-Type": "application/json", ...(init?.headers ?? {}) } })
@@ -80,6 +83,7 @@ export default function VaultPage() {
   const reload = useCallback(async () => {
     // Google Workspace status does not depend on the vault being configured
     setIntegrations(await loadIntegrations())
+    if (!SHOW_ADVANCED) return
     try {
       const [p, c, s, a] = await Promise.all([
         api<Provider[]>("providers"), api<Credential[]>("credentials"),
@@ -155,7 +159,7 @@ export default function VaultPage() {
           <div className="h-surface" style={{ padding: 12, fontSize: 13, color: "var(--err)" }} role="alert">{error}</div>
         )}
 
-        <Section title="Google Workspace" hint="Gmail, Calendar, Drive, Docs, Sheets and Contacts on your own Google account. Reads run when the connector is on; sending, creating, changing or deleting always asks you first. Connected before? Connect again to add Sheets and Contacts.">
+        <Section title="Google Workspace" hint={`${integrations?.google.restricted === false ? "Calendar, Docs, Sheets, Contacts and Meet" : "Gmail, Calendar, Drive, Docs, Sheets, Contacts and Meet"} on your own Google account. Reads run when the connector is on; sending, creating, changing or deleting always asks you first. Connected before? Connect again to add Google Meet.`}>
           <div style={{ display: "flex", gap: 12, alignItems: "center", flexWrap: "wrap" }} data-testid="google-workspace">
             <i className="ti ti-brand-google" style={{ fontSize: 22 }} />
             <div style={{ flex: 1, minWidth: 200, fontSize: 13 }}>
@@ -165,7 +169,7 @@ export default function VaultPage() {
                 <span className="h-muted">Not connected. Connecting re-runs Google sign-in asking for Workspace access; you can revoke it any time.</span>
               )}
             </div>
-            <button className="h-btn-solid" onClick={() => authSignIn("google", { redirectTo: "/vault" }, { scope: GOOGLE_WORKSPACE_SCOPES, access_type: "offline", prompt: "consent", include_granted_scopes: "true" })} data-testid="google-connect">
+            <button className="h-btn-solid" onClick={() => authSignIn("google", { redirectTo: "/vault" }, { scope: googleScopes(integrations), access_type: "offline", prompt: "consent", include_granted_scopes: "true" })} data-testid="google-connect">
               {integrations?.google.connected ? "Reconnect / change access" : "Connect Google Workspace"}
             </button>
             {integrations?.google.connected && (
@@ -208,11 +212,14 @@ export default function VaultPage() {
           )}
         </Section>
 
-        <Section title="Work apps" hint="GitHub, Notion and Slack (Pro). Paste a token once: it is checked, stored encrypted, and never shown to the assistant. Reading is automatic when the connector is on; posting, creating or commenting always asks you first.">
-          <WorkApps status={integrations?.apps} onChange={() => void loadIntegrations().then(setIntegrations)} />
-        </Section>
+        {Object.values(integrations?.apps ?? {}).some(Boolean) && (
+          <Section title="Work apps" hint="GitHub, Notion and Slack are no longer offered. You can disconnect the ones you connected; their stored token is deleted.">
+            <WorkApps status={integrations?.apps} onChange={() => void loadIntegrations().then(setIntegrations)} />
+          </Section>
+        )}
 
-        {/* The machinery behind "Connected apps": most people never need to open this. */}
+        {/* The machinery behind "Connected apps", hidden while SHOW_ADVANCED is off. */}
+        {SHOW_ADVANCED && (
         <details data-testid="vault-advanced" style={{ display: "flex", flexDirection: "column", gap: 16 }}>
           <summary className="h-muted" style={{ cursor: "pointer", fontSize: 13, padding: "4px 2px" }}>
             Advanced: API keys, permissions and activity
@@ -309,6 +316,7 @@ export default function VaultPage() {
         </Section>
           </div>
         </details>
+        )}
       </div>
     </main>
   )

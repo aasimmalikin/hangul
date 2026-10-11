@@ -23,17 +23,29 @@ class Settings(BaseSettings):
     default_effort: str = "medium"   # default reasoning effort when the request sets none
     tavily_api_key: str | None = None
     database_url: str = "postgresql+psycopg://agentic:agentic@localhost:5432/hangul_harness"
+    # Seconds to wait for a new database connection. Neon waking a scaled-to-zero compute took ~8 s,
+    # so 4 s failed the first request after idle; a dead address is still caught fast by the IPv4
+    # probe in db/base.py (fastest_hostaddr), which this doesn't affect.
+    db_connect_timeout: int = 10
     redis_url: str = "redis://localhost:6379/0"
     jwt_secret: str = "dev-secret-change-in-production"
     jwt_algorithm: str = "HS256"
     # Token vault (see harness/vault). Unset master key = vault disabled.
-    vault_master_key: str | None = None      # Fernet key: python -c "from cryptography.fernet import Fernet;print(Fernet.generate_key().decode())"
+    vault_master_key: str | None = None
+    # The vault's user-facing side: pasting your own API keys (/vault → Advanced) and the
+    # agent's vault_request / vault_mutate tools. A developer's tool, so off; the vault itself
+    # still runs web search (Tavily) and WhatsApp on operator credentials.
+    vault_advanced: bool = False      # Fernet key: python -c "from cryptography.fernet import Fernet;print(Fernet.generate_key().decode())"
     vault_grant_ttl_s: int = 300             # lifetime of a grant handed to a tool / MCP server
     vault_proxy_timeout_s: float = 30.0
     vault_max_body_bytes: int = 1_000_000
     vault_public_url: str = "http://127.0.0.1:8000"   # how MCP subprocesses reach /vault/proxy
     # Scheduled tasks (harness/scheduler): run due tasks every minute in-process.
     scheduler_enabled: bool = True
+    # A user with no matching upload falls back to the shared corpus (docs/*.txt, user_id IS NULL).
+    # That corpus is demo / eval material (a café's price list, a resort brochure...), so a real owner
+    # must never get it as "their documents": off by default; the eval runner searches it directly.
+    search_shared_corpus: bool = False
     # Google OAuth client (same values the web app uses for sign-in); the
     # backend needs them to refresh Workspace access tokens for the bundle.
     auth_google_id: str | None = None
@@ -47,6 +59,10 @@ class Settings(BaseSettings):
     # Admin console. Only these Google-verified emails may call /admin/*; the
     # allowlist lives here, on the backend, so the web tier cannot widen it.
     admin_emails: str = "aasimmallikk@gmail.com"      # comma-separated
+    # Gmail and Drive's read scopes are "restricted": past 100 users Google requires a paid
+    # yearly security assessment (CASA). Until that's done, offer them only to these emails
+    # (comma-separated; admin_emails are always included). "*" = everyone (dev, or after CASA).
+    google_restricted_emails: str = "*"
     admin_max_auth_age_s: int = 12 * 60 * 60          # the Google sign-in must be this recent
     admin_ip_allowlist: str = ""                      # comma-separated CIDRs; empty = any client
     # Vision (harness/media/vision.py): reads uploaded photos / screenshots.
@@ -63,10 +79,19 @@ class Settings(BaseSettings):
     # Image generation (tools/builtin/images.py), Pro plan. Charged per image
     # at approximate list prices (VERIFY on OpenAI's pricing page).
     image_model: str = "gpt-image-1"
-    image_default_quality: str = "medium"
+    image_default_quality: str = "high"   # Pro-only tool: premium by default
     # Maps (tools/builtin/maps.py): OpenStreetMap's Nominatim asks every app to
     # identify itself with a contact address in the User-Agent.
     maps_contact_email: str | None = None
+    # Launch plans (harness.launch): web searches per sourced plan (items + benchmarks),
+    # single-item refreshes per plan, and how long a build may take
+    launch_max_searches: int = 24
+    launch_refresh_limit: int = 10
+    launch_build_timeout_s: int = 360
+    # How's business (harness.sales): Plus's slow-day ideas per week, and when the evening alert goes out
+    sales_plus_ideas_week: int = 1
+    sales_nudge_hour: int = 20
+    sales_nudges_week: int = 2
     # Reminder emails (harness/notify.py) via Resend -- the same account the web
     # app uses for sign-in links, so AUTH_RESEND_KEY / AUTH_EMAIL_FROM work too.
     # Unset = reminders are in-app only.
@@ -105,6 +130,9 @@ class Settings(BaseSettings):
     dodo_product_plus: str | None = None      # pdt_… subscription product
     dodo_product_pro: str | None = None
     dodo_product_topup: str | None = None     # pdt_… one-time product
+    # one more brand (harness.brands), one-time; _in = the INR product
+    dodo_product_brand_slot: str | None = None
+    dodo_product_brand_slot_in: str | None = None
     # yearly plans (2 months free) and Indian plans (priced in rupees, UPI AutoPay);
     # any left unset falls back to the international monthly product
     dodo_product_plus_annual: str | None = None

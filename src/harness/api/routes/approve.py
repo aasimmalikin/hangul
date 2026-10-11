@@ -44,7 +44,22 @@ class ApproveRequest(BaseModel):
     choice: str | None = None
 
 
-async def _build_session_registry(user_id: str, thread_id: str, connectors: list[str] = ()) -> ToolRegistry:
+async def _brand_of(user_id: str, conversation_id: str | None):
+    """The conversation's brand, so a resumed run's tools apply it too (the
+    brand's prompt block is already in the checkpointed messages)."""
+    if not conversation_id:
+        return None
+    try:
+        from harness.db import brands as brands_db
+        from harness.db.conversations import get_conversation
+        conv = await asyncio.to_thread(get_conversation, conversation_id, user_id)
+        return await asyncio.to_thread(brands_db.usable, user_id, conv.brand_id) if conv and conv.brand_id else None
+    except Exception:  # noqa: BLE001 - without it the tools use neutral colours
+        return None
+
+
+async def _build_session_registry(user_id: str, thread_id: str, connectors: list[str] = (),
+                                  conversation_id: str | None = None) -> ToolRegistry:
     reg = ToolRegistry()
     reg.registry(make_search_docs_tool(user_id))
     reg.registry(CALCULATOR_TOOL)
@@ -56,7 +71,7 @@ async def _build_session_registry(user_id: str, thread_id: str, connectors: list
         tz = (await asyncio.to_thread(user_prefs, user_id)).timezone
     except Exception:  # noqa: BLE001 - the default timezone is fine for a resume
         tz = "UTC"
-    for t in await daily_tools_for(user_id, tz, thread_id):
+    for t in await daily_tools_for(user_id, tz, thread_id, await _brand_of(user_id, conversation_id)):
         reg.registry(t)
     if connectors:
         from harness.api.routes.ask import prepare_connectors
@@ -115,7 +130,7 @@ async def approve(req: ApproveRequest, user: dict = Depends(get_current_user)) -
     model = spec.id
     budget = budget_for(effort)
     prompt_version = get_prompt("system_agent")
-    session_registry = await _build_session_registry(user["user_id"], req.approval_id, cp.connectors)
+    session_registry = await _build_session_registry(user["user_id"], req.approval_id, cp.connectors, cp.conversation_id)
 
     # ask_user is a clarification, not an action: the run should carry on with
     # the original task, not summarise. Every other tool just gets confirmed.

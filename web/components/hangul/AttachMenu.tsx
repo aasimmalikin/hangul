@@ -2,7 +2,7 @@
 
 import { useEffect, useRef, useState } from "react"
 import { useSession } from "next-auth/react"
-import { loadAvailableConnectors, loadIntegrations, type ConnectorInfo, type Integrations } from "@/lib/connectors"
+import { loadAvailableConnectors, loadIntegrations, offeredTo, type ConnectorInfo, type Integrations } from "@/lib/connectors"
 import Link from "next/link"
 import { Recorder, voiceSupported } from "@/lib/voice"
 
@@ -270,7 +270,7 @@ export function AttachMenu({
                     <div className="h-muted" style={{ padding: "8px 10px", fontSize: 12 }}>No connectors available.</div>
                   )}
                   {/* ungrouped first, then each group under its heading (stable within each) */}
-                  {[...(available ?? [])].sort((a, b) => Number(Boolean(a.group)) - Number(Boolean(b.group))).map((c, i, list) => {
+                  {[...(available ?? [])].filter((c) => offeredTo(c, integrations)).sort((a, b) => Number(Boolean(a.group)) - Number(Boolean(b.group))).map((c, i, list) => {
                     const on = connectors.includes(c.key)
                     const state = connectedFor(c)
                     // A heading above the first connector of each group (the Google products).

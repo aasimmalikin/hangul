@@ -29,3 +29,5 @@ class Tool:
     # a plan-gated stand-in (billing.entitlements._upgrade_stub): it only shows an
     # upgrade card, so it never pauses for approval whatever its name's tier
     upgrade_stub: bool = False
+    # seconds before dispatch gives up on the call; None = dispatch's default
+    timeout: float | None = None

@@ -24,7 +24,7 @@ from harness.db import billing as billing_db
 from harness.db import ledger
 from harness.logging import log
 
-PRODUCTS = ("plus", "pro", "topup",
+PRODUCTS = ("plus", "pro", "topup", "brand_slot", "brand_slot_in",
             # yearly and Indian (INR) variants of the plans: see plans.product_key
             "plus_annual", "pro_annual", "plus_in", "pro_in", "plus_in_annual", "pro_in_annual")
 
@@ -177,14 +177,19 @@ def apply_event(payload: dict) -> str:
     if kind == "payment.succeeded":
         if data.get("subscription_id"):
             return "ignored:subscription_payment"     # the subscription.* events carry it
-        topups = sum(int(i.get("quantity") or 1) for i in (data.get("product_cart") or [])
-                     if product_for_id(i.get("product_id")) == "topup")
-        if not topups:
+        cart = [(product_for_id(i.get("product_id")), int(i.get("quantity") or 1)) for i in (data.get("product_cart") or [])]
+        topups = sum(q for p, q in cart if p == "topup")
+        slots = sum(q for p, q in cart if p in ("brand_slot", "brand_slot_in"))
+        if not topups and not slots:
             return "ignored:payment"
-        credit = Decimal(str(get_settings().billing_topup_credit_usd)) * topups
-        ledger.record_transaction(user_id=user_id, amount=credit, kind="topup",
-                                  thread_id=f"dodo-{data.get('payment_id')}"[:32])
-        return "topup"
+        if topups:
+            credit = Decimal(str(get_settings().billing_topup_credit_usd)) * topups
+            ledger.record_transaction(user_id=user_id, amount=credit, kind="topup",
+                                      thread_id=f"dodo-{data.get('payment_id')}"[:32])
+        if slots:
+            from harness.db import brands as brands_db
+            brands_db.add_slots(user_id, slots)
+        return "+".join(k for k, n in (("topup", topups), ("brand_slot", slots)) if n)
 
     if kind.startswith("subscription."):
         from harness.billing.plans import parse_product_key

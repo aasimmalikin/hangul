@@ -25,10 +25,12 @@ engine = create_engine(
     future = True,
     # The dev database is remote (Neon, ap-southeast-1) reached over a flaky
     # WSL2 NAT path. A hung SYN was observed to stall a request for minutes,
-    # so bound the connect; and keepalives stop the NAT from silently dropping
-    # idle pooled connections, which is what forced those reconnects.
+    # so bound the connect -- but long enough for Neon to wake a scaled-to-zero
+    # compute (~8 s seen), or the first request after idle fails (the address
+    # probe below already avoids the dead addresses). Keepalives stop the NAT
+    # from silently dropping idle pooled connections.
     connect_args = {
-        "connect_timeout": 4,
+        "connect_timeout": _settings.db_connect_timeout,
         "keepalives": 1,
         "keepalives_idle": 30,
         "keepalives_interval": 10,

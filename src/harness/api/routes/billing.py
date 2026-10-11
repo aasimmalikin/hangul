@@ -103,8 +103,11 @@ async def billing(user: dict = Depends(get_current_user)) -> dict:
     used_share = 1 - left / allowance if allowance > 0 else 1.0
     messages_left, messages_total = await asyncio.to_thread(lambda: (messages_for(left), messages_for(allowance)))
     trialing = a.plan_status in TRIAL_STATUSES
+    brands = await asyncio.to_thread(_brand_summary, user["user_id"], region)
     return {
         "enabled": True,
+        # brand slots: the plan's + bought; the price of one more (only when it can be bought)
+        "brands": brands,
         "plan": st.plan.id,
         "plan_label": st.plan.label,
         "status": a.plan_status,
@@ -132,8 +135,25 @@ async def billing(user: dict = Depends(get_current_user)) -> dict:
     }
 
 
+def _brand_summary(user_id: str, region: str) -> dict | None:
+    """{slots, used, slot_price}: the plan's + bought brand slots, and the price
+    of one more when it can be bought. None if it can't be read right now."""
+    from harness.billing.plans import PRICES
+    from harness.db import brands as brands_db
+    try:
+        slots = brands_db.slots(user_id)
+        used = len(brands_db.list_for(user_id, slots))
+    except Exception as e:  # noqa: BLE001 - the rest of the billing page still shows
+        log.warning("brand slots not read", error=str(e)[:200])
+        return None
+    slot_region = "in" if region == "in" and dodo.product_id_for("brand_slot_in") else "intl"
+    product = "brand_slot_in" if slot_region == "in" else "brand_slot"
+    price = PRICES[("brand_slot", slot_region, "once")].to_dict() if dodo.product_id_for(product) else None
+    return {"slots": slots, "used": used, "slot_price": price}
+
+
 class CheckoutRequest(BaseModel):
-    product: Literal["plus", "pro", "topup"]
+    product: Literal["plus", "pro", "topup", "brand_slot"]
     interval: Literal["month", "year"] = "month"
 
 
@@ -142,6 +162,8 @@ def checkout_product(product: str, interval: str, region: str) -> str:
     up, else the closest one that is (yearly -> monthly, Indian -> international)."""
     if product == "topup":
         return "topup"
+    if product == "brand_slot":
+        return "brand_slot_in" if region == "in" and dodo.product_id_for("brand_slot_in") else "brand_slot"
     for r, i in ((region, interval), (region, "month"), ("intl", interval), ("intl", "month")):
         key = product_key(product, r, i)
         if dodo.product_id_for(key):

@@ -311,7 +311,14 @@ def test_call_mints_one_off_grant_and_revokes_it():
 API = "http:api.example.com"
 
 
+def test_vault_tools_are_off_unless_vault_advanced(monkeypatch):
+    import asyncio
+    monkeypatch.delenv("VAULT_ADVANCED", raising=False)
+    assert asyncio.run(vr.build_vault_tools("7", None)) == []
+
+
 def test_vault_tools_end_to_end(monkeypatch):
+    monkeypatch.setenv("VAULT_ADVANCED", "true")
     async def scenario():
         v, up = make_vault()
         set_current(v)
@@ -343,7 +350,8 @@ def test_vault_tools_end_to_end(monkeypatch):
     run(scenario())
 
 
-def test_vault_tools_refuse_connector_only_providers():
+def test_vault_tools_refuse_connector_only_providers(monkeypatch):
+    monkeypatch.setenv("VAULT_ADVANCED", "true")
     """A connected GitHub/Notion/Slack token is reachable only through its connector's
     tools, never as a raw API: no plan gate, no Kept log, no fixed action list there."""
     async def scenario():

@@ -24,6 +24,7 @@ from harness.db.models import (
     Conversation,
     KeptAction,
     Note,
+    Promise,
     Reminder,
     ScheduledTask,
     Thread,
@@ -48,7 +49,7 @@ _STOP = {"what", "did", "ask", "asked", "about", "the", "my", "for", "and", "wit
 @dataclass
 class Item:
     id: str
-    kind: str                   # approval | reminder | task | task_run | action | todo | note | memory
+    kind: str                   # approval | reminder | task | task_run | action | promise | todo | note | memory
     state: str                  # needs_you | coming | done | kept
     did: str
     said: str | None = None
@@ -218,6 +219,39 @@ def _actions(s, user_id: str, now: datetime, words: list[str] | None) -> list[It
             for a in s.execute(q.order_by(KeptAction.created_at.desc()).limit(LIMIT)).scalars()]
 
 
+def promise_line(p: Promise) -> str:
+    who = p.who or p.who_email or ""
+    if p.status == "done":
+        return f"Kept: {p.what}" + (f" ({'for' if p.direction == 'mine' else 'from'} {who})" if who else "")
+    if p.status == "dropped":
+        return f"Dropped: {p.what}"
+    if p.direction == "mine":
+        return f"You promised{' ' + who if who else ''}: {p.what}"
+    return f"{who or 'Someone'} promised you: {p.what}"
+
+
+def _promises(s, uid: int, now: datetime, words: list[str] | None) -> list[Item]:
+    """Open promises (dated ones on their day, the rest on the day they were made)
+    and ones kept or dropped in the last week."""
+    q = select(Promise).where(Promise.user_id == uid)
+    if words:
+        q = q.where(_like(words, Promise.what, Promise.who, Promise.who_email, Promise.said))
+    else:
+        q = q.where(or_(Promise.status == "open", Promise.done_at >= now - timedelta(days=PAST_DAYS)))
+    out = []
+    for p in s.execute(q.order_by(Promise.created_at.desc()).limit(LIMIT)).scalars():
+        state = "coming" if p.status == "open" else "done"
+        when = (p.done_at if p.status != "open" else None) or (
+            datetime(p.due_on.year, p.due_on.month, p.due_on.day, 12, tzinfo=UTC) if p.due_on else p.created_at)
+        out.append(Item(f"promise:{p.id}", "promise", state, promise_line(p), p.said or (p.quote or None), _iso(when),
+                        "Promise", p.conversation_id,
+                        {"id": p.id, "direction": p.direction, "status": p.status, "source": p.source,
+                         "due_on": p.due_on.isoformat() if p.due_on else None, "who": p.who,
+                         "who_email": p.who_email, "wrote_back": p.last_contact_at is not None,
+                         "chased": p.chased_at is not None}))
+    return out
+
+
 def _held(s, uid: int, words: list[str]) -> list[Item]:
     """Undated things, only when searching (the drawer reads its own routes)."""
     out = []
@@ -264,7 +298,8 @@ def kept(user_id: str, q: str = "", now: datetime | None = None) -> dict:
     with SessionLocal() as s:
         items: list[Item] = []
         for part, fn, arg in (("approvals", _approvals, user_id), ("reminders", _reminders, uid),
-                              ("tasks", _tasks, uid), ("actions", _actions, user_id)):
+                              ("tasks", _tasks, uid), ("actions", _actions, user_id),
+                              ("promises", _promises, uid)):
             try:
                 items += fn(s, arg, now, words)
             except Exception as e:  # noqa: BLE001 - one broken source must not blank the page

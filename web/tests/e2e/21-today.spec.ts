@@ -80,13 +80,13 @@ test.describe("today", () => {
     await expect(page.getByTestId("today-tomorrow")).toHaveCount(0)
   })
 
-  test("replies you owe, with a one-tap draft", async ({ page }) => {
+  test("replies you owe, with a one-tap draft (under Your word)", async ({ page }) => {
     await backend("/__today", { user: me.id, extra: { replies: [
       { thread_id: "18c2f", from: "Priya Shah <priya@acme.com>", subject: "Contract changes", waiting_days: 3 },
       { thread_id: "18c30", from: "Ravi <ravi@x.com>", subject: "Dinner Saturday?", waiting_days: 1 }] } })
     await page.goto("/")
-    const card = page.getByTestId("today-replies")
-    await expect(card).toContainText("Replies you owe · 2")
+    const card = page.getByTestId("today-promises")
+    await expect(card.getByTestId("promises-mine")).toContainText("You owe · 2")
     await expect(card.getByTestId("today-reply").first()).toContainText("Priya Shah")
     await expect(card.getByTestId("today-reply").first()).toContainText("3 days")
     await expect(card.getByTestId("today-reply").first()).toHaveAttribute("href", "https://mail.google.com/mail/u/0/#inbox/18c2f")
@@ -94,11 +94,11 @@ test.describe("today", () => {
     await expect(page).toHaveURL(/\/chat/)
   })
 
-  test("no replies card when nobody is waiting", async ({ page }) => {
+  test("no Your word card when nothing is owed either way", async ({ page }) => {
     await backend("/__today", { user: me.id, extra: { replies: [] } })
     await page.goto("/")
     await expect(page.getByTestId("today-tasks")).toBeVisible()
-    await expect(page.getByTestId("today-replies")).toHaveCount(0)
+    await expect(page.getByTestId("today-promises")).toHaveCount(0)
   })
 
   test("a to-do can be ticked off from home", async ({ page }) => {

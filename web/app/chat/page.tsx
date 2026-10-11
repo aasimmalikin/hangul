@@ -24,6 +24,7 @@ import { GmailCompose, GoogleCard, isGoogleUi } from "@/components/hangul/Google
 import { DailyCard, isDailyUi } from "@/components/hangul/DailyCards"
 import { normalizeConnectors, readConnectors, readResearchMode, writeConnectors, writeResearchMode } from "@/lib/connectors"
 import { ComposerOptions } from "@/components/hangul/ComposerOptions"
+import { BrandChip } from "@/components/hangul/BrandChip"
 import { StatusBanner } from "@/components/hangul/StatusBanner"
 import { ChatsPanel } from "@/components/hangul/ChatsPanel"
 import { useConnectivity } from "@/components/hangul/useConnectivity"
@@ -103,6 +104,7 @@ type ConversationDetail = {
   connectors?: string[]
   mode?: string
   docs_only?: boolean
+  brand_id?: number | null
   messages?: TranscriptMessage[]
 }
 
@@ -256,6 +258,21 @@ function conversationIdFrom(messages: UIMessage[]): string | null {
   return null
 }
 
+/** The brand the latest live run made things for (chosen, inherited or named in the message). */
+function lastRunBrand(messages: UIMessage[]): { runId: string; brandId: number | null } | null {
+  for (let i = messages.length - 1; i >= 0; i--) {
+    const parts = messages[i].parts as Part[]
+    for (let j = parts.length - 1; j >= 0; j--) {
+      const p = parts[j]
+      if (p.type !== "data-run") continue
+      const d = p.data as { runId?: unknown; brandId?: unknown; restored?: boolean } | undefined
+      if (d?.restored || typeof d?.runId !== "string") return null
+      return { runId: d.runId, brandId: typeof d.brandId === "number" ? d.brandId : null }
+    }
+  }
+  return null
+}
+
 /** Completed runs in a thread — every run ends with a hidden data-run part. */
 function countRuns(messages: UIMessage[]) {
   return messages.reduce((n, m) => n + (m.parts as Part[]).filter((p) => p.type === "data-run").length, 0)
@@ -300,8 +317,10 @@ function ActionDetails({ tool, args }: { tool: string; args: Record<string, unkn
   if (tool === "calendar__create_event") {
     return (
       <GoogleCard ui={{ kind: "calendar_events", created: false, events: [{ summary: String(args.summary ?? ""), start: String(args.start ?? ""), end: String(args.end ?? ""),
-        all_day: String(args.start ?? "").length === 10, location: typeof args.location === "string" ? args.location : null,
-        attendees: Array.isArray(args.attendees) ? (args.attendees as string[]) : [], description: typeof args.description === "string" ? args.description : "" }] }} />
+        all_day: String(args.start ?? "").length === 10,
+        attendees: Array.isArray(args.attendees) ? (args.attendees as string[]) : [], description: typeof args.description === "string" ? args.description : "",
+        // where it is, and whether the invite will carry a Google Meet link
+        location: [typeof args.location === "string" ? args.location : "", args.meet === true ? "Google Meet link" : ""].filter(Boolean).join(" · ") || null }] }} />
     )
   }
   const path = typeof args.path === "string" ? args.path : null
@@ -452,6 +471,17 @@ function ChatInner() {
     setConnectorsState(next)
     writeConnectors(next)
   }, [])
+  // The brand this chat makes things for: shown on the chip. `brandChoice` is
+  // what the next send asks for -- undefined lets the server use the chat's
+  // own (or one the message names), 0 turns it off.
+  const [brandId, setBrandIdState] = useState<number | null>(null)
+  const [brandChoice, setBrandChoice] = useState<number | undefined>(undefined)
+  const brandTouched = useRef(false)
+  const setBrand = useCallback((id: number | null) => {
+    brandTouched.current = true
+    setBrandIdState(id)
+    setBrandChoice(id ?? 0)
+  }, [])
   // null = let the server pick its default model / effort.
   const [model, setModel] = useState<string | null>(null)
   const [effort, setEffort] = useState<string | null>(null)
@@ -476,8 +506,8 @@ function ChatInner() {
   const runOptions = useMemo(
     // no model picked = "auto": the backend chooses per message (providers/router.py)
     () => ({ docsOnly, model: model ?? "auto", effort: model ? effort : null, connectors, mode, conversationId,
-             timezone: deviceTimeZone(), connectorsAuto: autoApps }),
-    [docsOnly, model, effort, connectors, mode, conversationId, autoApps])
+             timezone: deviceTimeZone(), connectorsAuto: autoApps, brandId: brandChoice }),
+    [docsOnly, model, effort, connectors, mode, conversationId, autoApps, brandChoice])
 
   // A question handed over from the landing page (`/chat?q=`), plus any
   // documents attached there (`&doc=`, already indexed server-side). Signed-in
@@ -585,6 +615,8 @@ function ChatInner() {
     // device, where there is no cache at all.
     if (!saved) setHydrating(true)
     connectorsTouched.current = false
+    brandTouched.current = false
+    setBrandChoice(undefined)
     const cachedCount = saved?.messages.length ?? 0
     let alive = true
     fetch(`/api/conversations/${target}`, { signal: AbortSignal.timeout(15_000) })
@@ -604,6 +636,7 @@ function ChatInner() {
         setDocsOnly(Boolean(detail.docs_only))
         setMode(detail.mode === "research" ? "research" : "default")
         if (Array.isArray(detail.connectors) && !connectorsTouched.current) setConnectorsState(normalizeConnectors(detail.connectors))
+        if (!brandTouched.current) setBrandIdState(typeof detail.brand_id === "number" ? detail.brand_id : null)
       })
       .catch(() => { /* the cache (or an empty page) is what the user gets */ })
       .finally(() => { if (alive) setHydrating(false) })
@@ -650,6 +683,19 @@ function ChatInner() {
     // drop the old one so it cannot resurrect into the next fresh chat.
     if (userId) clearThread(slotKey(userId, null))
   }, [reportedConv, conversationId, userId])
+
+  // After each answer the chip shows the brand the server actually used (it may
+  // have picked one the message named), and the next send inherits it.
+  const runBrand = lastRunBrand(messages)
+  const runBrandKey = runBrand ? `${runBrand.runId}:${runBrand.brandId}` : null
+  useEffect(() => {
+    if (!runBrand) return
+    brandTouched.current = false
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- adopting what the finished run reports, once per run
+    setBrandIdState(runBrand.brandId)
+    setBrandChoice(undefined)
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- keyed on the run, not the object
+  }, [runBrandKey])
 
   const runsDone = countRuns(messages)
   const [chatsVersion, setChatsVersion] = useState(0)
@@ -718,6 +764,9 @@ function ChatInner() {
     // null, not a fresh client id: the backend creates the conversation on the
     // first send and tells us its id on `done`.
     setConversationId(null)
+    brandTouched.current = false
+    setBrandIdState(null)
+    setBrandChoice(undefined)
     seenRunsRef.current = 0
     setResolved({})
     setAttachments([])
@@ -881,7 +930,7 @@ function ChatInner() {
         // everyday tool (reminder, list, weather…) or a Google-styled one.
         if (activity.status === "done" && isDailyUi(activity.ui)) {
           flush(false)
-          out.push(<DailyCard key={`${key}-card`} ui={activity.ui} />)
+          out.push(<DailyCard key={`${key}-card`} ui={activity.ui} onAsk={streaming ? undefined : sendText} />)
         } else if (activity.status === "done" && isGoogleUi(activity.ui)) {
           flush(false)
           out.push(<GoogleCard key={`${key}-card`} ui={activity.ui} />)
@@ -1103,6 +1152,7 @@ function ChatInner() {
                 <i className="ti ti-telescope" style={{ fontSize: 12, marginRight: 5 }} /> Research mode <i className="ti ti-x" style={{ fontSize: 11, marginLeft: 4 }} />
               </button>
             )}
+            <BrandChip value={brandId} onChange={setBrand} disabled={streaming} />
             <ConnectorChips keys={connectors} onChange={setConnectors} />
             <ComposerOptions
               docsOnly={docsOnly} onDocsOnly={setDocsOnly}

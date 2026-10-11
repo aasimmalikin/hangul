@@ -1,7 +1,7 @@
 import { test, expect } from "@playwright/test"
 import { ask, backend, expectReply, freshUser, resetBackend, signInAs } from "./helpers"
 
-/** Phase 4: image, route and GitHub cards; connecting a work app from /vault turns its connector on in the menu. */
+/** Phase 4: image, route and GitHub cards (still drawn for old chats); work apps are hidden, a connected one can be disconnected. */
 test.describe("phase 4", () => {
   const me = freshUser("phase4")
   test.beforeEach(async ({ context, baseURL }) => {
@@ -34,26 +34,22 @@ test.describe("phase 4", () => {
     await expect(page.getByTestId("card-issues")).toContainText("acme/app#12")
   })
 
-  test("connect GitHub at /vault, then switch it on in the chat", async ({ page }) => {
+  test("GitHub, Notion and Slack aren't offered; one connected before can be disconnected", async ({ page }) => {
     await page.goto("/chat")
     await page.getByRole("button", { name: "Add" }).click()
     await page.getByTestId("menu-connectors").click()        // click, not hover: the touch path, and steady under load
-    await expect(page.getByTestId("connector-github")).toContainText("Connect your account first")
+    await expect(page.getByTestId("connector-gmail")).toBeVisible()
+    for (const app of ["github", "notion", "slack"]) await expect(page.getByTestId(`connector-${app}`)).toHaveCount(0)
 
     await page.goto("/vault")
-    await page.getByTestId("app-github-connect").click()
-    await page.getByLabel("GitHub token").fill("bad-token-123")
-    await page.getByRole("button", { name: "Save" }).click()
-    await expect(page.getByTestId("app-github")).toContainText("refused that token")
-    await page.getByLabel("GitHub token").fill("github_pat_good123")
-    await page.getByRole("button", { name: "Save" }).click()
-    await expect(page.getByTestId("app-github")).toContainText("Connected")
-    expect((await backend("/__state")).apps[me.id]).toEqual({ github: true })
+    await expect(page.getByTestId("work-apps")).toHaveCount(0)
 
-    await page.goto("/chat")
-    await page.getByRole("button", { name: "Add" }).click()
-    await page.getByTestId("menu-connectors").click()        // click, not hover: the touch path, and steady under load
-    await page.getByTestId("connector-github").click()
-    await expect(page.getByTestId("connector-github")).toHaveAttribute("aria-checked", "true")
+    await backend("/__apps", { user: me.id, apps: { github: true } })
+    await page.reload()
+    await expect(page.getByTestId("app-github")).toContainText("Connected")
+    await expect(page.getByTestId("app-notion")).toHaveCount(0)
+    await page.getByTestId("app-github-disconnect").click()
+    await expect(page.getByTestId("work-apps")).toHaveCount(0)
+    expect((await backend("/__state")).apps[me.id]).toEqual({})
   })
 })

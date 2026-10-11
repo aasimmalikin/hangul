@@ -28,12 +28,60 @@ WORKSPACE_SCOPES: dict[str, tuple[str, ...]] = {
     "calendar": ("https://www.googleapis.com/auth/calendar",),
     "drive": ("https://www.googleapis.com/auth/drive.readonly", "https://www.googleapis.com/auth/drive.file"),
     "docs": ("https://www.googleapis.com/auth/documents",),
-    # Sheets: the spreadsheets themselves + Drive metadata (names only) to find them by name
-    "sheets": ("https://www.googleapis.com/auth/spreadsheets", "https://www.googleapis.com/auth/drive.metadata.readonly"),
+    # Sheets: the spreadsheets themselves; finding one by name is SHEETS_SEARCH_SCOPE (restricted)
+    "sheets": ("https://www.googleapis.com/auth/spreadsheets",),
     # Contacts: saved contacts + "other contacts" (people the user has emailed); read-only
     "contacts": ("https://www.googleapis.com/auth/contacts.readonly", "https://www.googleapis.com/auth/contacts.other.readonly"),
+    # Meet: make instant meetings + read past calls, who joined and transcripts. (A Meet link on a
+    # calendar event needs only the calendar scope.)
+    "meet": ("https://www.googleapis.com/auth/meetings.space.created", "https://www.googleapis.com/auth/meetings.space.readonly"),
 }
-ALL_SCOPES: tuple[str, ...] = tuple(s for ss in WORKSPACE_SCOPES.values() for s in ss)
+# Drive metadata (names only), so sheets__find_spreadsheets can find a sheet by name
+SHEETS_SEARCH_SCOPE = "https://www.googleapis.com/auth/drive.metadata.readonly"
+ALL_SCOPES: tuple[str, ...] = (*(s for ss in WORKSPACE_SCOPES.values() for s in ss), SHEETS_SEARCH_SCOPE)
+
+# Products Connect Google no longer asks for (Hangul is for small businesses; the Meet scopes
+# would also need Google's verification). Kept in WORKSPACE_SCOPES so an old grant still counts,
+# and hidden from the Apps menu (connectors.registry).
+UNOFFERED_PRODUCTS: tuple[str, ...] = ("docs", "meet")
+
+# Products whose scopes Google classes as restricted: offered only to settings.google_restricted_emails
+# until the yearly CASA security assessment is done (otherwise Google caps the app at 100 users).
+RESTRICTED_PRODUCTS: tuple[str, ...] = ("gmail", "drive")
+
+
+def restricted_open() -> bool:
+    return get_settings().google_restricted_emails.strip() == "*"
+
+
+def restricted_allowed(email: str | None) -> bool:
+    """May this account use Gmail and Drive (the restricted scopes)?"""
+    if restricted_open():
+        return True
+    from harness.api.auth import admin_emails
+    listed = {e.strip().lower() for e in get_settings().google_restricted_emails.split(",") if e.strip()}
+    return bool(email) and email.strip().lower() in listed | admin_emails()
+
+
+def scopes_for(allowed: bool) -> list[str]:
+    """The scopes the Connect Google button asks for: every offered product, or only the
+    non-restricted ones."""
+    skip = UNOFFERED_PRODUCTS if allowed else (*UNOFFERED_PRODUCTS, *RESTRICTED_PRODUCTS)
+    scopes = [s for p, ss in WORKSPACE_SCOPES.items() if p not in skip for s in ss]
+    return [*scopes, SHEETS_SEARCH_SCOPE] if allowed else scopes
+
+
+def _user_email(user_id: str) -> str | None:
+    from harness.db.models import User
+    try:
+        with SessionLocal() as s:
+            return s.execute(select(User.email).where(User.id == int(user_id))).scalar_one_or_none()
+    except Exception:  # noqa: BLE001 - unknown email = not on the list
+        return None
+
+
+def restricted_allowed_for(user_id: str) -> bool:
+    return restricted_open() or restricted_allowed(_user_email(user_id))
 
 
 class GoogleNotConnected(Exception):
@@ -53,13 +101,26 @@ def _load_grant(user_id: str) -> GoogleGrant | None:
                         .order_by(Account.id.desc())).scalars().first()
         if row is None or not row.refresh_token:
             return None
-        return GoogleGrant(refresh_token=row.refresh_token, scopes=set((row.scope or "").split()))
+        email = None if restricted_open() else _user_email(user_id)
+        return GoogleGrant(refresh_token=row.refresh_token, scopes=set((row.scope or "").split()), email=email)
 
 
 def connected_products(grant: GoogleGrant | None) -> list[str]:
+    """Products whose scopes were granted. Gmail and Drive count only for accounts on the
+    restricted list, so taking someone off it switches them off even with an old grant."""
     if grant is None:
         return []
-    return [p for p, needed in WORKSPACE_SCOPES.items() if all(sc in grant.scopes for sc in needed)]
+    allowed = restricted_allowed(grant.email)
+    return [p for p, needed in WORKSPACE_SCOPES.items()
+            if all(sc in grant.scopes for sc in needed) and (allowed or p not in RESTRICTED_PRODUCTS)]
+
+
+def capabilities(grant: GoogleGrant | None) -> list[str]:
+    """connected_products plus "sheets_search" (finding a sheet by name), which isn't a product."""
+    caps = connected_products(grant)
+    if grant is not None and SHEETS_SEARCH_SCOPE in grant.scopes and restricted_allowed(grant.email):
+        caps.append("sheets_search")
+    return caps
 
 
 class GoogleTokenSource:
@@ -72,7 +133,8 @@ class GoogleTokenSource:
 
     async def status(self, user_id: str) -> dict:
         grant = await asyncio.to_thread(_load_grant, user_id)
-        return {"connected": grant is not None, "products": connected_products(grant)}
+        allowed = restricted_allowed(grant.email) if grant else await asyncio.to_thread(restricted_allowed_for, user_id)
+        return {"connected": grant is not None, "products": connected_products(grant), "restricted": allowed}
 
     def _cached(self, user_id: str, product: str | None) -> str | None:
         cached = self._cache.get(user_id)
@@ -94,7 +156,7 @@ class GoogleTokenSource:
             grant = await asyncio.to_thread(_load_grant, user_id)
             if grant is None:
                 raise GoogleNotConnected("Google Workspace is not connected for this account")
-            products = connected_products(grant)
+            products = capabilities(grant)
             if product and product not in products:
                 raise GoogleNotConnected(f"Google {product} scopes were not granted; reconnect Google Workspace")
             token, ttl = await self._refresh(grant.refresh_token)

@@ -11,8 +11,13 @@ from harness.api.routes import ask, health, observability, upload, quality, appr
 from harness.mcp.config import load_server_configs
 from harness.mcp.manager import MCPManager, set_current as set_mcp_manager
 from harness.api.routes.ask import _registry
-from harness.api.routes import memory, episodes, models, vault as vault_routes, admin, connectors, integrations, settings as settings_routes, billing as billing_routes, personal as personal_routes, voice as voice_routes, files as files_routes, today as today_routes, whatsapp as whatsapp_routes, kept as kept_routes, push as push_routes
-from harness.api.routes import approval_links as approval_link_routes, conversations
+from harness.api.routes import memory, episodes, models, vault as vault_routes, admin, connectors, integrations, settings as settings_routes, billing as billing_routes, personal as personal_routes, voice as voice_routes, files as files_routes, today as today_routes, whatsapp as whatsapp_routes, kept as kept_routes, push as push_routes, brands as brand_routes
+from harness.api.routes import approval_links as approval_link_routes, conversations, waitlist as waitlist_routes
+from harness.api.routes import launch as launch_routes
+from harness.api.routes import business as business_routes
+from harness.api.routes import customers as customer_routes
+from harness.api.routes import missions as mission_routes
+from harness.api.routes import promises as promise_routes
 from harness import scheduler
 from harness.providers.base import ModelUnavailable
 from harness.providers.registry import get_model
@@ -31,6 +36,9 @@ async def lifespan(app: FastAPI):
     global _mcp_manager
     log.info("Starting up", app_name = settings.app_name, env = settings.environment,
              model = settings.model, default_effort = settings.default_effort)
+    if settings.environment == "prod" and settings.google_restricted_emails.strip() == "*":
+        log.warning("GOOGLE_RESTRICTED_EMAILS is '*': Gmail and Drive are offered to everyone. Without "
+                    "Google's CASA assessment the app is capped at 100 Google users; list your testers instead.")
     if settings.environment == "prod" and (settings.jwt_secret == "dev-secret-change-in-production"
                                            or len(settings.jwt_secret) < 32):
         # the default is public: anyone could mint a token for any user
@@ -134,6 +142,14 @@ def create_app() -> FastAPI:
     app.include_router(whatsapp_routes.router)
     app.include_router(kept_routes.router)
     app.include_router(push_routes.router)
+    app.include_router(brand_routes.router)
+    app.include_router(brand_routes.public)
+    app.include_router(waitlist_routes.router)
+    app.include_router(launch_routes.router)
+    app.include_router(business_routes.router)
+    app.include_router(customer_routes.router)
+    app.include_router(mission_routes.router)
+    app.include_router(promise_routes.router)
     return app
 
 app = create_app()

@@ -72,6 +72,7 @@ def client(monkeypatch):
         ReminderOut(1, "Call mom", (now - timedelta(minutes=5)).isoformat(), "sent", None),
         ReminderOut(2, "Pay rent", (now + timedelta(days=9)).isoformat(), "pending", None)])
     monkeypatch.setattr(personal, "list_todos", lambda uid: [TodoOut(3, "Shopping", "Milk", False)])
+    monkeypatch.setattr("harness.db.customers.upcoming_birthdays", lambda uid, today, days: [])
     monkeypatch.setattr(today_route, "_pending_approvals", lambda uid: [{"run_id": "r1", "conversation_id": "c1", "tool": "gmail__send_message", "since": None}])
 
     async def weather(city):

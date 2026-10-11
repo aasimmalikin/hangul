@@ -52,7 +52,7 @@ export async function POST(req: Request) {
   const limited = rateLimit(`chat:${userId}`, 60, 60_000)
   if (limited) return limited
 
-  let body: { messages?: IncomingMessage[]; docsOnly?: unknown; model?: unknown; effort?: unknown; connectors?: unknown; mode?: unknown; conversationId?: unknown; timezone?: unknown; connectorsAuto?: unknown }
+  let body: { messages?: IncomingMessage[]; docsOnly?: unknown; model?: unknown; effort?: unknown; connectors?: unknown; mode?: unknown; conversationId?: unknown; timezone?: unknown; connectorsAuto?: unknown; brandId?: unknown }
   try {
     body = await req.json()
   } catch {
@@ -69,6 +69,9 @@ export async function POST(req: Request) {
   const connectors = Array.isArray(body.connectors)
     ? Array.from(new Set(body.connectors.filter((k): k is string => typeof k === "string" && /^[a-z0-9_-]{1,32}$/.test(k)))).slice(0, 8)
     : []
+  // brands.id: a non-negative integer, 0 = no brand, absent = the chat's own
+  const brandId = Number.isInteger(body.brandId) && (body.brandId as number) >= 0 && (body.brandId as number) < 2 ** 31
+    ? (body.brandId as number) : undefined
   const messages = Array.isArray(body.messages) ? body.messages : []
   const last = messages[messages.length - 1]
   const question = last ? textOf(last).trim() : ""
@@ -103,7 +106,8 @@ export async function POST(req: Request) {
       headers: { "Content-Type": "application/json", Accept: "text/event-stream" },
       body: JSON.stringify({ question, history, conversation_id: conversationId,
                              docs_only: body.docsOnly === true, model, effort, connectors, mode,
-                             client_timezone: timeZoneOrUndefined(body.timezone), connectors_auto: body.connectorsAuto === true }),
+                             client_timezone: timeZoneOrUndefined(body.timezone), connectors_auto: body.connectorsAuto === true,
+                             brand_id: brandId }),
     }, { timeoutMs: STREAM_TOTAL_MS, signal: req.signal })
   } catch (e) {
     if (e instanceof UpstreamError) return jsonError(e.status, e.code, e.message)
@@ -289,6 +293,9 @@ export async function POST(req: Request) {
                     toolsUsed: data.tools_used ?? [],
                     model: data.model,
                     effort: data.effort ?? null,
+                    // the brand the run made things for (chosen, inherited or named in the message)
+                    brandId: data.brand_id ?? null,
+                    brandName: data.brand_name ?? null,
                     ms: Date.now() - startedAt,
                   },
                 })

@@ -22,6 +22,8 @@
  *   "PAYWALL …" / "BROKE …" / "FULL …"   402 plan refusal (plan_required /
  *                  insufficient_balance / free_pool_exhausted)
  *   "HISTORY …"    reply states how many history turns arrived
+ *   "LAUNCH …"     the launch_plan tool -> a launch plan card (plan id 900)
+ *   "SALES …"      the business tool logs today -> a sales card; "FORECAST …" -> tomorrow's forecast card
  *   anything else  "Reply to: <question>" with one search_docs tool call
  *
  * Every reply also names the caller (`user=<sub>`) so isolation between
@@ -30,11 +32,136 @@
  */
 import http from "node:http"
 import crypto from "node:crypto"
+import fs from "node:fs"
 
 const PORT = Number(process.env.FAKE_BACKEND_PORT ?? 8765)
 const SECRET = process.env.FASTAPI_JWT_SECRET ?? "e2e-service-secret"
 
-const state = { down: false, approves: {}, executed: {}, uploads: [], asks: [], inFlight: {}, memory: {}, episodes: {}, conversations: {}, convMessages: {}, adminCalls: [], evalRuns: {}, prefs: {}, tasks: {}, google: {}, checkouts: [], todos: {}, reminders: {}, notes: {}, deviceTz: {}, transcripts: [], transcribed: [], spoken: [], apps: {}, billing: {}, churn: [], today: {}, whatsapp: {}, checkins: {}, kept: {}, linkDecisions: {} }
+// FAKE_TRAILER=1 (the walkthrough video, tests/trailer): natural messages pick the canned replies, so the
+// recording shows what an owner would type instead of the SALES / FORECAST test prefixes. Off in the e2e suite.
+const TRAILER_ALIASES = [
+  [/16,?400/, "SALES"], [/kal|tomorrow/i, "FORECAST"], [/post|poster/i, "BRANDPOST"], [/open|start a|cloud kitchen/i, "LAUNCH"],
+]
+function trailerAlias(q) {
+  if (!process.env.FAKE_TRAILER) return q
+  const hit = TRAILER_ALIASES.find(([rx]) => rx.test(q))
+  return hit ? `${hit[1]} ${q}` : q
+}
+
+const state = { down: false, approves: {}, executed: {}, uploads: [], asks: [], inFlight: {}, memory: {}, episodes: {}, conversations: {}, convMessages: {}, adminCalls: [], evalRuns: {}, prefs: {}, tasks: {}, google: {}, checkouts: [], todos: {}, reminders: {}, notes: {}, deviceTz: {}, transcripts: [], transcribed: [], spoken: [], apps: {}, billing: {}, churn: [], today: {}, whatsapp: {}, checkins: {}, kept: {}, linkDecisions: {}, brands: {}, brandSlots: {}, brandAssets: {}, brandPosts: {}, brandFiles: [], waitlist: [], waitlistBase: 0, launch: {}, launchAccess: {}, business: {}, businessPlan: {}, missions: {}, missionTrust: {}, missionPlan: {}, promises: {}, promiseAsking: {}, promisePlan: {}, promiseEmailOn: {}, customers: {} }
+
+
+// ---- How's business: the real overview (business-fixture.json, from harness.sales via make_fixtures.py),
+//      trimmed per plan exactly as sales/service.overview does, with the week recomputed from the days
+const BUSINESS_FIXTURE = JSON.parse(fs.readFileSync(new URL("./business-fixture.json", import.meta.url), "utf8"))
+function businessAccess(plan) {
+  return { plan, forecast: plan !== "free", reasons: plan === "pro", ideas: plan === "pro" ? "all" : plan === "plus" ? "weekly" : "none", whatsapp: plan === "pro" }
+}
+function newBusiness(b, seeded) {
+  const fx = BUSINESS_FIXTURE.overview
+  return { business: { ...fx.business, id: 1, name: String(b.name ?? "My business"), kind: b.kind ?? "cafe", city: b.city ?? "",
+                       brand_id: b.brand_id ?? null, launch_plan_id: b.launch_plan_id ?? null, paused: false },
+           days: seeded ? fx.days.map((x) => ({ ...x })) : [], ideasUsed: 0 }
+}
+function businessOverview(b, plan) {
+  const fx = structuredClone(BUSINESS_FIXTURE.overview)
+  const today = fx.today
+  const monday = new Date(today + "T12:00:00"); monday.setDate(monday.getDate() - ((monday.getDay() + 6) % 7))
+  const ws = monday.toLocaleDateString("en-CA")
+  const lastWs = new Date(monday); lastWs.setDate(lastWs.getDate() - 7)
+  const lastSame = new Date(today + "T12:00:00"); lastSame.setDate(lastSame.getDate() - 7)
+  const inWeek = b.days.filter((x) => x.day >= ws && x.day <= today && !x.closed)
+  const lastWeek = b.days.filter((x) => x.day >= lastWs.toLocaleDateString("en-CA") && x.day <= lastSame.toLocaleDateString("en-CA") && !x.closed)
+  const total = inWeek.reduce((s, x) => s + x.sales, 0), prev = lastWeek.reduce((s, x) => s + x.sales, 0)
+  const ov = { ...fx, business: b.business, access: businessAccess(plan), days: b.days.slice(-90), logged_today: b.days.some((x) => x.day === today),
+    week: { total: Math.round(total), days: inWeek.length, bills: inWeek.reduce((s, x) => s + (x.bills ?? 0), 0),
+            last_week_same_days: lastWeek.length ? Math.round(prev) : null, change: lastWeek.length && prev > 0 ? Math.round((total / prev - 1) * 1000) / 1000 : null,
+            best: inWeek.length ? inWeek.reduce((a, x) => (x.sales > a.sales ? x : a)).day : null },
+    plan: b.business.launch_plan_id ? fx.plan : {}, locked: [], ideas_left: null }
+  const logged = b.days.filter((x) => !x.closed).length
+  if (logged < 14) {
+    ov.forecast = { status: "learning", days_logged: logged, days_needed: 14 - logged }
+    ov.slow = null; ov.ideas = []; ov.expected = []
+  }
+  if (plan === "free") {
+    ov.forecast = { status: ov.forecast.status, days_logged: logged, days_needed: Math.max(0, 14 - logged) }
+    ov.slow = null; ov.ideas = []; ov.expected = []
+    ov.locked.push({ feature: "Tomorrow's sales forecast", plan: "plus" })
+  } else if (plan === "plus" && ov.forecast.status === "ready") {
+    if (ov.forecast.reasons?.length) ov.locked.push({ feature: "Why tomorrow looks this way", plan: "pro" })
+    ov.forecast.reasons = []
+    ov.ideas_left = Math.max(0, 1 - (b.ideasUsed ?? 0))
+    ov.ideas = ov.ideas_left > 0 || b.ideasUsed ? ov.ideas.slice(0, 1) : []
+    if (fx.ideas.length > ov.ideas.length) ov.locked.push({ feature: "An idea for every slow day", plan: "pro" })
+  }
+  return ov
+}
+
+// ---- launch plans: the real templates (launch-fixture.json, generated from harness.launch:
+//   .venv/bin/python -c "import json; from harness.launch import kinds, plan; ..." -- see the fixture's _note)
+//   and the same arithmetic as harness/launch/economics.py
+const LAUNCH_FIXTURE = JSON.parse(fs.readFileSync(new URL("./launch-fixture.json", import.meta.url), "utf8"))
+const LAUNCH_KINDS = LAUNCH_FIXTURE.kinds
+function newLaunchPlan(id, b, live) {
+  const t = structuredClone(LAUNCH_FIXTURE.plans[b.kind] ?? LAUNCH_FIXTURE.plans.cafe)
+  const renting = b.renting ?? "yes"
+  const RENT_KEYS = new Set(["rent", "deposit", "fitout", "warehouse"])
+  for (const it of t.items) if (RENT_KEYS.has(it.key)) it.include = renting === "yes"
+  const label = LAUNCH_KINDS.find((k) => k.key === b.kind)?.label ?? "Business"
+  const now = new Date().toISOString()
+  const searchable = t.items.filter((x) => x.search && x.include).length
+  return { ...t, id, active: true, reads: 0, kind: b.kind, city: String(b.city).trim(), area: String(b.area ?? "").trim(),
+    title: `${label} in ${[b.area, b.city].map((x) => String(x ?? "").trim()).filter(Boolean).join(", ")}`, conversation_id: null,
+    answers: { size: b.size, renting, budget: b.budget ?? null, start: b.start ?? "", note: "" },
+    status: live ? "sourcing" : "ready", error: "", sourced: live,
+    progress: live ? { stage: "prices", done: Math.min(6, searchable), total: searchable } : {}, refreshes: 0, created_at: now, updated_at: now }
+}
+function launchSourced(p) {
+  // the espresso machine (or the first item with a search) gets a checked seller; a benchmark and a supplier are found
+  const it = p.items.find((x) => x.key === "espresso") ?? p.items.find((x) => x.search)
+  const mine = it.status === "user"
+  Object.assign(it, { status: mine ? "user" : "sourced", low: 145000, high: 210000, typical: 177500,
+    sellers: [{ seller: "Coffee Kit India", price: 145000, url: "https://shop.example/espresso", quote: "Rs. 1,45,000" },
+              { seller: "Brew Supply Co", price: 210000, url: "https://shop.example/espresso-2", quote: "₹2,10,000" }],
+    checked_at: new Date().toISOString(), ...(mine ? {} : { amount: 177500 }) })
+  p.benchmarks[0] = { ...p.benchmarks[0], value: "28-32%", status: "sourced", source: { url: "https://report.example/cafes", title: "Café report" } }
+  p.suppliers = [{ query: "coffee machine dealer", near: p.city, search_link: "https://www.google.com/maps/search/?api=1&query=coffee",
+    places: [{ name: "Valley Coffee Supplies", address: `Valley Coffee Supplies, Residency Road, ${p.city}, India` }] }]
+  Object.assign(p, { status: "ready", progress: { stage: "done", done: 1, total: 1 } })
+}
+function launchView(p) {
+  const a = p.assumptions
+  let oneOff = 0, fixed = 0
+  const byCat = {}
+  for (const it of p.items) {
+    const t = it.include ? it.amount * it.qty : 0
+    if (it.monthly) fixed += t; else oneOff += t
+    byCat[it.category] = (byCat[it.category] ?? 0) + t
+  }
+  const v = Math.min(0.99, a.variable.reduce((s, x) => s + x.pct, 0))
+  const month = (price, units) => {
+    const revenue = price * units * a.days_per_month, per = price * (1 - v), profit = per * units * a.days_per_month - fixed
+    return { revenue: Math.round(revenue), variable_costs: Math.round(revenue * v), contribution_per_sale: per, fixed: Math.round(fixed),
+      profit: Math.round(profit), margin: revenue ? profit / revenue : null, units_per_day: units,
+      breakeven_per_day: per > 0 ? Math.ceil(fixed / per / a.days_per_month) : null }
+  }
+  const likely = month(a.price, a.units_per_day)
+  const wc = fixed * a.working_capital_months, startup = oneOff + wc
+  const pay = (m) => (m.profit > 0 ? Math.round((startup / m.profit) * 10) / 10 : null)
+  const scen = { worst: month(a.price * 0.95, a.units_per_day * 0.7), likely, best: month(a.price, a.units_per_day * 1.3) }
+  for (const m of Object.values(scen)) m.payback_months = pay(m)
+  const top = Math.max(a.units_per_day * 1.5, (likely.breakeven_per_day ?? 0) * 2, 10)
+  const chart = Array.from({ length: 13 }, (_, i) => {
+    const u = (top * i) / 12, rev = a.price * u * a.days_per_month
+    return { units_per_day: Math.round(u * 10) / 10, revenue: Math.round(rev), costs: Math.round(fixed + rev * v) }
+  })
+  const budget = p.answers.budget
+  const { reads: _r, active: _a, ...rest } = p
+  return { ...rest, economics: { ...likely, price: a.price, days_per_month: a.days_per_month, variable_share: v, one_off: Math.round(oneOff),
+    working_capital: Math.round(wc), working_capital_months: a.working_capital_months, startup_total: Math.round(startup),
+    payback_months: pay(likely), budget: budget ?? null, budget_gap: budget ? Math.round(budget - startup) : null, by_category: byCat,
+    scenarios: scen, chart } }
+}
 
 function verify(req) {
   const h = req.headers.authorization ?? ""
@@ -85,11 +212,12 @@ const PAYWALLS = {
 
 async function askStream(req, res, user) {
   const body = JSON.parse((await readBody(req)).toString() || "{}")
-  const q = String(body.question ?? "")
+  const q = trailerAlias(String(body.question ?? ""))
   const history = Array.isArray(body.history) ? body.history : []
   state.asks.push({ user: user.sub, question: q, history: history.length, conversation_id: body.conversation_id ?? null,
                     docs_only: body.docs_only === true, connectors: body.connectors ?? [], mode: body.mode ?? "default",
-                    model: body.model ?? null, effort: body.effort ?? null, client_timezone: body.client_timezone ?? null, connectors_auto: body.connectors_auto === true })
+                    model: body.model ?? null, effort: body.effort ?? null, client_timezone: body.client_timezone ?? null, connectors_auto: body.connectors_auto === true,
+                    brand_id: body.brand_id ?? null })
 
   const pw = q.match(/^(PAYWALL|BROKE|FULL)\b/)
   if (pw) return json(res, 402, { detail: PAYWALLS[pw[1]] }, { "X-Reason": PAYWALLS[pw[1]].code })
@@ -120,7 +248,14 @@ async function askStream(req, res, user) {
       mode: body.mode ?? "default", docs_only: body.docs_only === true,
     })
   }
-  if (!convRow.title) convRow.title = q.slice(0, 200)
+  if (!convRow.title) convRow.title = String(body.question ?? "").slice(0, 200)     // what was typed (not a trailer alias)
+  // like ask.resolve_brand: asked for (0 = none), else the chat's, else one the message names
+  const myBrands = (state.brands[user.sub] ?? []).filter((b) => !b.paused)
+  if (typeof body.brand_id === "number") convRow.brand_id = body.brand_id || null
+  else if (!convRow.brand_id && body.connectors_auto) {
+    convRow.brand_id = myBrands.find((b) => q.toLowerCase().includes(b.name.toLowerCase()))?.id ?? null
+  }
+  const runBrand = myBrands.find((b) => b.id === convRow.brand_id) ?? null
   convRow.busy = true
   // The server owns the transcript: record the question now so a reopened chat
   // shows it even if the run never finishes.
@@ -133,9 +268,9 @@ async function askStream(req, res, user) {
   // `done` and `approval_required` always carry the conversation id -- that is
   // how the tab learns which chat the server put this turn in.
   const send = (event, data) => {
-    const payload = (event === "done" || event === "approval_required")
-      ? { ...data, conversation_id: convRow.id }
-      : data
+    const payload = event === "done"
+      ? { ...data, conversation_id: convRow.id, brand_id: runBrand?.id ?? null, brand_name: runBrand?.name ?? null }
+      : event === "approval_required" ? { ...data, conversation_id: convRow.id } : data
     // Whatever text the run produced is the assistant turn in the transcript.
     if (event === "text_delta") lastText += data.text ?? ""
     res.write(`event: ${event}\ndata: ${JSON.stringify(payload)}\n\n`)
@@ -196,6 +331,26 @@ async function askStream(req, res, user) {
       return res.end()
     }
 
+    // Google Meet: "MEET link" (instant), "MEET event" (calendar invite with a Meet link), "MEET calls", "MEET transcript"
+    if (q.startsWith("MEET ")) {
+      const what = q.split(" ")[1]
+      const link = "https://meet.google.com/abc-defg-hij"
+      const tool = { link: "meet__create_meeting", event: "calendar__create_event", calls: "meet__recent_meetings", transcript: "meet__get_transcript" }[what]
+      const ui = what === "link" ? { kind: "meet_link", uri: link, code: "abc-defg-hij" }
+        : what === "event" ? { kind: "calendar_events", created: true, events: [{ id: "ev9", summary: "Call with Priya", start: "2026-10-09T10:00:00+05:30",
+                               end: "2026-10-09T10:30:00+05:30", meet: link, link: "https://calendar.google.com/ev9" }] }
+        : what === "calls" ? { kind: "meet_meetings", meetings: [{ id: "r1", code: "abc-defg-hij", start: "2026-10-07T09:00:00Z", end: "2026-10-07T09:42:00Z",
+                               minutes: 42, participants: ["Guest", "Rahul"], transcript: true }] }
+        : { kind: "meet_transcript", id: "r1", start: "2026-10-07T09:00:00Z", minutes: 42, participants: ["Guest", "Rahul"],
+            doc: "https://docs.google.com/document/d/x",
+            lines: Array.from({ length: 10 }, (_, i) => ({ who: i % 2 ? "Guest" : "Rahul", text: i ? `Line ${i}` : "I'll send the quote by Friday." })) }
+      send("tool_call", { id: "c1", name: tool, arguments: {}, step: 1 })
+      send("tool_result", { id: "c1", name: tool, ok: true, preview: "done", ms: 30, cached: false, ui })
+      send("text_start", { block }); send("text_delta", { block, text: "Done." }); send("text_end", { block })
+      send("done", { steps: 1, run_id: runId, cost_usd: 0.001, tools_used: [tool] })
+      return res.end()
+    }
+
     if (q.startsWith("IMAGE") || q.startsWith("ROUTE") || q.startsWith("GITHUB")) {
       const kind = q.split(" ")[0]
       const tool = { IMAGE: "generate_image", ROUTE: "travel_time", GITHUB: "github__my_work" }[kind]
@@ -207,6 +362,46 @@ async function askStream(req, res, user) {
       send("tool_result", { id: "c1", name: tool, ok: true, preview: "done", ms: 30, cached: false, ui })
       send("text_start", { block }); send("text_delta", { block, text: "Done." }); send("text_end", { block })
       send("done", { steps: 1, run_id: runId, cost_usd: 0.001, tools_used: [tool] })
+      return res.end()
+    }
+
+    if (q.startsWith("BRANDPOST") || q.startsWith("BRANDSETUP")) {
+      const setup = q.startsWith("BRANDSETUP")
+      const tool = setup ? "brands" : "finish_image"
+      const ui = setup
+        ? { kind: "brand_setup", sentence: "a cosy café", suggestion: { kind: "cafe", label: "Café", name: "Chinar Café", looks: BRAND_LOOKS } }
+        : { kind: "brand_set", brand: runBrand?.name ?? "", source: "kahwa.jpg", files: [
+            { name: "chinar-cafe-post-kahwa.jpg", size: "post", width: 1080, height: 1080, label: "Instagram / Facebook post" },
+            { name: "chinar-cafe-story-kahwa.jpg", size: "story", width: 1080, height: 1920, label: "Story / WhatsApp status" }] }
+      send("tool_call", { id: "c1", name: tool, arguments: { image: "kahwa.jpg", headline: "Kahwa ₹80" }, step: 1 })
+      send("tool_result", { id: "c1", name: tool, ok: true, preview: "done", ms: 30, cached: false, ui })
+      send("text_start", { block }); send("text_delta", { block, text: setup ? "Pick a look." : "Here's your post." }); send("text_end", { block })
+      send("done", { steps: 1, run_id: runId, cost_usd: 0.0, tools_used: [tool] })
+      return res.end()
+    }
+
+    if (q.startsWith("LAUNCH")) {
+      const ui = { kind: "launch_plan", id: 900, title: "Café in Srinagar", status: "sourcing", sourced: true, unit: "bill",
+        startup_total: 1450000, profit: 82000, breakeven_per_day: 41, payback_months: 17.7, items: 22, url: "/launch/900",
+        access: { allowed: true, reason: null, detail: "", plan_needed: null } }
+      send("tool_call", { id: "c1", name: "launch_plan", arguments: { action: "start", kind: "cafe", city: "Srinagar", size: "small" }, step: 1 })
+      send("tool_result", { id: "c1", name: "launch_plan", ok: true, preview: "done", ms: 30, cached: false, ui })
+      send("text_start", { block }); send("text_delta", { block, text: "Your plan is on its way." }); send("text_end", { block })
+      send("done", { steps: 1, run_id: runId, cost_usd: 0.0, tools_used: ["launch_plan"] })
+      return res.end()
+    }
+
+    if (q.startsWith("SALES") || q.startsWith("FORECAST")) {
+      const ov = BUSINESS_FIXTURE.overview
+      const ui = q.startsWith("SALES")
+        ? { kind: "sales_logged", business: ov.business.name, business_id: 1, day: ov.today, sales: 16400, bills: 52, closed: false,
+            breakeven: ov.plan.breakeven, week: { total: ov.week.total + 16400, days: ov.week.days + 1, change: 0.06 }, url: "/business" }
+        : { kind: "sales_forecast", business: ov.business.name, business_id: 1, tomorrow: ov.tomorrow, forecast: ov.forecast, slow: ov.slow,
+            ideas: ov.ideas, locked: [], access: ov.access, url: "/business" }
+      send("tool_call", { id: "c1", name: "business", arguments: { action: q.startsWith("SALES") ? "log" : "forecast" }, step: 1 })
+      send("tool_result", { id: "c1", name: "business", ok: true, preview: "done", ms: 30, cached: false, ui })
+      send("text_start", { block }); send("text_delta", { block, text: q.startsWith("SALES") ? "Logged ₹16,400 · 52 bills for today." : "Tomorrow looks slow." }); send("text_end", { block })
+      send("done", { steps: 1, run_id: runId, cost_usd: 0.0, tools_used: ["business"] })
       return res.end()
     }
 
@@ -335,9 +530,36 @@ function keptFor(user) {
       did: r.status === "pending" ? `Reminder: ${r.text}` : `Reminded you: ${r.text}`, said: r.said ?? null, when: r.due_at, app: "Reminder",
       conversation_id: r.conversation_id ?? null, ref: { id: r.id, status: r.status } })),
     ...(state.kept[user.sub] ?? []),
+    ...promisesOf(user.sub).filter((p) => p.status !== "dropped").map((p) => ({
+      id: `promise:${p.id}`, kind: "promise", state: p.status === "open" ? "coming" : "done",
+      did: p.status === "done" ? `Kept: ${p.what}` : p.direction === "mine" ? `You promised${p.who ? " " + p.who : ""}: ${p.what}` : `${p.who || "Someone"} promised you: ${p.what}`,
+      said: p.quote || null, when: p.due_on ? `${p.due_on}T12:00:00Z` : p.created_at, app: "Promise", conversation_id: null,
+      ref: { id: p.id, direction: p.direction, status: p.status, wrote_back: Boolean(p.last_contact_at), chased: Boolean(p.chased_at) } })),
   ]
   return items.sort((a, b) => String(a.when ?? "").localeCompare(String(b.when ?? "")))
 }
+
+/** Kept your word (harness.promises): the fake's promises, as /today and /kept show them. */
+let promiseSeq = 900
+function promisesOf(sub) { return (state.promises[sub] ??= []) }
+function promiseRow(sub, p) {
+  promiseSeq += 1
+  const row = { id: promiseSeq, direction: p.direction, what: p.what, who: p.who ?? "", who_email: p.who_email ?? "",
+    due_on: p.due_on ?? null, source: p.source ?? "chat", quote: p.quote ?? "", status: p.status ?? "open", thread_ref: "",
+    last_contact_at: p.last_contact_at ?? null, chased_at: null, created_at: "2026-10-02T09:00:00Z", conversation_id: null, said: null }
+  promisesOf(sub).push(row)
+  return row
+}
+function promisedFor(sub) {
+  const open = promisesOf(sub).filter((p) => p.status === "open")
+  const mine = open.filter((p) => p.direction === "mine").map((p) => ({ ...p, overdue: Boolean(p.due_on) && p.due_on < "2026-10-02" }))
+  const theirs = open.filter((p) => p.direction === "theirs")
+    .map((p) => ({ ...p, late: !p.last_contact_at && !p.chased_at && Boolean(p.due_on) && p.due_on < "2026-10-02" }))
+    .sort((a, b) => Number(b.late) - Number(a.late))
+  return { mine: mine.slice(0, 5), theirs: theirs.slice(0, 5), counts: { mine: mine.length, theirs: theirs.length },
+    asking: (state.promiseAsking[sub] ?? []).slice(0, 2) }
+}
+const promisePaid = (sub) => (state.promisePlan[sub] ?? "plus") !== "free"
 
 function memoryFor(user) {
   if (!state.memory[user.sub]) {
@@ -372,6 +594,19 @@ function conversationsFor(user) {
 function messagesFor(conversationId) {
   return (state.convMessages[conversationId] ??= [])
 }
+const PNG_1X1 = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg=="
+const BRAND_SIZE_LABELS = { post: "Instagram post 1:1", portrait: "Instagram feed 4:5", story: "Story · Reel cover · WhatsApp status",
+  landscape: "Facebook · LinkedIn", x: "X (Twitter)", youtube: "YouTube thumbnail", pinterest: "Pinterest pin", a4: "A4 print" }
+
+const BRAND_LOOKS = [
+  { id: "cafe-warm", label: "Warm & cosy", font: "script", style: "warm natural light", voice: "friendly and playful",
+    colors: [{ role: "primary", hex: "#B5502F" }, { role: "secondary", hex: "#F4EBDD" }, { role: "accent", hex: "#E0A458" }, { role: "text", hex: "#3B2A20" }] },
+  { id: "cafe-minimal", label: "Modern minimal", font: "sans", style: "clean bright minimal", voice: "calm and confident",
+    colors: [{ role: "primary", hex: "#1F1F1F" }, { role: "secondary", hex: "#F5F3EE" }, { role: "accent", hex: "#8BA888" }, { role: "text", hex: "#1F1F1F" }] },
+  { id: "cafe-heritage", label: "Kashmiri heritage", font: "serif", style: "rich chinar reds and gold", voice: "warm and proud of tradition",
+    colors: [{ role: "primary", hex: "#A8402C" }, { role: "secondary", hex: "#F3E6D3" }, { role: "accent", hex: "#C9A227" }, { role: "text", hex: "#2E1F18" }] },
+]
+
 function newConversation(user, fields = {}) {
   const now = new Date().toISOString()
   // 32 hex chars, like uuid4().hex on the backend (the BFF checks the shape).
@@ -383,7 +618,7 @@ function newConversation(user, fields = {}) {
 }
 function conversationItem(row, count) {
   const { id, title, preview, model, effort, connectors, mode, docs_only, created_at, updated_at } = row
-  return { id, title, preview, model, effort, connectors, mode, docs_only, message_count: count, created_at, updated_at }
+  return { id, title, preview, model, effort, connectors, mode, docs_only, brand_id: row.brand_id ?? null, message_count: count, created_at, updated_at }
 }
 
 // Same one-line description the real route derives: first answer, else first question.
@@ -425,12 +660,56 @@ const server = http.createServer(async (req, res) => {
   }
   if (url.pathname === "/__google" && req.method === "POST") {
     const b = JSON.parse((await readBody(req)).toString() || "{}")
-    state.google[String(b.user)] = { connected: true, products: Array.isArray(b.products) ? b.products : ["gmail", "calendar", "drive", "docs"], scopes: [] }
+    state.google[String(b.user)] = { connected: true, products: Array.isArray(b.products) ? b.products : ["gmail", "calendar", "drive", "docs"], scopes: [],
+      ...(typeof b.restricted === "boolean" ? { restricted: b.restricted } : {}) }
     return json(res, 200, { ok: true })
   }
   if (url.pathname === "/__state") return json(res, 200, state)
   // Test hook: plant a server-owned conversation (and optionally its transcript)
   // for a user, with a chosen timestamp -- what the rail reads.
+  if (url.pathname === "/__apps" && req.method === "POST") {
+    // {user, apps: {github: true}}: a work app connected before they were hidden
+    const b = JSON.parse((await readBody(req)).toString() || "{}")
+    state.apps[b.user] = { ...(state.apps[b.user] ?? {}), ...(b.apps ?? {}) }
+    return json(res, 200, { ok: true })
+  }
+  // POST /__customers {user, customers}: seed a user's list
+  if (url.pathname === "/__customers" && req.method === "POST") {
+    const b = JSON.parse((await readBody(req)).toString() || "{}")
+    state.customers[String(b.user)] = b.customers ?? []
+    return json(res, 200, { ok: true })
+  }
+  if (url.pathname === "/__business" && req.method === "POST") {
+    // {user, plan?: "free"|"plus"|"pro", seeded?: true}: the plan the overview is trimmed for, and a business with 100 days already
+    const b = JSON.parse((await readBody(req)).toString() || "{}")
+    if (b.plan) state.businessPlan[b.user] = b.plan
+    if (b.seeded) state.business[b.user] = newBusiness({ name: "Chinar Café", kind: "cafe", city: "Srinagar", brand_id: 200, launch_plan_id: 900 }, true)
+    return json(res, 200, { ok: true })
+  }
+  if (url.pathname === "/__missions" && req.method === "POST") {
+    // {user, waiting?: true, plan?: "plus"}: a slow-day mission waiting for the owner's go-ahead, and the plan (default Pro)
+    const b = JSON.parse((await readBody(req)).toString() || "{}")
+    if (b.plan) state.missionPlan[b.user] = b.plan
+    if (b.waiting) (state.missions[b.user] ??= []).push(fakeMission(700 + (state.missions[b.user]?.length ?? 0)))
+    return json(res, 200, { ok: true })
+  }
+  if (url.pathname === "/__launch" && req.method === "POST") {
+    // {user, access?: {allowed, reason, detail, plan_needed}}: whether live prices are allowed (default yes)
+    const b = JSON.parse((await readBody(req)).toString() || "{}")
+    if (b.access) state.launchAccess[b.user] = b.access
+    return json(res, 200, { ok: true })
+  }
+  if (url.pathname === "/__brands" && req.method === "POST") {
+    // {user, slots?, brands?: [{name}]}: how many brands the user may have, and brands they already made
+    const b = JSON.parse((await readBody(req)).toString() || "{}")
+    if (typeof b.slots === "number") state.brandSlots[b.user] = b.slots
+    for (const [i, x] of (b.brands ?? []).entries()) {
+      const look = BRAND_LOOKS[i % BRAND_LOOKS.length]
+      ;(state.brands[b.user] ??= []).push({ id: 200 + i, name: x.name, kind: "cafe", look: look.id, colors: look.colors, style: look.style,
+                                             voice: look.voice, font: look.font, logo: "", paused: false, active: true })
+    }
+    return json(res, 200, { ok: true })
+  }
   if (url.pathname === "/__billing" && req.method === "POST") {
     // put a user on a paid plan for the cancel-flow tests; `extra` overrides any GET /billing field
     // (messages_left, nudge, trial_days, trialing… for 26-free-vs-paid.spec.ts)
@@ -451,6 +730,15 @@ const server = http.createServer(async (req, res) => {
     const b = JSON.parse((await readBody(req)).toString() || "{}")
     state.today[b.user] = b.extra ?? {}
     state.todaySlowMs = { ...(state.todaySlowMs ?? {}), [b.user]: b.slowMs ?? 0 }   // delay the full brief
+    return json(res, 200, { ok: true })
+  }
+  if (url.pathname === "/__promises" && req.method === "POST") {
+    // {user, promises?: [{direction, what, who, due_on…}], asking?: [{id, summary, people}], plan?: "free" | "plus"}
+    // (37-promises.spec.ts)
+    const b = JSON.parse((await readBody(req)).toString() || "{}")
+    for (const p of b.promises ?? []) promiseRow(b.user, p)
+    if (b.asking) state.promiseAsking[b.user] = b.asking
+    if (b.plan) state.promisePlan[b.user] = b.plan
     return json(res, 200, { ok: true })
   }
   if (url.pathname === "/__kept" && req.method === "POST") {
@@ -496,7 +784,7 @@ const server = http.createServer(async (req, res) => {
     rows.push({ id: ++episodeSeq, thread_id: b.thread_id ?? `seed-${episodeSeq}`, title: b.title, summary: b.summary ?? `Q: ${b.title}\nA: Reply to: ${b.title}`, created_at: at, updated_at: at, active: true })
     return json(res, 200, { ok: true })
   }
-  if (url.pathname === "/__reset") { Object.assign(state, { down: false, approves: {}, executed: {}, uploads: [], asks: [], inFlight: {}, memory: {}, episodes: {}, conversations: {}, convMessages: {}, adminCalls: [], evalRuns: {}, prefs: {}, tasks: {}, google: {}, checkouts: [], todos: {}, reminders: {}, notes: {}, deviceTz: {}, transcripts: [], transcribed: [], spoken: [], apps: {}, billing: {}, churn: [], today: {}, whatsapp: {}, checkins: {}, kept: {}, linkDecisions: {} }); convSeq = 0; return json(res, 200, { ok: true }) }
+  if (url.pathname === "/__reset") { Object.assign(state, { down: false, approves: {}, executed: {}, uploads: [], asks: [], inFlight: {}, memory: {}, episodes: {}, conversations: {}, convMessages: {}, adminCalls: [], evalRuns: {}, prefs: {}, tasks: {}, google: {}, checkouts: [], todos: {}, reminders: {}, notes: {}, deviceTz: {}, transcripts: [], transcribed: [], spoken: [], apps: {}, billing: {}, churn: [], today: {}, whatsapp: {}, checkins: {}, kept: {}, linkDecisions: {}, brands: {}, brandSlots: {}, brandAssets: {}, brandPosts: {}, brandFiles: [], waitlist: [], waitlistBase: 0, launch: {}, launchAccess: {}, business: {}, businessPlan: {}, missions: {}, missionTrust: {}, missionPlan: {}, promises: {}, promiseAsking: {}, promisePlan: {}, promiseEmailOn: {}, customers: {} }); convSeq = 0; return json(res, 200, { ok: true }) }
   if (url.pathname === "/healthz") return state.down ? json(res, 503, { status: "down" }) : json(res, 200, { status: "ok" })
   // approve-by-link (30-approve-link): no JWT, the token is the credential. Tokens whose
   // first part starts "ok" are a waiting calendar event; anything else is invalid (410).
@@ -516,6 +804,20 @@ const server = http.createServer(async (req, res) => {
     return json(res, 200, { state: decision === "approve" ? "approved" : "rejected", answer: decision === "approve" ? "Added Focus time at 5:15 PM." : "Okay, I didn't add it.", waiting_again: false, conversation_id: "conv-link" })
   }
   // public homepage prices (28-hearth): India by device timezone, like billing.public_region
+  // pre-registration (/join): public like /billing/prices. POST /__waitlist {base} pretends
+  // that many people joined already, so the count can be shown.
+  if (url.pathname === "/__waitlist" && req.method === "POST") {
+    state.waitlistBase = Number(JSON.parse((await readBody(req)).toString() || "{}").base ?? 0)
+    return json(res, 200, { ok: true })
+  }
+  if (url.pathname === "/waitlist/count") return json(res, 200, { total: state.waitlistBase + state.waitlist.length })
+  if (url.pathname === "/waitlist" && req.method === "POST") {
+    const b = JSON.parse((await readBody(req)).toString() || "{}")
+    const email = String(b.email ?? "").trim().toLowerCase()
+    if (!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(email)) return json(res, 422, { detail: "That doesn't look like an email address." })
+    if (!state.waitlist.some((w) => w.email === email)) state.waitlist.push({ email, trade: b.trade ?? "", city: b.city ?? "", persona: b.persona ?? "", interest: b.interest ?? "", source: b.source ?? "" })
+    return json(res, 200, { ok: true, total: state.waitlistBase + state.waitlist.length })
+  }
   if (url.pathname === "/billing/prices") {
     const india = ["Asia/Kolkata", "Asia/Calcutta"].includes(url.searchParams.get("tz") ?? "")
     const p = (label, amount) => ({ month: { amount, currency: india ? "INR" : "USD", label } })
@@ -528,11 +830,34 @@ const server = http.createServer(async (req, res) => {
   if (url.pathname === "/connectors") return json(res, 200, [
     { key: "arxiv", label: "Research", description: "Search and read arXiv papers", kind: "builtin", icon: "book-2", per_user: false, auth: null, servers: [] },
     ...[["gmail", "Gmail", "mail"], ["calendar", "Google Calendar", "calendar"], ["drive", "Google Drive", "brand-google-drive"], ["docs", "Google Docs", "file-text"]]
-      .map(([key, label, icon]) => ({ key, label, description: `${label} on your own Google account`, kind: "builtin", icon, per_user: true, auth: "google", product: key, group: "Google Workspace", servers: [] })),
-    ...[["github", "GitHub", "brand-github"], ["notion", "Notion", "brand-notion"], ["slack", "Slack", "brand-slack"]]
-      .map(([key, label, icon]) => ({ key, label, description: `${label} via a token in your vault`, kind: "builtin", icon, per_user: true, auth: `vault:${key}`, product: null, group: "Work apps", servers: [] })),
+      .map(([key, label, icon]) => ({ key, label, description: `${label} on your own Google account`, kind: "builtin", icon, per_user: true, auth: "google", product: key, group: "Google Workspace", servers: [],
+        restricted: key === "gmail" || key === "drive" })),
+    // GitHub, Notion and Slack are hidden from the catalogue (connectors/registry.WORK_APPS_HIDDEN)
   ])
   if (url.pathname === "/quality") return json(res, 200, { available: true, avg_correctness: 0.91, avg_faithfulness: 0.88, pass_rate: 0.9, cases: 20, gate_passed: true, blocking_failures: [], advisory_notes: [] })
+
+  // ---- client review links (harness.brands.review): no account; the token is "review-<post id>.<anything>"
+  const rv = url.pathname.match(/^\/review\/(review-[0-9]+\.[A-Za-z0-9_-]{20,})(\/files\/([^/]+))?$/)
+  if (rv) {
+    const post = Object.values(state.brandPosts).flat().find((x) => `review-${x.id}` === rv[1].split(".")[0] && x.active !== false)
+    if (!post) return json(res, 410, { detail: "This review link has expired or isn't valid. Ask for a new one." })
+    if (rv[3]) {
+      if (!post.files.some((f) => f.name === decodeURIComponent(rv[3]))) return json(res, 404, { detail: "Not part of this post." })
+      res.writeHead(200, { "Content-Type": "image/png" })
+      return res.end(Buffer.from(PNG_1X1, "base64"))
+    }
+    const owner = Object.entries(state.brands).find(([, bs]) => bs.some((b) => b.id === post.brand_id))
+    const b = owner?.[1].find((x) => x.id === post.brand_id)
+    if (req.method === "GET") {
+      return json(res, 200, { brand: b ? { name: b.name, colors: b.colors, font: b.font, logo: null, handle: b.handle ?? "" } : null,
+                              post, expires_at: new Date(Date.now() + 14 * 864e5).toISOString() })
+    }
+    const d = JSON.parse((await readBody(req)).toString() || "{}")
+    if (d.decision === "changes" && !String(d.comment ?? "").trim()) return json(res, 422, { detail: "Say what you'd like changed." })
+    post.review_status = d.decision === "approve" ? "approved" : "changes"
+    post.review_comment = (d.name ? `${d.name}: ` : "") + String(d.comment ?? "").trim()
+    return json(res, 200, { status: post.review_status, comment: post.review_comment })
+  }
 
   const user = verify(req)
   if (!user) return json(res, 401, { detail: "invalid token" })
@@ -614,11 +939,11 @@ const server = http.createServer(async (req, res) => {
       enabled: true, plan: "free", plan_label: "Free", status: null, renews_at: null, ends_at: null,
       allowance_usd: 0.5, allowance_left_usd: 0.2, credits_usd: 1.5, has_portal: true,
       // billing/plans.RECOMMENDED, from the persona
-      recommended_plan: ({ founder: "pro", developer: "pro", student: "plus", professional: "plus", personal: "plus" })[state.prefs[user.sub]?.persona] ?? null,
+      recommended_plan: ({ founder: "plus", developer: "pro", student: "plus", professional: "plus", personal: "plus" })[state.prefs[user.sub]?.persona] ?? null,
       plans: [
-        { id: "free", label: "Free", price_usd_month: 0, model_tiers: ["basic"], max_effort: "medium", research_allowed: false, monthly_allowance_usd: 0.5, best_for: "Trying Hangul, and light personal use" },
-        { id: "plus", label: "Plus", price_usd_month: 20, model_tiers: ["basic", "advanced"], max_effort: "xhigh", research_allowed: true, monthly_allowance_usd: 8, best_for: "Students, professionals and everyday life" },
-        { id: "pro", label: "Pro", price_usd_month: 100, model_tiers: ["basic", "advanced", "frontier"], max_effort: "xhigh", research_allowed: true, monthly_allowance_usd: 40, best_for: "Founders and developers: work apps and the strongest models" },
+        { id: "free", label: "Free", price_usd_month: 0, model_tiers: ["basic"], max_effort: "medium", research_allowed: false, monthly_allowance_usd: 0.5, best_for: "Logging sales, reminders and your customer list, on WhatsApp too" },
+        { id: "plus", label: "Plus", price_usd_month: 20, model_tiers: ["basic", "advanced"], max_effort: "xhigh", research_allowed: true, monthly_allowance_usd: 8, best_for: "A shop or small business: tomorrow's forecast, a slow day handled each week and posts in your brand" },
+        { id: "pro", label: "Pro", price_usd_month: 100, model_tiers: ["basic", "advanced", "frontier"], max_effort: "xhigh", research_allowed: true, monthly_allowance_usd: 40, best_for: "Busy owners and several outlets: every slow day handled, up to 5 businesses and 3 brands" },
       ],
       ...(state.billing[user.sub] ?? {}),        // last, so a test can override any field, plans included
     })
@@ -704,6 +1029,10 @@ const server = http.createServer(async (req, res) => {
       res.writeHead(200, { "Content-Type": "image/png", "Content-Disposition": `inline; filename="${name}"` })
       return res.end(Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==", "base64"))
     }
+    if (state.brandFiles.includes(name)) {
+      res.writeHead(200, { "Content-Type": "image/png" })
+      return res.end(Buffer.from(PNG_1X1, "base64"))
+    }
     return json(res, 404, { detail: "No such file." })
   }
   // ---- voice (harness.api.routes.voice)
@@ -775,6 +1104,7 @@ const server = http.createServer(async (req, res) => {
       memory: (() => { const m = memoryFor(user).find((x) => x.active); return m ? { id: m.id, content: m.content, kind: m.kind } : null })(),
       suggestion: { kind: "brief", learned: true, count: 5, line: "You usually ask me this between 5am and 10am. Shall I?",
         chips: [{ label: "Brief me", prompt: "Give me my brief for today." }, { label: "Weather", prompt: "What's the weather like today?" }] },
+      promises: promisedFor(user.sub),
       ...(state.today[user.sub] ?? {}),
       partial: false,
     }
@@ -783,6 +1113,56 @@ const server = http.createServer(async (req, res) => {
       leave_by: null, tomorrow: null, connected: [], partial: true } : brief)
   }
   if (url.pathname === "/notes" && req.method === "GET") return json(res, 200, state.notes[user.sub] ?? [])
+  // ---- Kept your word (harness.api.routes.promises)
+  if (url.pathname.startsWith("/promises")) {
+    const mine = promisesOf(user.sub)
+    const body = req.method === "GET" ? {} : JSON.parse((await readBody(req)).toString() || "{}")
+    if (url.pathname === "/promises" && req.method === "GET") {
+      const status = url.searchParams.get("status") ?? "open"
+      const paid = promisePaid(user.sub)
+      return json(res, 200, { promises: mine.filter((p) => status === "all" || p.status === status), counts: promisedFor(user.sub).counts,
+        access: { plan: paid ? "plus" : "free", email: paid, meetings: paid, chase: paid },
+        email_on: state.promiseEmailOn[user.sub] ?? true, asking: state.promiseAsking[user.sub] ?? [] })
+    }
+    if (url.pathname === "/promises" && req.method === "POST") return json(res, 200, promiseRow(user.sub, body))
+    if (url.pathname === "/promises/settings" && req.method === "PUT") {
+      state.promiseEmailOn[user.sub] = Boolean(body.email_on)
+      return json(res, 200, { email_on: Boolean(body.email_on) })
+    }
+    if (url.pathname === "/promises/capture" && req.method === "POST") {
+      if (!promisePaid(user.sub)) return json(res, 402, { detail: { detail: "Keeping track of what was promised in meetings is part of Plus.", code: "plan_required", plan_needed: "plus" } }, { "X-Reason": "plan_required" })
+      // the fake "model": each clause is a promise; "I'll …" is the user's, "<Name> will …" someone else's
+      const asked = (state.promiseAsking[user.sub] ?? []).find((a) => a.id === body.meeting_id)
+      const found = String(body.text).split(/,| and /).map((s) => s.trim()).filter(Boolean).map((s) => {
+        const theirs = s.match(/^([A-Z][a-z]+) (?:will|shares?|sends?) (.+)$/)
+        return theirs ? promiseRow(user.sub, { direction: "theirs", who: theirs[1], what: theirs[2][0].toUpperCase() + theirs[2].slice(1), source: "meeting", quote: s })
+          : /^I'?ll /i.test(s) ? promiseRow(user.sub, { direction: "mine", who: asked?.people?.[0]?.name ?? "", what: s.replace(/^I'?ll /i, "").replace(/^\w/, (c) => c.toUpperCase()), source: "meeting", quote: s })
+          : null
+      }).filter(Boolean)
+      state.promiseAsking[user.sub] = (state.promiseAsking[user.sub] ?? []).filter((a) => a.id !== body.meeting_id)
+      return json(res, 200, { promises: found })
+    }
+    const skip = url.pathname.match(/^\/promises\/meetings\/([\w-]+)\/skip$/)
+    if (skip && req.method === "POST") {
+      state.promiseAsking[user.sub] = (state.promiseAsking[user.sub] ?? []).filter((a) => a.id !== skip[1])
+      return json(res, 200, { ok: true })
+    }
+    const r = url.pathname.match(/^\/promises\/(\d+)(?:\/(chase))?$/)
+    const p = r && mine.find((x) => x.id === Number(r[1]))
+    if (!p) return json(res, 404, { detail: "No such promise." })
+    if (r[2] === "chase" && req.method === "POST") {
+      if (!promisePaid(user.sub)) return json(res, 402, { detail: { detail: "Chasing promises is part of Plus.", code: "plan_required", plan_needed: "plus" } }, { "X-Reason": "plan_required" })
+      p.chased_at = "2026-10-02T10:00:00Z"
+      return json(res, 200, { prompt: `PROMISECHASE Draft a short, polite follow-up email to ${p.who} about what they promised: "${p.what}".` })
+    }
+    if (req.method === "PATCH") {
+      if (body.status) p.status = body.status
+      if (body.what) p.what = body.what
+      if (body.clear_due) p.due_on = null
+      else if (body.due_on) p.due_on = body.due_on
+      return json(res, 200, p)
+    }
+  }
   // ---- the Kept tab (harness.api.routes.kept)
   if (url.pathname === "/kept/count" && req.method === "GET") return json(res, 200, { needs_you: keptFor(user).filter((i) => i.state === "needs_you").length })
   if (url.pathname === "/kept" && req.method === "GET") {
@@ -803,6 +1183,306 @@ const server = http.createServer(async (req, res) => {
       holding: { lists, notes: (state.notes[user.sub] ?? []).length, memories: memoryFor(user).filter((m) => m.active).length, files: 2 } })
   }
   // ---- personalisation, scheduled tasks, integrations (per user)
+  // ---- Missions (harness.missions): slow days Hangul carries through
+  if (url.pathname.startsWith("/missions")) {
+    const mine = state.missions[user.sub] ??= []
+    const allowed = ["plus", "pro"].includes(state.missionPlan[user.sub] ?? "pro")
+    if (url.pathname === "/missions" && req.method === "GET") {
+      return json(res, 200, { allowed, missions: [...mine].reverse(), trust: state.missionTrust[user.sub] ?? [],
+        this_month: missionReport(mine, "2026-09-01", "September 2026"), last_month: missionReport([], "2026-08-01", "August 2026") })
+    }
+    const trustRoute = url.pathname.match(/^\/missions\/trust\/(\d+)$/)
+    if (trustRoute && req.method === "PUT") {
+      const b = JSON.parse((await readBody(req)).toString() || "{}")
+      const t = { scope: `slow_day:${trustRoute[1]}`, streak: 0, auto: Boolean(b.auto), offered: true, business_id: Number(trustRoute[1]), business_name: "Chinar Café", trust_after: 3 }
+      state.missionTrust[user.sub] = [t]
+      return json(res, 200, t)
+    }
+    const r = url.pathname.match(/^\/missions\/(\d+)(?:\/(decide|undo))?$/)
+    const m = r && mine.find((x) => x.id === Number(r[1]))
+    if (!m) return json(res, 404, { detail: "No such mission." })
+    if (!r[2]) return json(res, 200, { ...m, can_undo: Boolean(m.data.approved) && m.status === "active", trust: { scope: "slow_day:1", streak: 1, auto: false, offered: false }, trust_after: 3 })
+    if (r[2] === "decide") {
+      const b = JSON.parse((await readBody(req)).toString() || "{}")
+      if (m.status !== "waiting") return json(res, 409, { detail: "That was already decided." }, { "X-Reason": "mission_decided" })
+      if (b.decision === "approve" && !allowed) return json(res, 402, { detail: { detail: "Hangul handling your slow days is part of Plus.", code: "plan_required", plan_needed: "plus" } }, { "X-Reason": "plan_required" })
+      const ok = b.decision === "approve"
+      m.steps[2] = { ...m.steps[2], state: ok ? "done" : "skipped", note: ok ? "You said go ahead." : "You said not this time." }
+      if (!ok) for (const s of m.steps) if (s.state === "todo") s.state = "skipped"
+      m.status = ok ? "active" : "cancelled"
+      m.done = m.steps.filter((s) => s.state === "done" || s.state === "skipped").length
+      m.data.approved = ok
+      return json(res, 200, { ...m, message: ok ? "Done. For Wednesday:\n1. Forward this to your regulars:\n\n" + m.data.share_text : "Okay, not this time." })
+    }
+    if (r[2] === "undo") {
+      if (!m.data.approved || m.status !== "active") return json(res, 409, { detail: "It's too late to undo this one." })
+      m.status = "cancelled"; m.data.undone = true
+      for (const s of m.steps) if (s.state === "todo") s.state = "skipped"
+      m.steps[2] = { ...m.steps[2], state: "skipped", note: "You undid this." }
+      return json(res, 200, m)
+    }
+  }
+  // ---- How's business (harness.sales): one business per user, built from business-fixture.json (the real overview)
+  const bizPlan = () => state.businessPlan[user.sub] ?? "pro"
+  const myBiz = () => state.business[user.sub]
+  // the shop's customer list (db/customers.py): a light stand-in, no birthday parsing beyond "MM-DD"
+  if (url.pathname === "/customers" && req.method === "GET") {
+    const mine = state.customers[user.sub] ?? []
+    const q = (url.searchParams.get("q") ?? "").toLowerCase()
+    const rows = mine.filter((c) => !q || c.name.toLowerCase().includes(q) || c.phone.includes(q))
+    return json(res, 200, { customers: rows, total: mine.length, today: "2026-10-10",
+      birthdays: mine.filter((c) => c.birthday?.endsWith("10-12")).map((c) => ({ customer_id: c.id, name: c.name, date: "2026-10-12", in_days: 2, customer: true, phone: c.phone })),
+      lapsed: mine.filter((c) => c.visits >= 3 && c.last_visit && c.last_visit < "2026-09-10").map((c) => ({ ...c, days_away: 40 })) })
+  }
+  if (url.pathname === "/customers" && req.method === "POST") {
+    const b = JSON.parse((await readBody(req)).toString() || "{}")
+    if (!String(b.name ?? "").trim()) return json(res, 422, { detail: "Give the customer a name." })
+    if (b.birthday && !/^(\d{1,2})[ /-]/.test(b.birthday) && !/[a-z]/i.test(b.birthday)) return json(res, 422, { detail: "That birthday isn't a real date (try 12/03 or 12 March)." })
+    const mine = (state.customers[user.sub] ??= [])
+    const c = { id: 800 + mine.length, name: b.name.trim(), phone: b.phone ? `+91${String(b.phone).replace(/\D/g, "").slice(-10)}` : "",
+      birthday: b.birthday === "12 October" ? "10-12" : null, note: b.note ?? "", visits: 0, last_visit: null }
+    mine.push(c)
+    return json(res, 200, { ...c, created: true })
+  }
+  const custRoute = url.pathname.match(/^\/customers\/(\d+)(\/visit)?$/)
+  if (custRoute) {
+    const mine = state.customers[user.sub] ?? []
+    const c = mine.find((x) => x.id === Number(custRoute[1]))
+    if (!c) return json(res, 404, { detail: "No such customer." })
+    if (custRoute[2] && req.method === "POST") {
+      if (c.last_visit !== "2026-10-10") { c.visits += 1; c.last_visit = "2026-10-10" }
+      return json(res, 200, c)
+    }
+    if (req.method === "DELETE") { state.customers[user.sub] = mine.filter((x) => x !== c); return json(res, 200, { removed: true }) }
+  }
+  if (url.pathname === "/business" && req.method === "GET") {
+    const b = myBiz()
+    return json(res, 200, { businesses: b ? [b.business] : [], slots: bizPlan() === "pro" ? 5 : 1, can_add: !b || bizPlan() === "pro",
+      access: businessAccess(bizPlan()), kinds: [...LAUNCH_KINDS.map((k) => ({ key: k.key, label: k.label })), { key: "other", label: "Something else" }] })
+  }
+  if (url.pathname === "/business" && req.method === "POST") {
+    const b = JSON.parse((await readBody(req)).toString() || "{}")
+    if (myBiz() && bizPlan() !== "pro") return json(res, 402, { detail: { detail: "Your plan includes 1 business. Pro tracks up to 5.", code: "business_limit", plan_needed: "pro" } }, { "X-Reason": "business_limit" })
+    state.business[user.sub] = newBusiness(b, false)
+    return json(res, 200, myBiz().business)
+  }
+  const bizRoute = url.pathname.match(/^\/business\/(\d+)(?:\/(overview|days|import|ideas\/([a-z0-9_]+)\/use|days\/(\d{4}-\d{2}-\d{2})))?$/)
+  if (bizRoute) {
+    const b = myBiz()
+    if (!b || b.business.id !== Number(bizRoute[1])) return json(res, 404, { detail: "No such business." })
+    const sub = bizRoute[2]
+    if (sub === "overview" && req.method === "GET") return json(res, 200, businessOverview(b, bizPlan()))
+    if (sub === "days" && req.method === "POST") {
+      const d = JSON.parse((await readBody(req)).toString() || "{}")
+      const day = d.day ?? BUSINESS_FIXTURE.overview.today
+      b.days = b.days.filter((x) => x.day !== day).concat([{ day, sales: d.closed ? 0 : Number(d.sales ?? 0), bills: d.bills ?? null,
+        closed: Boolean(d.closed), partial: false, promo: false, source: "page", note: "", rain_mm: null, tmax: null }]).sort((x, y) => x.day.localeCompare(y.day))
+      return json(res, 200, b.days.find((x) => x.day === day))
+    }
+    if (sub?.startsWith("days/") && req.method === "DELETE") { b.days = b.days.filter((x) => x.day !== bizRoute[4]); return json(res, 200, { ok: true }) }
+    if (sub === "import" && req.method === "POST") {
+      const body = (await readBody(req)).toString()
+      const preview = /name="preview"\r\n\r\ntrue/.test(body)
+      const fx = BUSINESS_FIXTURE.overview.days
+      const result = { days: fx.map((x) => ({ day: x.day, sales: x.sales, bills: x.bills })), date_col: "Date", amount_col: "Net Sales",
+        rows_used: fx.length, rows_skipped: 0, columns: ["Date", "Orders", "Net Sales"], notes: [], from: fx[0].day, to: fx[fx.length - 1].day,
+        total: fx.reduce((s2, x) => s2 + x.sales, 0), future_skipped: 0, saved: null }
+      if (preview) return json(res, 200, result)
+      const have = new Set(b.days.map((x) => x.day))
+      const added = fx.filter((x) => !have.has(x.day))
+      b.days = b.days.concat(added.map((x) => ({ ...x }))).sort((x, y) => x.day.localeCompare(y.day))
+      return json(res, 200, { ...result, saved: { added: added.length, replaced: 0, kept: fx.length - added.length } })
+    }
+    if (sub?.startsWith("ideas/") && req.method === "POST") {
+      const ov = businessOverview(b, bizPlan())
+      const idea = ov.ideas.find((i) => i.key === bizRoute[3])
+      if (!idea) return json(res, 402, { detail: { detail: "This idea isn't available on your plan this week.", code: "plan_required", plan_needed: "pro" } }, { "X-Reason": "plan_required" })
+      b.ideasUsed = (b.ideasUsed ?? 0) + 1
+      const q = new URLSearchParams(Object.entries({ tab: "create", layout: idea.layout, headline: idea.headline, subline: idea.subline,
+        price: idea.price, cta: idea.cta, from: "business" }).filter(([, v]) => v))
+      return json(res, 200, { idea, brand_id: b.business.brand_id, studio_url: b.business.brand_id ? `/brands/${b.business.brand_id}?${q}` : "/brands" })
+    }
+  }
+  // ---- launch plans (harness.launch): a small café template; a sourced plan turns "ready" on its second read
+  const launchAccess = () => state.launchAccess[user.sub] ?? { allowed: true, reason: null, detail: "", plan_needed: null, left: 3 }
+  const myPlans = () => (state.launch[user.sub] ??= [])
+  if (url.pathname === "/launch/kinds" && req.method === "GET") {
+    return json(res, 200, { version: 1, renting: ["yes", "own", "no"], access: launchAccess(), kinds: LAUNCH_KINDS })
+  }
+  if (url.pathname === "/launch" && req.method === "GET") {
+    return json(res, 200, myPlans().filter((p) => p.active).map((p) => {
+      const v = launchView(p)
+      return { id: v.id, title: v.title, kind: v.kind, city: v.city, area: v.area, status: v.status, sourced: v.sourced,
+               created_at: v.created_at, updated_at: v.updated_at, startup_total: v.economics.startup_total,
+               breakeven_per_day: v.economics.breakeven_per_day, profit: v.economics.profit, payback_months: v.economics.payback_months }
+    }))
+  }
+  if (url.pathname === "/launch" && req.method === "POST") {
+    const b = JSON.parse((await readBody(req)).toString() || "{}")
+    if (!LAUNCH_KINDS.some((k) => k.key === b.kind) || !String(b.city ?? "").trim()) return json(res, 422, { detail: "kind and city are required" })
+    const acc = b.live === false ? { allowed: false, reason: "not_asked", detail: "", plan_needed: null, left: null } : launchAccess()
+    const p = newLaunchPlan(900 + Object.values(state.launch).flat().length, b, acc.allowed)
+    myPlans().push(p)
+    return json(res, 200, { plan: launchView(p), access: acc })
+  }
+  const launchRoute = url.pathname.match(/^\/launch\/(\d+)(?:\/(source|export|items\/([a-z0-9_]+)\/refresh))?$/)
+  if (launchRoute) {
+    const p = myPlans().find((x) => x.id === Number(launchRoute[1]) && x.active)
+    if (!p) return json(res, 404, { detail: "No such plan." })
+    const sub = launchRoute[2]
+    if (!sub && req.method === "GET") {
+      if (p.status === "sourcing" && ++p.reads >= 2) launchSourced(p)
+      return json(res, 200, launchView(p))
+    }
+    if (!sub && req.method === "PATCH") {
+      const b = JSON.parse((await readBody(req)).toString() || "{}")
+      for (const k of ["price", "units_per_day", "days_per_month", "working_capital_months"]) if (b[k] !== undefined) p.assumptions[k] = Number(b[k])
+      for (const [k, e] of Object.entries(b.items ?? {})) {
+        const it = p.items.find((x) => x.key === k)
+        if (!it) return json(res, 422, { detail: `no such item: ${k}` })
+        if (e.amount !== undefined) Object.assign(it, { amount: Number(e.amount), status: "user" })
+        if (e.qty !== undefined) it.qty = Number(e.qty)
+        if (e.include !== undefined) it.include = Boolean(e.include)
+      }
+      return json(res, 200, launchView(p))
+    }
+    if (!sub && req.method === "DELETE") { p.active = false; return json(res, 200, { ok: true }) }
+    if (sub === "source" && req.method === "POST") {
+      const acc = launchAccess()
+      if (!acc.allowed) return json(res, 402, { detail: { detail: acc.detail, code: acc.reason, plan_needed: acc.plan_needed } }, { "X-Reason": acc.reason })
+      Object.assign(p, { status: "sourcing", sourced: true, reads: 0 })
+      return json(res, 200, launchView(p))
+    }
+    if (sub === "export" && req.method === "GET") {
+      const fmt = url.searchParams.get("format") === "xlsx" ? "xlsx" : "pdf"
+      res.writeHead(200, { "Content-Type": fmt === "pdf" ? "application/pdf" : "application/octet-stream",
+                           "Content-Disposition": `attachment; filename="plan.${fmt}"` })
+      return res.end(fmt === "pdf" ? "%PDF-1.4 fake" : "PK fake")
+    }
+    if (sub?.startsWith("items/") && req.method === "POST") return json(res, 200, launchView(p))
+  }
+  // ---- brands (harness.brands): slots default to Pro's 3; POST /__brands {user, slots?, brands?}
+  const myBrands = () => (state.brands[user.sub] ??= [])
+  const brandSlots = () => state.brandSlots[user.sub] ?? 3
+  if (url.pathname === "/brands" && req.method === "GET") {
+    const rows = myBrands().filter((b) => b.active !== false).map((b, i) => {
+      const posts = (state.brandPosts[user.sub] ?? []).filter((p) => p.brand_id === b.id && p.active !== false)
+      return { logo_dark: "", handle: "", website: "", cta: "", footer: "", hashtags: [], ...b, paused: i >= brandSlots(),
+               posts: posts.length, cover: posts.at(-1)?.files[0]?.name ?? null }
+    })
+    return json(res, 200, { brands: rows, slots: brandSlots(), used: rows.length, can_add: rows.length < brandSlots(), templates_version: "1" })
+  }
+  if (url.pathname === "/brands/suggest" && req.method === "POST") {
+    return json(res, 200, { kind: "cafe", label: "Café", name: "Chinar Café", looks: BRAND_LOOKS })
+  }
+  if (url.pathname === "/brands" && req.method === "POST") {
+    const b = JSON.parse((await readBody(req)).toString() || "{}")
+    const rows = myBrands().filter((x) => x.active !== false)
+    if (rows.length >= brandSlots()) {
+      const free = brandSlots() === 0
+      return json(res, 402, { detail: { detail: free ? "Brands are part of the Plus and Pro plans." : `You're using all ${brandSlots()} of your brand slots.`,
+                                        code: "brand_limit", slots: brandSlots(), used: rows.length, plan_needed: free ? "plus" : null, buy: free ? null : "brand_slot" } },
+                  { "X-Reason": "brand_limit" })
+    }
+    const look = BRAND_LOOKS.find((l) => l.id === b.look) ?? BRAND_LOOKS[0]
+    const row = { id: 100 + rows.length + 1 + Object.values(state.brands).flat().length, name: String(b.name ?? "Brand"), kind: "cafe", look: look.id,
+                  colors: b.colors ?? look.colors, style: look.style, voice: look.voice, font: b.font ?? look.font, logo: "", paused: false, active: true }
+    myBrands().push(row)
+    return json(res, 200, row)
+  }
+  const studioRoute = url.pathname.match(/^\/brands\/(\d+)\/(assets|preview|posts|logo)(?:\/(\d+))?$/)
+  if (studioRoute) {
+    const b = myBrands().find((x) => x.id === Number(studioRoute[1]) && x.active !== false)
+    if (!b) return json(res, 404, { detail: "No such brand." })
+    const assets = (state.brandAssets[b.id] ??= [])
+    const what = studioRoute[2]
+    if (what === "logo") {
+      await readBody(req)
+      b.logo = `brand-${b.id}-logo.png`; state.brandFiles.push(b.logo)
+      return json(res, 200, { brand: b, suggested_colors: [{ role: "primary", hex: "#1F6F5C" }, { role: "secondary", hex: "#F4F1EA" },
+                                                           { role: "accent", hex: "#E0A458" }, { role: "text", hex: "#1B2A24" }] })
+    }
+    if (what === "assets" && req.method === "GET") return json(res, 200, assets.filter((a) => a.active !== false))
+    if (what === "assets" && req.method === "POST") {
+      const buf = await readBody(req)
+      const fname = (buf.toString("latin1").match(/filename="([^"]+)"/) ?? [])[1] ?? "photo.jpg"
+      const a = { id: 500 + Object.values(state.brandAssets).flat().length, brand_id: b.id, name: `${b.id}-${fname.replace(/\.[^.]+$/, "")}.jpg`, width: 1200, height: 900, created_at: new Date().toISOString() }
+      assets.unshift(a); state.brandFiles.push(a.name)
+      return json(res, 200, a)
+    }
+    if (what === "assets" && req.method === "DELETE") {
+      const a = assets.find((x) => x.id === Number(studioRoute[3]))
+      if (!a) return json(res, 404, { detail: "No such photo." })
+      a.active = false
+      return json(res, 200, { ok: true })
+    }
+    if (what === "preview") {
+      const d = JSON.parse((await readBody(req)).toString() || "{}")
+      ;(state.previews ??= []).push(d)
+      res.writeHead(200, { "Content-Type": "image/png" })
+      return res.end(Buffer.from(PNG_1X1, "base64"))
+    }
+    if (what === "posts" && req.method === "GET") {
+      return json(res, 200, (state.brandPosts[user.sub] ?? []).filter((p) => p.brand_id === b.id && p.active !== false).slice().reverse())
+    }
+    if (what === "posts" && req.method === "POST") {
+      const d = JSON.parse((await readBody(req)).toString() || "{}")
+      const slides = Array.isArray(d.slides) ? d.slides : []
+      if (slides.length && (state.billing[user.sub]?.plan ?? "pro") !== "pro") {
+        return json(res, 402, { detail: { detail: "Carousel posts is part of the Pro plan.", code: "plan_required", plan_needed: "pro" } }, { "X-Reason": "plan_required" })
+      }
+      const id = 900 + Object.values(state.brandPosts).flat().length
+      const sizes = (d.sizes ?? ["post"]).filter((k) => !slides.length || ["post", "portrait"].includes(k))
+      const n = slides.length ? slides.length + 1 : 1
+      const files = sizes.flatMap((k) => Array.from({ length: n }, (_, i) => ({
+        name: `post-${id}-${k}${slides.length ? `-${i + 1}` : ""}.jpg`, size: k, width: 1080, height: 1080, label: BRAND_SIZE_LABELS[k] ?? k,
+        ...(slides.length ? { slide: i + 1 } : {}) })))
+      state.brandFiles.push(...files.map((f) => f.name))
+      const post = { id, brand_id: b.id, kind: slides.length ? "carousel" : "single", layout: d.layout ?? "band", words: d.words ?? {}, slides, sizes, files,
+                     captions: {}, review_status: "none", review_comment: "", reviewed_at: null, created_at: new Date().toISOString() }
+      ;(state.brandPosts[user.sub] ??= []).push(post)
+      return json(res, 200, post)
+    }
+  }
+  const postRoute = url.pathname.match(/^\/posts\/(\d+)(?:\/(zip|captions|review-link))?$/)
+  if (postRoute) {
+    const post = (state.brandPosts[user.sub] ?? []).find((x) => x.id === Number(postRoute[1]) && x.active !== false)
+    if (!post) return json(res, 404, { detail: "No such post." })
+    const what = postRoute[2]
+    if (!what && req.method === "DELETE") { post.active = false; return json(res, 200, { ok: true }) }
+    if (what === "zip") {
+      res.writeHead(200, { "Content-Type": "application/zip", "Content-Disposition": `attachment; filename="post-${post.id}.zip"` })
+      return res.end(Buffer.from("PK\x05\x06" + "\0".repeat(18), "latin1"))
+    }
+    if (what === "captions" && req.method === "POST") {
+      const d = JSON.parse((await readBody(req)).toString() || "{}")
+      for (const k of d.platforms ?? ["instagram"]) {
+        post.captions[k] = { label: k[0].toUpperCase() + k.slice(1), text: `Fresh kahwa is back ☕ (${k})`, hashtags: k === "whatsapp" ? [] : ["#chinarcafe", "#kahwa"], first_comment: "" }
+      }
+      return json(res, 200, post)
+    }
+    if (what === "captions" && req.method === "PATCH") {
+      const d = JSON.parse((await readBody(req)).toString() || "{}")
+      post.captions[d.platform] = { ...(post.captions[d.platform] ?? { label: d.platform }), text: d.text, hashtags: d.hashtags ?? [], first_comment: d.first_comment ?? "" }
+      return json(res, 200, post)
+    }
+    if (what === "review-link") {
+      if ((state.billing[user.sub]?.plan ?? "pro") !== "pro") {
+        return json(res, 402, { detail: { detail: "Client review links is part of the Pro plan.", code: "plan_required", plan_needed: "pro" } }, { "X-Reason": "plan_required" })
+      }
+      post.review_status = "waiting"; post.review_comment = ""
+      const token = `review-${post.id}.${"x".repeat(43)}`
+      return json(res, 200, { url: `http://localhost:3100/review/${token}`, token, expires_at: new Date(Date.now() + 14 * 864e5).toISOString() })
+    }
+  }
+  const brandRoute = url.pathname.match(/^\/brands\/(\d+)$/)
+  if (brandRoute) {
+    const row = myBrands().find((b) => b.id === Number(brandRoute[1]) && b.active !== false)
+    if (!row) return json(res, 404, { detail: "No such brand." })
+    if (req.method === "DELETE") { row.active = false; return json(res, 200, { ok: true }) }
+    if (req.method === "PATCH") { Object.assign(row, JSON.parse((await readBody(req)).toString() || "{}")); return json(res, 200, row) }
+  }
+
   if (url.pathname === "/settings" && req.method === "GET") {
     // onboarded defaults to true so the walkthrough doesn't cover every other test; POST /__onboarding resets it
     return json(res, 200, { display_name: "", instructions: "", tone: "balanced", timezone: "UTC", language: "", city: "", onboarded: true,
@@ -819,17 +1499,17 @@ const server = http.createServer(async (req, res) => {
   const userTasks = () => Object.values(state.tasks).filter((t) => t.user === user.sub)
   const pub = (t) => ({ ...Object.fromEntries(Object.entries(t).filter(([k]) => k !== "user")),
     asks_first: [...((t.connectors ?? []).includes("gmail") && /\b(send|reply|forward)\b/i.test(t.question ?? "") ? ["gmail"] : []),
-                 ...(t.connectors ?? []).filter((a) => ["github", "slack", "notion", "docs", "sheets"].includes(a))] })
+                 ...(t.connectors ?? []).filter((a) => ["docs", "sheets"].includes(a))] })
   if (url.pathname === "/tasks" && req.method === "GET") return json(res, 200, userTasks().map(pub))
   // like POST /tasks/preview: apps the words switch on (a tiny keyword router), and the
   // actions a task may pre-approve, offered when Calendar / Gmail are "connected"
   if (url.pathname === "/tasks/preview" && req.method === "POST") {
     const q = String(JSON.parse((await readBody(req)).toString() || "{}").question ?? "")
     const apps = [...(/\b(event|slot|calendar|meeting)\b/i.test(q) ? ["calendar"] : []), ...(/\b(email|inbox|send|reply)\b/i.test(q) ? ["gmail"] : [])]
-    if (/\b(github|issue|pr)\b/i.test(q)) apps.push("github")
-    return json(res, 200, { apps, connected: ["gmail", "calendar", "github"], title: q.split(/\s+/).slice(0, 7).join(" "),
+    if (/\b(sheet|spreadsheet)\b/i.test(q)) apps.push("sheets")
+    return json(res, 200, { apps, connected: ["gmail", "calendar", "sheets"], title: q.split(/\s+/).slice(0, 7).join(" "),
       asks_first: [...(apps.includes("gmail") && /\b(send|reply|forward)\b/i.test(q) ? ["gmail"] : []),
-                   ...apps.filter((a) => ["github", "slack", "notion", "docs", "sheets"].includes(a))], lead_minutes: 5 })
+                   ...apps.filter((a) => ["docs", "sheets"].includes(a))], lead_minutes: 5 })
   }
   if (url.pathname === "/tasks" && req.method === "POST") {
     const b = JSON.parse((await readBody(req)).toString() || "{}")
@@ -871,11 +1551,8 @@ const server = http.createServer(async (req, res) => {
   }
   const appRoute = url.pathname.match(/^\/integrations\/apps\/(github|notion|slack)$/)
   if (appRoute && req.method === "POST") {
-    const token = String(JSON.parse((await readBody(req)).toString() || "{}").token ?? "")
-    // stands in for "checked with the service": tokens starting with "bad" are refused
-    if (token.startsWith("bad")) return json(res, 400, { detail: "GitHub refused that token (401). Check you copied the whole token." })
-    ;(state.apps[user.sub] ??= {})[appRoute[1]] = true
-    return json(res, 200, { connected: true, app: appRoute[1] })
+    // like the real backend: no new work-app tokens (they're hidden); POST /__apps plants an old connection
+    return json(res, 404, { detail: `${appRoute[1][0].toUpperCase() + appRoute[1].slice(1)} is no longer offered.` })
   }
   if (appRoute && req.method === "DELETE") { if (state.apps[user.sub]) delete state.apps[user.sub][appRoute[1]]; return json(res, 200, { disconnected: true }) }
   if (url.pathname === "/integrations/google" && req.method === "DELETE") { delete state.google[user.sub]; return json(res, 200, { disconnected: true }) }
@@ -917,3 +1594,23 @@ const server = http.createServer(async (req, res) => {
 })
 
 server.listen(PORT, "127.0.0.1", () => console.log(`fake backend on http://127.0.0.1:${PORT}`))
+
+function fakeMission(id) {
+  const step = (key, label, s, note = "") => ({ key, label, state: s, note, at: null })
+  return { id, kind: "slow_day", business_id: 1, target_day: "2026-09-16", status: "waiting", done: 2, total: 5,
+    created_at: null, updated_at: null,
+    steps: [step("spot", "Spotted Wednesday looks slow", "done", "About ₹9,000 expected; a usual Wednesday is ₹13,000."),
+            step("prepare", "Make the offer post", "done", "A rainy-day offer: the post is ready in 2 sizes."),
+            step("approve", "Your go-ahead", "waiting", "Waiting for your go-ahead."),
+            step("check_in", "Ask how Wednesday went", "todo"), step("measure", "See if it worked", "todo")],
+    data: { business_name: "Chinar Café", weekday: "Wednesday", brand_id: 200, post_id: 900, files: [],
+      forecast: { value: 9000, low: 8000, high: 10000, typical: 13000 },
+      idea: { key: "rain_offer", title: "A rainy-day offer", idea: "People stay in when it rains: push delivery with a small rainy-day offer.",
+        margin_note: "After 10% off, each sale still leaves about ₹122.", track_note: "Tried once here: on average 14% above my forecast." },
+      share_text: "*Rainy day? We deliver (10% OFF)*\nHot and fresh to your door" } }
+}
+
+function missionReport(ms, month, label) {
+  const went = ms.filter((m) => m.data.approved && !m.data.undone)
+  return { month, label, spotted: ms.length, went_ahead: went.length, on_their_own: 0, measured: 0, worked: 0, lift: 0, price: "Pro costs you ₹1,499", best: null }
+}

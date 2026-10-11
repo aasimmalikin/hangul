@@ -4,9 +4,10 @@ import { useCallback, useEffect, useState } from "react"
 import { useSession } from "next-auth/react"
 import { AppHeader } from "@/components/hangul/AppHeader"
 import { SignInModal, type AuthMode } from "@/components/hangul/SignInModal"
-import { loadAvailableConnectors, type ConnectorInfo } from "@/lib/connectors"
+import { loadAvailableConnectors, loadIntegrations, type ConnectorInfo } from "@/lib/connectors"
 import { deviceTimeZone } from "@/lib/timezone"
-import { announcePersona, PERSONAS, type Persona } from "@/lib/personas"
+import { announcePersona, PERSONAS, RETIRED_PERSONAS, type Persona } from "@/lib/personas"
+import { PromiseEmailToggle } from "@/components/hangul/PromisesCard"
 import { PushToggle } from "@/components/hangul/PushToggle"
 import { WhatsAppLink } from "@/components/hangul/WhatsAppLink"
 import { TaskScheduler, type Task } from "@/components/hangul/TaskScheduler"
@@ -84,13 +85,15 @@ export default function SettingsPage() {
     // automatic = this device's timezone; pinned = what the user typed
     const timezone = body.timezone_auto !== false ? (deviceTimeZone() ?? body.timezone) : body.timezone
     await api("settings", { method: "PUT", body: JSON.stringify({ ...body, timezone, timezone_auto: body.timezone_auto !== false }) })
-    announcePersona(PERSONAS.some((x) => x.key === body.persona) ? (body.persona as Persona) : null)
+    announcePersona([...PERSONAS, ...RETIRED_PERSONAS].some((x) => x.key === body.persona) ? (body.persona as Persona) : null)
     setSaved(true); setTimeout(() => setSaved(false), 2000)
   })
 
   // One tap: a daily 08:00 brief, emailed, using whichever Google products exist.
   const addMorningBrief = () => run(async () => {
-    const google = connectors.map((c) => c.key).filter((k) => k === "gmail" || k === "calendar")
+    // only the apps this account has granted (Gmail isn't offered to everyone yet)
+    const granted = (await loadIntegrations())?.google.products ?? []
+    const google = connectors.map((c) => c.key).filter((k) => (k === "gmail" || k === "calendar") && granted.includes(k))
     await api("tasks", {
       method: "POST",
       body: JSON.stringify({
@@ -145,6 +148,7 @@ export default function SettingsPage() {
                 onChange={(e) => setPrefs({ ...prefs, persona: e.target.value })}>
                 <option value="">What describes you best? (optional)</option>
                 {PERSONAS.map((p) => <option key={p.key} value={p.key}>{p.label}</option>)}
+                {RETIRED_PERSONAS.filter((p) => p.key === prefs.persona).map((p) => <option key={p.key} value={p.key}>{p.label}</option>)}
               </select>
               <input id="home" className="h-input" placeholder="Home address (for “leave by” times)" value={prefs.home_address ?? ""}
                 onChange={(e) => setPrefs({ ...prefs, home_address: e.target.value })} maxLength={200} aria-label="Home address"
@@ -165,6 +169,12 @@ export default function SettingsPage() {
             </Section>
           </div>
         )} />
+
+        <div id="promises">
+          <Section title="Your word" hint="Hangul keeps track of what you promised and what others promised you, and reminds you before anything slips. Promises from your email are read about every half hour, by the cheap model, and only kept when the exact words are in the mail. Nothing is ever sent without your OK.">
+            <PromiseEmailToggle />
+          </Section>
+        </div>
 
         <WhatsAppLink frame={(content) => (
           <div id="whatsapp">

@@ -7,7 +7,8 @@ cost or delay -- and mapped to a model the user's plan includes:
   quick     reminders, lists, weather, conversions, one-liners   -> cheapest, low depth
   everyday  most requests (reading mail, calendar, summaries)     -> cheap model, medium depth
   write     drafts, replies, rewrites the user will send          -> mid model, medium depth
-  deep      research mode, analysis, comparisons, code, long asks -> strongest allowed, high depth
+  deep      research mode, analysis, comparisons, code, long asks,
+            and new images (the model writes the image model's prompt) -> strongest allowed, high depth
 
 Most messages are "everyday", so that level runs on the cheap model: a
 calendar lookup does not need the mid model, which costs ten times as much.
@@ -39,6 +40,13 @@ _WRITE = re.compile(
     r"\b(draft|write|compose|reply|respond|rewrite|reword|rephrase|proofread|polish|cover letter|letter to|"
     r"message to|email (him|her|them|back)|caption|announcement)\b", re.I)
 
+# A new picture (generate_image is Pro, so the frontier model is always in the
+# plan). Needs a drawing verb: "what's in this image?" is a view_image lookup.
+_IMAGE = re.compile(
+    r"\bdraw\b(?!\s+(up|on|from|a conclusion|attention)\b)|\billustrate (a|an|me)\b|"
+    r"\b(generate|create|make|design|render|paint|sketch)\b.{0,40}?\b(image|picture|pic|photo|poster|logo|"
+    r"illustration|thumbnail|wallpaper|artwork|icon|banner|drawing|painting|sticker|mock-?up)s?\b", re.I)
+
 
 @dataclass(frozen=True)
 class AutoChoice:
@@ -52,7 +60,7 @@ def level_for(question: str, mode: str = "default") -> str:
     if mode == "research":
         return "deep"
     words = len(q.split())
-    if _DEEP.search(q) or words > 80 or q.count("\n") > 6:
+    if _DEEP.search(q) or _IMAGE.search(q) or words > 80 or q.count("\n") > 6:
         return "deep"
     if _QUICK.search(q) and words <= 25:
         return "quick"

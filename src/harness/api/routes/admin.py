@@ -15,7 +15,7 @@ from harness.api.routes.ask import _audit, _trace_store
 from harness.config import get_settings
 from harness.eval import store as eval_store
 from harness.eval.catalog import SUITES, catalog
-from harness.eval.gate import evaluate_gate
+from harness.eval.gate import FLOORS, evaluate_gate
 
 
 async def _audited_admin(request: Request, user: dict = Depends(require_admin)) -> dict:
@@ -41,6 +41,13 @@ async def churn(days: int = 90) -> dict:
     import asyncio
     from harness.db.billing import churn_summary
     return await asyncio.to_thread(churn_summary, max(1, min(days, 365)))
+
+
+@router.get("/waitlist")
+async def waitlist() -> dict:
+    """Pre-registrations: total, last 7 days, and by persona, plan interest and source."""
+    from harness.db.waitlist import summary
+    return await asyncio.to_thread(summary)
 
 
 @router.get("/whoami")
@@ -83,10 +90,11 @@ async def evals_summary() -> dict:
         if latest is not None:
             entry.update({"n": latest.get("n"), "metrics": latest.get("metrics"),
                           "prompt_version": latest.get("prompt_version"), "model": latest.get("model")})
-            if suite == "qa":
+            if suite in FLOORS:
                 import json
-                baseline = json.loads(_BASELINE.read_text()) if _BASELINE.exists() else None
-                gate = evaluate_gate(latest, baseline)
+                path = _BASELINE if suite == "qa" else Path(f"data/eval_baseline_{suite}.json")
+                baseline = json.loads(path.read_text()) if path.exists() else None
+                gate = evaluate_gate(latest, baseline, suite=suite)
                 entry["gate"] = {"passed": gate.passed, "blocking_failures": gate.blocking_failures,
                                  "advisory_notes": gate.advisory_notes}
         out["suites"][suite] = entry

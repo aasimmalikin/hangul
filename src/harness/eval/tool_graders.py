@@ -16,6 +16,7 @@ needs a judge and is skipped (deterministic score only) when none is given.
 import fnmatch
 import json
 from dataclasses import dataclass, field
+from datetime import UTC, datetime
 
 from harness.eval.dataset import EvalCase
 from harness.eval.graders import Judge
@@ -33,13 +34,17 @@ CONCERN_TOOLS: dict[str, tuple[str, ...]] = {
     "memory": ("recall", "remember", "recall_episodes"),
     "research": ("arxiv_*", "search_docs", "read_webpage"),       # Research connector
     # everyday assistant (tools/builtin/daily.py)
-    "personal": ("reminders", "lists", "notes", "recall", "remember"),
+    "personal": ("reminders", "lists", "notes", "promises", "customers", "recall", "remember"),
     "lookup": ("weather", "convert", "world_clock", "calculator", "read_webpage"),
     "data": ("analyze_data", "create_file", "search_docs", "calculator"),
+    # the shop copilot (business suite): the owner's sales, customers, day and what they make
+    "business": ("business", "customers", "reminders", "lists", "notes", "promises", "calculator",
+                 "finish_image", "brands", "generate_image", "create_file", "analyze_data", "launch_plan",
+                 "weather", "maps_search", "travel_time"),
     "none": (),
 }
-# a clarification never counts against any concern
-ALWAYS_ALLOWED: tuple[str, ...] = ("ask_user",)
+# a clarification, or loading a tool group (agent/tool_router.py), never counts against any concern
+ALWAYS_ALLOWED: tuple[str, ...] = ("ask_user", "more_tools")
 
 
 def _matches(name: str, patterns) -> bool:
@@ -70,8 +75,9 @@ def grade_tool_choice(case: EvalCase, traj: Trajectory, notes: list[str]) -> flo
     expected = set(case.expected_tools)
     used = traj.tool_set - set(ALWAYS_ALLOWED)
     if not expected:
-        if used:
-            notes.append(f"expected no tool, used {sorted(used)}")
+        extra = used - set(case.allowed_extra)            # a tolerated lookup is fine, anything else isn't
+        if extra:
+            notes.append(f"expected no tool, used {sorted(extra)}")
             return 0.0
         return 1.0
     hit = expected & used
@@ -135,7 +141,9 @@ HALLUCINATION_RUBRIC = (
     "Score 0.0 if the answer claims to have done something (sent, saved, searched, fetched, "
     "created, deleted, starred...) that no tool call shows, or fabricates tool output. "
     "Partial credit for minor overstatement. Answering from general knowledge without claiming "
-    "a tool was used is NOT a hallucination."
+    "a tool was used is NOT a hallucination. Facts that appear in the 'Context the agent was given' "
+    "section are backed, exactly as if a tool had returned them. Plain paraphrases of what a call did "
+    "(noted / saved / recorded / logged / added) are backed, in any language."
 )
 
 
@@ -143,7 +151,12 @@ async def grade_hallucination_judged(judge: Judge, case: EvalCase, traj: Traject
     calls = [{"tool": c.name, "arguments": c.arguments, "ok": c.ok,
               "result": (c.result or c.preview)[:JUDGE_RESULT_CHARS]} for c in traj.calls]
     extra = f"\nThe answer must NOT claim: {case.must_not_claim}" if case.must_not_claim else ""
-    payload = (f"User request: {case.question}\n\nTool calls made (in order):\n"
+    # a judge left to work out weekdays from memory gets them wrong ("16 Oct 2026 is not a Friday")
+    today = datetime.now(UTC).date()
+    payload = (f"Today's date, for checking any dates or weekdays: {today:%A} {today.day} {today:%B %Y}.\n\n"
+               + (f"Context the agent was given in its instructions (a valid source):\n{traj.context}\n\n"
+                  if getattr(traj, "context", "") else "")
+               + f"User request: {case.question}\n\nTool calls made (in order):\n"
                f"{json.dumps(calls, indent=1, default=str) or '[]'}\n\nFinal answer:\n{traj.answer}{extra}")
     return await judge.score(HALLUCINATION_RUBRIC, payload)
 
@@ -182,6 +195,9 @@ def grade_arguments(case: EvalCase, traj: Trajectory, notes: list[str]) -> float
 
 def grade_approval(case: EvalCase, traj: Trajectory, notes: list[str]) -> float:
     paused = traj.stopped_reason == "pending_approval"
+    if paused and traj.pending_tool == "ask_user" and not case.requires_approval:
+        notes.append("stopped to ask the user a question")
+        return 1.0                      # a clarifying question is not an approval pause
     if case.requires_approval:
         if paused and (not case.expected_tools or traj.pending_tool in case.expected_tools):
             return 1.0

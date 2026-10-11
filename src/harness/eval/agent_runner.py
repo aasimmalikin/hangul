@@ -36,7 +36,8 @@ from harness.tools.registry import ToolRegistry
 
 EVAL_USER_ID = "0"          # no such user: memory/vault lookups find nothing, file writes are sandboxed
 DATASETS = {"qa": Path("data/evalset.jsonl"), "tool_selection": Path("data/evalsets/tool_selection.jsonl"),
-            "prompt_injection": Path("data/evalsets/prompt_injection.jsonl")}
+            "prompt_injection": Path("data/evalsets/prompt_injection.jsonl"),
+            "business": Path("data/evalsets/business.jsonl")}
 
 
 @asynccontextmanager
@@ -85,6 +86,43 @@ async def full_registry() -> ToolRegistry:
     return reg
 
 
+async def business_registry() -> ToolRegistry:
+    """What a shop owner's run starts from: the full registry plus the everyday and
+    business tools (not plan-gated: the eval user has no plan)."""
+    from harness.tools.builtin.daily import build_daily_tools
+    reg = await full_registry()
+    for t in build_daily_tools(EVAL_USER_ID, "Asia/Kolkata"):
+        reg.registry(t)
+    return reg
+
+
+def ensure_eval_shop() -> None:
+    """The eval user's shop, the same every run: a café with five weeks of sales (so the
+    forecast is ready) and three customers (Riya's birthday in 3 days, Sana away 40 days).
+    Cases may log today's sales on top; a re-run logs over them."""
+    from datetime import timedelta
+
+    from harness.db import customers as customers_db
+    from harness.db import sales as sales_db
+    from harness.sales import service
+    today = service.local_today(EVAL_USER_ID)
+    shops = [b for b in sales_db.list_for(EVAL_USER_ID) if not b["paused"]]
+    b = shops[0] if shops else sales_db.create(EVAL_USER_ID, name="Chai Point", kind="cafe", city="Pune")
+    have = {d["day"] for d in sales_db.days_for(b["id"], today - timedelta(days=40))}
+    weekday = (14200, 13100, 13600, 14400, 16800, 21500, 19800)
+    for k in range(1, 36):
+        d = today - timedelta(days=k)
+        if d.isoformat() not in have:
+            sales_db.log_day(b["id"], d, sales=weekday[d.weekday()] + (k % 5) * 150, bills=40 + (k % 7), source="import")
+    if not customers_db.find(EVAL_USER_ID, "Riya"):
+        soon = today + timedelta(days=3)
+        customers_db.add(EVAL_USER_ID, "Riya", "98765 43210", birthday=f"{soon.day}/{soon.month}", note="masala chai")
+        customers_db.add(EVAL_USER_ID, "Aman", "98000 00001")
+        sana, _ = customers_db.add(EVAL_USER_ID, "Sana", "98000 00002")
+        for gap in (60, 52, 46, 40):
+            customers_db.visit(EVAL_USER_ID, sana["id"], today - timedelta(days=gap))
+
+
 def _with_connectors(base: ToolRegistry, keys: list[str]) -> ToolRegistry:
     reg = ToolRegistry()
     for t in base.list():
@@ -122,10 +160,21 @@ def _prompt_for(case: EvalCase) -> str:
     return text + f"\n\nThe user's folder is: {session_dir}"
 
 
-async def run_case(case: EvalCase, registry: ToolRegistry, *, model: str) -> Trajectory:
+async def run_case(case: EvalCase, registry: ToolRegistry, *, model: str, shop: bool = False) -> Trajectory:
+    """``shop``: run as a shop owner does -- the shop block in the prompt and the
+    registry narrowed to the core tools plus what the question needs (agent/tool_router.py)."""
     rec = TrajectoryRecorder()
     tid = "eval-" + uuid.uuid4().hex[:12]
     prompt = _prompt_for(case)
+    block = ""
+    if shop:
+        from harness.agent import tool_router
+        from harness.sales import shop_state
+        shop_state.forget(EVAL_USER_ID)                  # earlier cases may have logged sales
+        block = await shop_state.shop_block(EVAL_USER_ID, timeout=None)      # graded with it, however slow the DB
+        prompt += ("\n\n" + block) if block else ""
+        recent = {(tc.get("function") or {}).get("name") for m in case.history for tc in (m.get("tool_calls") or [])}
+        registry = tool_router.narrow(registry, case.question, recent - {None})
     if case.connectors:
         # same as /ask: the connector's tools plus its prompt note, per case
         registry = _with_connectors(registry, case.connectors)
@@ -141,7 +190,9 @@ async def run_case(case: EvalCase, registry: ToolRegistry, *, model: str) -> Tra
     cp = await asyncio.to_thread(_store.load, tid)
     if cp is not None:
         rec.attach_results(tid, cp.completed_calls)
-    return rec.finish(result, model)
+    traj = rec.finish(result, model)
+    traj.context = block
+    return traj
 
 
 async def qa_run_fn(question: str) -> tuple[str, str]:
@@ -177,15 +228,21 @@ async def run_suite(suite: str, *, save: bool = True, judge=None, limit: int | N
                                     index_version=current_index_version(), model=model)
     else:
         async with _mcp_tools_available():
-            registry = await full_registry()
+            shop = suite == "business"
+            if shop:
+                await asyncio.to_thread(ensure_eval_shop)
+            registry = await (business_registry() if shop else full_registry())
             schemas = {t.name: t.parameter for t in registry.list()}
+            if shop:
+                from harness.agent import tool_router
+                schemas["more_tools"] = tool_router.narrow(registry, "").get("more_tools").parameter
             # connector tools are only in a case's registry when that case enables
             # them, but the hallucination grader must know they are real tools
             for keys in {tuple(c.connectors) for c in cases if c.connectors}:
                 schemas.update({t.name: t.parameter for t in tools_for(list(keys), _registry.list())[0]})
 
             async def run_fn(case: EvalCase) -> Trajectory:
-                return await run_case(case, registry, model=model)
+                return await run_case(case, registry, model=model, shop=shop)
 
             if suite == "prompt_injection":
                 report = await run_prompt_injection_suite(cases, run_fn, judge, prompt_version=prompt_version,

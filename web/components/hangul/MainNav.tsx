@@ -5,21 +5,27 @@ import { usePathname } from "next/navigation"
 import { useEffect, useState } from "react"
 
 /**
- * The four places in Hangul: Today, Chats, Kept, You. Tabs in the header
- * on wide screens (`MainNavTabs`), a bottom bar on phones (`BottomNav`). The
- * bottom bar is left off inside a conversation, where the composer needs the
- * bottom of the screen.
+ * The places in Hangul (design direction A): Today, Chats, Business, Customers
+ * and You, plus Kept in the header. Tabs in the header on wide screens
+ * (`MainNavTabs`), a five-tab bottom bar on phones (`BottomNav`), where Kept is
+ * reached from You. The bottom bar is left off inside a conversation, where the
+ * composer needs the bottom of the screen.
  *
  * Kept carries a badge: actions waiting for the user's OK (GET /api/kept/count),
- * and nothing else, so a number there always means "go and look".
+ * and nothing else, so a number there always means "go and look". On phones the
+ * badge sits on You, the way to Kept there.
  */
 
-const ITEMS = [
-  { href: "/", label: "Today", icon: "sun", match: (p: string) => p === "/" },
-  { href: "/chat", label: "Chats", icon: "messages", match: (p: string) => p.startsWith("/chat") },
-  { href: "/kept", label: "Kept", icon: "bookmark", match: (p: string) => p.startsWith("/kept") || p.startsWith("/lists") },
+type Item = { href: string; label: string; icon: string; match: (p: string) => boolean; phone: boolean }
+const ITEMS: Item[] = [
+  { href: "/", label: "Today", icon: "sun", match: (p) => p === "/", phone: true },
+  { href: "/chat", label: "Chats", icon: "messages", match: (p) => p.startsWith("/chat"), phone: true },
+  { href: "/business", label: "Business", icon: "chart-bar",
+    match: (p) => ["/business", "/missions", "/launch", "/brands"].some((x) => p.startsWith(x)), phone: true },
+  { href: "/customers", label: "Customers", icon: "users", match: (p) => p.startsWith("/customers"), phone: true },
+  { href: "/kept", label: "Kept", icon: "bookmark", match: (p) => p.startsWith("/kept") || p.startsWith("/lists"), phone: false },
   { href: "/you", label: "You", icon: "user-circle",
-    match: (p: string) => ["/you", "/settings", "/vault", "/billing"].some((x) => p.startsWith(x)) },
+    match: (p) => ["/you", "/settings", "/vault", "/billing"].some((x) => p.startsWith(x)), phone: true },
 ]
 
 // One count shared by the tabs and the bottom bar, fetched at most every 30 s.
@@ -83,12 +89,13 @@ export function BottomNav() {
   const needsYou = useNeedsYou()
   return (
     <nav className="h-bottom-nav" aria-label="Main">
-      {ITEMS.map((i) => (
+      {ITEMS.filter((i) => i.phone).map((i) => (
         <Link key={i.href} href={i.href === "/chat" ? "/chats" : i.href}
-          aria-current={i.match(path) || (i.href === "/chat" && path.startsWith("/chats")) ? "page" : undefined}>
+          aria-current={i.match(path) || (i.href === "/chat" && path.startsWith("/chats"))
+            || (i.href === "/you" && path.startsWith("/kept")) ? "page" : undefined}>
           <span style={{ position: "relative", display: "inline-flex" }}>
-            <i className={`ti ti-${i.icon}`} style={{ fontSize: 20 }} />
-            {i.href === "/kept" && <Badge n={needsYou} />}
+            <i className={`ti ti-${i.icon}`} style={{ fontSize: 24 }} />
+            {i.href === "/you" && <Badge n={needsYou} />}
           </span>
           {i.label}
         </Link>

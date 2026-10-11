@@ -36,6 +36,18 @@ test.describe("connectors", () => {
     expect((await backend("/__state")).asks.at(-1).connectors).toEqual([])
   })
 
+  test("Gmail and Drive aren't offered to an account off the restricted list", async ({ page, context, baseURL }) => {
+    await backend("/__google", { user: alice.id, products: ["calendar", "docs"], restricted: false })
+    await signInAs(context, alice, baseURL!)
+    await page.goto("/chat")
+    await page.getByRole("button", { name: "Add" }).click()
+    await page.getByTestId("menu-connectors").hover()
+    await expect(page.getByTestId("connector-calendar")).toBeVisible()
+    await expect(page.getByTestId("connector-docs")).toBeVisible()
+    await expect(page.getByTestId("connector-gmail")).toHaveCount(0)
+    await expect(page.getByTestId("connector-drive")).toHaveCount(0)
+  })
+
   test("a connector chosen on the landing page is on when the chat starts", async ({ page, context, baseURL }) => {
     await signInAs(context, alice, baseURL!)
     await page.goto("/")

@@ -44,6 +44,7 @@ class ConversationItem(BaseModel):
     connectors: list[str] = []
     mode: str = "default"
     docs_only: bool = False
+    brand_id: int | None = None
     message_count: int = 0
     created_at: datetime
     updated_at: datetime
@@ -84,7 +85,7 @@ def _item(row, count: int = 0) -> ConversationItem:
     return ConversationItem(
         id = row.id, title = row.title, preview = row.summary_text[:200],
         model = row.model, effort = row.effort, connectors = list(row.connectors or []),
-        mode = row.mode, docs_only = row.docs_only, message_count = count,
+        mode = row.mode, docs_only = row.docs_only, brand_id = getattr(row, "brand_id", None), message_count = count,
         created_at = row.created_at, updated_at = row.updated_at,
     )
 

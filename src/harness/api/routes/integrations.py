@@ -18,7 +18,7 @@ from sqlalchemy import update
 from harness.api.auth import get_current_user
 from harness.db.base import SessionLocal
 from harness.db.models import Account
-from harness.integrations.google_oauth import ALL_SCOPES, GoogleNotConnected, google_tokens
+from harness.integrations.google_oauth import GoogleNotConnected, google_tokens, scopes_for
 from harness.mcp.manager import current as mcp_current
 
 router = APIRouter()
@@ -46,7 +46,8 @@ async def apps_status(user_id: str) -> dict[str, bool]:
 @router.get("/integrations")
 async def integrations(user: dict = Depends(get_current_user)) -> dict:
     google = await google_tokens().status(user["user_id"])
-    google["scopes"] = list(ALL_SCOPES)
+    # what Connect Google asks for: without Gmail and Drive unless the account is on the restricted list
+    google["scopes"] = scopes_for(google.get("restricted", True))
     return {"google": google, "apps": await apps_status(user["user_id"])}
 
 
@@ -61,6 +62,9 @@ async def connect_app(app: str, req: AppToken, user: dict = Depends(get_current_
     from harness.vault import current as current_vault
     if app not in WORK_APPS:
         raise HTTPException(status_code=404, detail="Unknown app.")
+    from harness.connectors.registry import BUILTIN
+    if BUILTIN[app].hidden:
+        raise HTTPException(status_code=404, detail=f"{BUILTIN[app].label} is no longer offered.")
     vault = current_vault()
     if vault is None:
         raise HTTPException(status_code=503, detail="The token vault isn't set up on this server (VAULT_MASTER_KEY).")

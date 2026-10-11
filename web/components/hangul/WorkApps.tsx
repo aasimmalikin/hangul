@@ -28,6 +28,7 @@ const APPS: Record<AppKey, { label: string; icon: string; steps: string[]; link:
   },
 }
 
+/** GitHub, Notion and Slack are no longer offered: only the ones already connected show, so they can be disconnected. */
 export function WorkApps({ status, onChange }: { status: Partial<Record<AppKey, boolean>> | undefined; onChange: () => void }) {
   const [open, setOpen] = useState<AppKey | null>(null)
   const [token, setToken] = useState("")
@@ -49,7 +50,7 @@ export function WorkApps({ status, onChange }: { status: Partial<Record<AppKey, 
 
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 10 }} data-testid="work-apps">
-      {(Object.keys(APPS) as AppKey[]).map((key) => {
+      {(Object.keys(APPS) as AppKey[]).filter((key) => status?.[key]).map((key) => {
         const a = APPS[key]
         const connected = Boolean(status?.[key])
         return (

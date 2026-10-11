@@ -131,6 +131,7 @@ test.describe("personal agent", () => {
   })
 
   test("morning brief is one tap: daily at 08:00, emailed", async ({ page, context, baseURL }) => {
+    await backend("/__google", { user: alice.id, products: ["gmail", "calendar"] })
     await signInAs(context, alice, baseURL!)
     await page.goto("/settings")
     await page.getByTestId("brief-offer").getByRole("button", { name: "Set it up" }).click()
@@ -142,5 +143,14 @@ test.describe("personal agent", () => {
     const t = (await backend("/__state")).tasks["1"]
     expect(t).toMatchObject({ daily_at: "08:00", deliver_email: true })
     expect(t.connectors).toEqual(expect.arrayContaining(["gmail", "calendar"]))
+  })
+
+  test("the morning brief leaves Gmail out when the account can't use it", async ({ page, context, baseURL }) => {
+    await backend("/__google", { user: alice.id, products: ["calendar"], restricted: false })
+    await signInAs(context, alice, baseURL!)
+    await page.goto("/settings")
+    await page.getByTestId("brief-offer").getByRole("button", { name: "Set it up" }).click()
+    await expect(page.getByTestId("task-1")).toContainText("Morning brief")
+    expect((await backend("/__state")).tasks["1"].connectors).toEqual(["calendar"])
   })
 })

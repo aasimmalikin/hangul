@@ -33,7 +33,7 @@ export type BffErrorCode =
   | "insufficient_balance"
   | "free_pool_exhausted"
 
-const BILLING_CODES = new Set(["plan_required", "effort_not_allowed", "research_requires_plan", "insufficient_balance", "free_pool_exhausted"])
+const BILLING_CODES = new Set(["plan_required", "effort_not_allowed", "research_requires_plan", "insufficient_balance", "free_pool_exhausted", "brand_limit", "launch_quota", "business_limit"])
 
 export function jsonError(status: number, code: BffErrorCode, detail: string, headers: Record<string, string> = {}) {
   return Response.json({ detail, code }, { status, headers })
@@ -177,7 +177,8 @@ export async function relayUpstreamError(res: Response): Promise<Response> {
     // it intact so the page can offer the right upgrade instead of an error.
     const d = body?.detail
     if (res.status === 402 && d && typeof d === "object" && BILLING_CODES.has(d.code)) {
-      return Response.json({ detail: String(d.detail), code: d.code, planNeeded: d.plan_needed ?? null }, { status: 402 })
+      return Response.json({ detail: String(d.detail), code: d.code, planNeeded: d.plan_needed ?? null,
+                            ...(d.code === "brand_limit" ? { buy: d.buy ?? null, slots: d.slots ?? null, used: d.used ?? null } : {}) }, { status: 402 })
     }
   } catch { /* not JSON */ }
   const code: BffErrorCode =

@@ -1,6 +1,7 @@
 "use client"
 
 import { useState } from "react"
+import { BrandSetup, type Suggestion } from "@/components/hangul/BrandSetup"
 
 /**
  * Cards for the everyday-assistant tools (backend `tools/builtin/daily.py`):
@@ -29,17 +30,35 @@ export type DailyUi =
   | { kind: "table"; title?: string; rows: Cell[][] }
   | { kind: "upgrade"; feature: string; plan: string; plan_label: string }
   | { kind: "contacts"; people: Array<{ name: string; emails: string[]; phones: string[] }> }
-  | { kind: "image"; name: string; prompt: string; size: string }
+  | { kind: "image"; name: string; prompt: string; size: string; source?: string }
+  | { kind: "brand_set"; brand: string; brand_id?: number | null; post_id?: number | null; post_kind?: string; layout?: string; source: string
+      files: Array<{ name: string; size: string; width: number; height: number; label: string; slide?: number }> }
+  | { kind: "brand_setup"; sentence: string; suggestion: Suggestion }
   | { kind: "places"; query: string; places: Array<{ name: string; address: string; type: string; link: string }> }
   | { kind: "route"; origin: string; destination: string; mode: string; minutes?: number; km?: number; link: string }
   | { kind: "issues"; items: Array<{ repo: string; number: number; title: string; state: string; url: string; pr: boolean; updated: string }> }
   | { kind: "notion_results"; items: Array<{ id: string; title: string; type: string; url: string; edited: string }> }
   | { kind: "slack_messages"; items: Array<{ channel: string; user: string; text: string; link: string }> }
+  | { kind: "sales_logged"; business: string; day: string; sales: number; bills: number | null; closed: boolean
+      breakeven: number | null; week: { total: number; days: number; change: number | null }; url: string }
+  | { kind: "sales_forecast"; business: string; tomorrow: string; url: string
+      forecast: { status: string; value?: number | null; low?: number | null; high?: number | null; accuracy?: number | null
+                  days_logged?: number; days_needed?: number; reasons?: Array<{ key: string; label: string; effect: number }> } | null
+      slow: { slow: boolean; breakeven: number | null } | null; ideas: Array<{ key: string; title: string; discount: number }>
+      locked: Array<{ feature: string; plan: string }> }
+  | { kind: "business_setup"; id: number; name: string; url: string }
+  | { kind: "customers"; title: string; url: string
+      items: Array<{ id?: number; customer_id?: number; name: string; phone?: string; birthday?: string | null; date?: string
+                     visits?: number; last_visit?: string | null; days_away?: number; in_days?: number; note?: string }> }
+  | { kind: "launch_plan"; id: number; title: string; status: string; sourced: boolean; unit: string; startup_total: number
+      profit: number; breakeven_per_day: number | null; payback_months: number | null; items: number; url: string
+      access: { allowed: boolean; reason: string | null; detail: string; plan_needed: string | null } | null }
 
 type Cell = string | number | null
 
 const KINDS = new Set(["reminder", "reminders", "todo_list", "notes", "weather", "conversion", "world_clock", "webpage",
-  "file", "chart", "table", "upgrade", "contacts", "image", "places", "route", "issues", "notion_results", "slack_messages"])
+  "file", "chart", "table", "upgrade", "contacts", "image", "places", "route", "issues", "notion_results", "slack_messages",
+  "brand_set", "brand_setup", "launch_plan", "sales_logged", "sales_forecast", "business_setup", "customers"])
 
 const MODE_ICON: Record<string, string> = { car: "car", bike: "bike", foot: "walk" }
 const ext = { target: "_blank", rel: "noopener noreferrer nofollow" } as const
@@ -133,8 +152,58 @@ function Checklist({ ui }: { ui: Extract<DailyUi, { kind: "todo_list" }> }) {
   )
 }
 
-export function DailyCard({ ui }: { ui: DailyUi }) {
+/** Finished brand images: one tab per size, each downloadable. */
+function BrandSet({ ui, onAsk }: { ui: Extract<DailyUi, { kind: "brand_set" }>; onAsk?: (text: string) => void }) {
+  const [tab, setTab] = useState(0)
+  const f = ui.files[Math.min(tab, ui.files.length - 1)]
+  if (!f) return null
+  return (
+    <Card icon="photo-edit" title={ui.brand ? `Ready to post · ${ui.brand}` : "Ready to post"} testId="card-brand-set">
+      {ui.files.length > 1 && (
+        <div role="tablist" style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
+          {ui.files.map((x, i) => (
+            <button key={x.name} role="tab" aria-selected={i === tab} className="h-chip" data-testid="brand-set-tab" onClick={() => setTab(i)}
+              style={i === tab ? { background: "var(--solid-bg)", color: "var(--solid-fg)", borderColor: "var(--solid-bg)" } : undefined}>
+              {x.slide ? `Slide ${x.slide} · ` : ""}{x.label}
+            </button>
+          ))}
+        </div>
+      )}
+      {/* eslint-disable-next-line @next/next/no-img-element -- a private, per-user file behind the BFF */}
+      <img src={fileUrl(f.name)} alt={`${f.label} (${f.width}×${f.height})`}
+        style={{ width: "100%", maxHeight: 420, objectFit: "contain", borderRadius: 10, background: "var(--surface-hover)" }} />
+      <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
+        <span className="h-muted" style={{ fontSize: 12, flex: 1 }}>{f.width}×{f.height}</span>
+        <a className="h-btn-solid" href={fileUrl(f.name)} download={f.name} data-testid="brand-set-download" style={{ fontSize: 12, textDecoration: "none", gap: 4 }}>
+          <i className="ti ti-download" style={{ fontSize: 13 }} /> Download
+        </a>
+        {ui.post_id && (
+          <a className="h-btn-ghost" href={`/api/posts/${ui.post_id}/zip`} data-testid="brand-set-zip" style={{ fontSize: 12, textDecoration: "none", gap: 4 }}>
+            <i className="ti ti-file-zip" style={{ fontSize: 13 }} /> Everything
+          </a>
+        )}
+        {onAsk && (
+          <button className="h-btn-ghost" style={{ fontSize: 12 }} onClick={() => onAsk(`Make another version of the post from ${ui.source}, with different wording`)}>
+            Make another
+          </button>
+        )}
+      </div>
+      {ui.post_id && ui.brand_id && (
+        <a className="h-chip" href={`/brands/${ui.brand_id}?tab=posts&post=${ui.post_id}`} data-testid="brand-set-studio"
+          style={{ alignSelf: "flex-start", textDecoration: "none", color: "var(--fg)" }}>
+          <i className="ti ti-message-2" style={{ fontSize: 12, marginRight: 5 }} /> Captions &amp; client review in the Brand Studio
+        </a>
+      )}
+    </Card>
+  )
+}
+
+export function DailyCard({ ui, onAsk }: { ui: DailyUi; onAsk?: (text: string) => void }) {
   switch (ui.kind) {
+    case "brand_set":
+      return <BrandSet ui={ui} onAsk={onAsk} />
+    case "brand_setup":
+      return <div style={{ maxWidth: 560 }}><BrandSetup initialSentence={ui.sentence} initialSuggestion={ui.suggestion} compact /></div>
     case "reminder":
       return (
         <Card icon="alarm" title="Reminder set" testId="card-reminder">
@@ -262,6 +331,12 @@ export function DailyCard({ ui }: { ui: DailyUi }) {
               <i className="ti ti-download" style={{ fontSize: 13 }} /> Download
             </a>
           </div>
+          {onAsk && (
+            <button className="h-chip" data-testid="image-finish" style={{ alignSelf: "flex-start" }}
+              onClick={() => onAsk(`Finish ${ui.name} as a post for my brand: add a headline and the logo`)}>
+              <i className="ti ti-photo-edit" style={{ fontSize: 12, marginRight: 5 }} /> Finish for my brand
+            </button>
+          )}
         </Card>
       )
     case "places":
@@ -329,6 +404,115 @@ export function DailyCard({ ui }: { ui: DailyUi }) {
           ))}
         </Card>
       )
+    case "sales_logged": {
+      // a receipt (direction A): what was logged, for which day, and how it compares; a wrong number is easy to spot
+      const rs = (v: number) => `₹${Math.round(v).toLocaleString("en-IN")}`
+      const day = new Date(ui.day + "T12:00:00").toLocaleDateString("en-IN", { weekday: "short", day: "numeric", month: "short" })
+      return (
+        <div className="h-receipt" data-testid="card-sales-logged">
+          <div className="h-receipt-head"><span>Logged · {day}</span><span>{ui.business}</span></div>
+          <div className="h-receipt-body">
+            <div style={{ display: "flex", alignItems: "baseline", gap: 8, flexWrap: "wrap" }}>
+              <span className="h-display" style={{ fontSize: 32, fontWeight: 600, lineHeight: 1.05 }}>{ui.closed ? "Closed" : rs(ui.sales)}</span>
+              {ui.bills ? <span style={{ fontSize: 16 }}>{ui.bills} bills</span> : null}
+            </div>
+            {!ui.closed && ui.breakeven ? (
+              <div style={{ fontSize: 15, fontWeight: 600, color: ui.sales >= ui.breakeven ? "var(--up)" : "var(--down)" }}>
+                {ui.sales >= ui.breakeven ? "↑" : "↓"} {rs(Math.abs(ui.sales - ui.breakeven))} {ui.sales >= ui.breakeven ? "above" : "below"} break-even
+              </div>
+            ) : null}
+            <div className="h-muted" style={{ fontSize: 14 }}>
+              This week: {rs(ui.week.total)}{ui.week.change !== null ? ` (${ui.week.change >= 0 ? "↑" : "↓"} ${Math.abs(Math.round(ui.week.change * 100))}% on last week)` : ""}
+            </div>
+            <div className="h-muted" style={{ fontSize: 14 }}>Wrong? Just say the right number.</div>
+            <a className="h-btn-ghost" href={ui.url} style={{ alignSelf: "flex-start", textDecoration: "none", fontSize: 14, padding: "6px 0" }}>How&apos;s business →</a>
+          </div>
+        </div>
+      )
+    }
+    case "sales_forecast": {
+      const rs = (v?: number | null) => (v === null || v === undefined ? "—" : `₹${Math.round(v).toLocaleString("en-IN")}`)
+      const f = ui.forecast
+      const weekday = new Date(ui.tomorrow + "T12:00:00").toLocaleDateString("en-IN", { weekday: "long" })
+      return (
+        <Card icon="trending-up" title={`${ui.business} · tomorrow, ${weekday}`} testId="card-sales-forecast">
+          {f?.status === "ready" ? (
+            <>
+              <div style={{ display: "flex", alignItems: "baseline", gap: 8, flexWrap: "wrap" }}>
+                <span style={{ fontSize: 22, fontWeight: 600 }}>{rs(f.value)}</span>
+                <span className="h-muted" style={{ fontSize: 13 }}>likely {rs(f.low)} – {rs(f.high)}</span>
+                {ui.slow?.slow && <span className="h-badge" data-tone="warn">Looks slow</span>}
+              </div>
+              {(f.reasons ?? []).length > 0 && (
+                <div className="h-muted" style={{ fontSize: 12 }}>{(f.reasons ?? []).map((r) => `${r.label} ${r.effect > 0 ? "+" : ""}${Math.round(r.effect * 100)}%`).join(" · ")}</div>
+              )}
+              {ui.ideas.length > 0 && <div style={{ fontSize: 13 }}>Ideas: {ui.ideas.map((i) => i.title).join(", ")}</div>}
+            </>
+          ) : f?.status === "learning" ? (
+            <div style={{ fontSize: 14 }}>Learning: {f.days_logged} of 14 days logged.</div>
+          ) : (
+            <div style={{ fontSize: 14 }}>Tomorrow&apos;s forecast is part of Plus and Pro.</div>
+          )}
+          <a className="h-btn-solid" href={ui.url} style={{ alignSelf: "flex-start", textDecoration: "none", fontSize: 13 }} data-testid="sales-card-open">
+            {ui.ideas.length ? "See the ideas" : "Open How's business"}
+          </a>
+        </Card>
+      )
+    }
+    case "business_setup":
+      return (
+        <Card icon="building-store" title="How's business" testId="card-business-setup">
+          <div style={{ fontSize: 14 }}>{ui.name} is set up. Tell Hangul each day&apos;s sales in a sentence.</div>
+          <a className="h-btn-ghost" href={ui.url} style={{ alignSelf: "flex-start", textDecoration: "none", fontSize: 13 }}>Open →</a>
+        </Card>
+      )
+    case "customers":
+      return (
+        <Card icon="users" title={ui.title} testId="card-customers">
+          {ui.items.map((c) => (
+            <div key={`${c.id ?? c.customer_id ?? c.name}`} style={{ display: "flex", alignItems: "center", gap: 10 }}>
+              <span style={{ width: 28, height: 28, borderRadius: "50%", display: "grid", placeItems: "center", fontSize: 13,
+                background: "var(--surface-hover)", flexShrink: 0 }}>{(c.name[0] ?? "?").toUpperCase()}</span>
+              <div style={{ minWidth: 0 }}>
+                <div style={{ fontSize: 14 }}>{c.name}</div>
+                <div className="h-muted" style={{ fontSize: 12, overflow: "hidden", textOverflow: "ellipsis" }}>
+                  {[c.phone, c.date ? `birthday ${c.date.slice(5)}` : c.birthday ? `birthday ${c.birthday.slice(-5)}` : "",
+                    c.days_away ? `away ${c.days_away} days` : c.visits ? `${c.visits} visit${c.visits === 1 ? "" : "s"}` : "", c.note]
+                    .filter(Boolean).join(" · ")}
+                </div>
+              </div>
+            </div>
+          ))}
+          <a className="h-btn-ghost" href={ui.url} style={{ alignSelf: "flex-start", textDecoration: "none", fontSize: 13 }}>All customers →</a>
+        </Card>
+      )
+    case "launch_plan": {
+      const rs = (v: number) => `₹${Math.round(v).toLocaleString("en-IN")}`
+      const limited = !ui.sourced && ui.access && !ui.access.allowed && ui.access.reason !== "not_asked"
+      return (
+        <Card icon="rocket" title="Launch plan" testId="card-launch-plan">
+          <div style={{ fontSize: 15, fontWeight: 600 }}>{ui.title}</div>
+          <div style={{ display: "grid", gridTemplateColumns: "repeat(3, minmax(0, 1fr))", gap: 8, fontSize: 13 }}>
+            <span><span className="h-muted" style={{ display: "block", fontSize: 11 }}>To start</span>{rs(ui.startup_total)}</span>
+            <span><span className="h-muted" style={{ display: "block", fontSize: 11 }}>Break-even</span>{ui.breakeven_per_day ?? "—"} {ui.unit}s/day</span>
+            <span><span className="h-muted" style={{ display: "block", fontSize: 11 }}>Pays back</span>{ui.payback_months ? `${ui.payback_months} mo` : "—"}</span>
+          </div>
+          <div className="h-muted" style={{ fontSize: 12 }}>
+            {ui.status === "sourcing" ? `Searching live prices for ${ui.items} items now; the plan fills in by itself.`
+              : ui.sourced ? "With live prices." : "Hangul's estimates. Every number can be edited."}
+          </div>
+          {limited && ui.access && <div className="h-muted" style={{ fontSize: 12 }}>{ui.access.detail}</div>}
+          <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+            <a className="h-btn-solid" href={ui.url} style={{ textDecoration: "none" }} data-testid="launch-card-open">Open the plan</a>
+            {limited && ui.access?.plan_needed && (
+              <a className="h-btn-ghost" href={`/billing?upgrade=${encodeURIComponent(ui.access.plan_needed)}`} style={{ textDecoration: "none" }}>
+                Get live prices
+              </a>
+            )}
+          </div>
+        </Card>
+      )
+    }
     case "upgrade":
       return (
         <Card icon="lock" title={`${ui.plan_label} feature`} testId="card-upgrade">

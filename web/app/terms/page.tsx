@@ -41,7 +41,7 @@ export default function TermsPage() {
       <p>
         {product} can act for you in the apps you connect — sending email, changing your calendar, posting messages, creating files.
         Anything that sends, posts, changes or deletes something waits for you to approve it. <b>You are responsible for the actions you
-        approve</b> and for following the terms of the apps you connect (Google, GitHub, Notion, Slack…).
+        approve</b> and for following the terms of the apps you connect (such as Google).
       </p>
 
       <H>Your content</H>

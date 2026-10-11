@@ -17,7 +17,8 @@ from harness.security.spotlight import wrap
 # tainted these need a human, whatever their normal tier
 OUTBOUND = ("web_search", "vault_request", "vault_mutate", "arxiv_search", "arxiv_paper", "remember",
             "gmail__create_draft", "calendar__create_event", "docs__append_text",
-            "read_webpage", "weather", "reminders", "maps_search", "travel_time", "generate_image")
+            "read_webpage", "weather", "reminders", "maps_search", "travel_time", "generate_image",
+            "edit_image", "launch_plan")
 SIDE_EFFECT_PREFIXES = ("filesystem__write", "filesystem__edit", "filesystem__move", "filesystem__create",
                         "gmail__send", "gmail__create", "calendar__create", "calendar__update", "calendar__delete",
                         "drive__upload", "drive__share", "docs__append", "docs__insert",

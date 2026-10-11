@@ -303,7 +303,7 @@ export function TaskScheduler({ tasks, connectors, busy, run, api }: {
             Calendar events and email drafts just happen.
             {asking.length > 0
               ? <> <b>{asking.map(asksLabel).join(" and ")}</b> {asksVerb} your OK, so this task starts {leadMin} minutes early and asks you on WhatsApp (by email on the Free plan); it goes ahead as soon as you tap Approve.</>
-              : <> Sending email, or changes in GitHub, Slack, Notion, Docs and Sheets, need your OK: you&apos;d be asked {leadMin} minutes before, on WhatsApp (by email on the Free plan).</>}
+              : <> Sending email, or changes in Docs and Sheets, need your OK: you&apos;d be asked {leadMin} minutes before, on WhatsApp (by email on the Free plan).</>}
           </p>
           <label style={{ display: "flex", gap: 8, alignItems: "center", fontSize: 13 }}>
             <input type="checkbox" checked={research} onChange={(e) => setResearch(e.target.checked)} /> Deep research <span className="h-muted">(slower, cites sources)</span>

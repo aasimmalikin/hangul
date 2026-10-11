@@ -195,6 +195,63 @@ async def _replies(user_id: str) -> list:
     return await replies_owed(user_id, datetime.now(UTC))
 
 
+def _promises(user_id: str, today_local, now) -> dict:
+    """Kept your word (harness.promises): what the user owes (soonest first), what's
+    owed to them (late ones first), and meetings Hangul just asked about."""
+    from datetime import UTC
+
+    from harness.db import promises as promises_db
+    from harness.promises import service as promises
+    rows = promises_db.list_for(user_id, "open", 100)
+    mine = [p for p in rows if p.direction == "mine"]
+    theirs = []
+    for p in rows:
+        if p.direction != "theirs":
+            continue
+        due = datetime.fromisoformat(p.due_on).date() if p.due_on else None
+        created = datetime.fromisoformat(p.created_at) if p.created_at else now
+        late = (p.last_contact_at is None and p.chased_at is None and
+                ((due is not None and due < today_local) or
+                 (due is None and now.astimezone(UTC) - created.astimezone(UTC) >= promises.THEIRS_UNDATED_AFTER)))
+        theirs.append({**p.as_dict(), "late": late})
+    theirs.sort(key=lambda p: (not p["late"], p["due_on"] or "9999", p["created_at"] or ""))
+    state = promises_db.scan_state(user_id)
+    asking = [{"id": a["id"], "summary": a.get("summary", ""), "people": a.get("people", [])}
+              for a in promises.recent_asked(state["asked"], now.astimezone(UTC))]
+    return {"mine": [{**p.as_dict(), "overdue": bool(p.due_on) and p.due_on < today_local.isoformat()} for p in mine[:5]],
+            "theirs": theirs[:5], "counts": {"mine": len(mine), "theirs": len(theirs)}, "asking": asking[:2]}
+
+
+def with_promises(user_id: str, events: list[dict] | None) -> list[dict] | None:
+    """Each event with the open promises between the user and its attendees
+    (meeting prep: what you owe them, what they owe you)."""
+    if not events:
+        return events
+    from harness.db import promises as promises_db
+    emails = sorted({a.lower() for e in events for a in (e.get("attendees") or []) if a})
+    if not emails:
+        return events
+    by: dict[str, list[dict]] = {}
+    for p in promises_db.with_people(user_id, emails, 30):
+        by.setdefault(p.who_email, []).append(
+            {"id": p.id, "direction": p.direction, "what": p.what, "who": p.who, "due_on": p.due_on})
+    out = []
+    for e in events:
+        found = [p for a in (e.get("attendees") or []) for p in by.get(a.lower(), [])]
+        out.append({**e, "promises": found[:4]} if found else e)
+    return out
+
+
+def merge_birthdays(contacts: list | None, customers: list | None) -> list | None:
+    """Contacts' birthdays plus the shop's customers' (a name in both shows once, as the
+    customer); None only when Contacts isn't connected and no customer has one coming."""
+    if not customers:
+        return contacts
+    names = {c["name"].strip().lower() for c in customers}
+    rest = [b for b in (contacts or []) if b["name"].strip().lower() not in names]
+    return sorted([*customers, *rest], key=lambda b: (b["in_days"], b["name"]))
+
+
 async def _birthdays(user_id: str, today_local) -> list | None:
     hit = _birthdays_cache.get(user_id)
     if hit and time.monotonic() - hit[0] < BIRTHDAY_CACHE_S and hit[1] == today_local.isoformat():
@@ -260,8 +317,9 @@ async def today(quick: bool = False, user: dict = Depends(get_current_user)) -> 
             e for e in external["events"] if _local_date(e["start"], tz) <= now.date()]
         return [], external, events_today, None, None, None
 
+    from harness.db import customers as customers_db
     (connected, external, events_today, leave_by, birthdays, replies), \
-        reminders, todos, approvals, history, checkin, memory = await asyncio.gather(
+        reminders, todos, approvals, history, checkin, memory, promised, customer_bdays = await asyncio.gather(
             quick_parts() if quick else slow(),
             _timed(asyncio.to_thread(personal.list_reminders, uid, ("sent", "pending"), 8)),
             _timed(asyncio.to_thread(personal.list_todos, uid)),
@@ -269,7 +327,12 @@ async def today(quick: bool = False, user: dict = Depends(get_current_user)) -> 
             _timed(asyncio.to_thread(habits.recent_messages, uid), 4),
             _timed(asyncio.to_thread(checkins.state, uid, now.date()), 4),
             _timed(asyncio.to_thread(memory_of_the_day, uid, now.date()), 4),
+            _timed(asyncio.to_thread(_promises, uid, now.date(), now), 4),
+            _timed(asyncio.to_thread(customers_db.upcoming_birthdays, uid, now.date(), 7), 4),
         )
+    birthdays = merge_birthdays(birthdays, customer_bdays)
+    if events_today:
+        events_today = await _timed(asyncio.to_thread(with_promises, uid, events_today), 4) or events_today
     all_events = external["events"]
     events_tomorrow = [] if all_events is None else [e for e in all_events if _local_date(e["start"], tz) == tomorrow_date]
 
@@ -299,9 +362,11 @@ async def today(quick: bool = False, user: dict = Depends(get_current_user)) -> 
         "events": events_today,                  # None = Calendar not connected
         "tomorrow": tomorrow,                    # None before 18:00
         "leave_by": leave_by,                    # None = no event with a place coming up
-        "birthdays": birthdays,                  # None = Contacts not connected
+        "birthdays": birthdays,                  # Contacts + customers; None = neither has one
         "emails": emails,                        # None = Gmail not connected
         "replies": replies,                      # replies owed; None = Gmail not connected
+        # Kept your word: promises the user owes and is owed, and meetings Hangul just asked about
+        "promises": promised,
         "reminders": due,
         "todos": [t.as_dict() for t in (todos or [])[:8]],
         "approvals": approvals or [],

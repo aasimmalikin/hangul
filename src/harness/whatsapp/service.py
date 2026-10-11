@@ -112,10 +112,15 @@ async def deliver(phone: str, user_id: str, run_id: str, answer: str, pending: d
     await _charge(user_id, sent)
 
 
+# What WhatsApp does on the Free plan: the shop basics, so the main channel has a free way in.
+# All SAFE and no ask_user, so a run doesn't pause: /approve would resume with the plan's normal tools.
+FREE_TOOLS = frozenset({"business", "reminders", "lists", "notes", "promises", "customers", "remember"})
+
+
 def _chat_allowed(user_id: str) -> bool:
-    """WhatsApp -- chatting, reminders and the brief -- is Plus and Pro. Free users
-    get the same reminders as app notifications and email, which cost us nothing
-    per message."""
+    """Full WhatsApp -- every tool, the brief, task results -- is Plus and Pro. Free users
+    get the shop basics (FREE_TOOLS) and their reminders here while the 24-hour window is
+    open (free to send); outside it, reminders come as app notifications and email."""
     from harness.billing import entitlements
     from harness.billing.plans import get_plan
     from harness.db import billing as billing_db
@@ -150,23 +155,29 @@ async def _question(msg: Inbound, user_id: str) -> str | None:
         await say(msg.phone, f"I couldn't use that file: {e.detail if isinstance(e.detail, str) else 'unsupported type'}.", user_id, markdown=False)
         return None
     caption = msg.text.strip()
-    return caption + f" (about the file I just sent: {name})" if caption else f"I just sent {name}. Tell me briefly what it is."
+    if caption:
+        return caption + f" (about the file I just sent: {name})"
+    return (f"I just sent {name}. If it's a bill book page or a day-end sales report, log it as my sales; "
+            "otherwise tell me briefly what it is.")
 
 
-async def _run(msg: Inbound, link: db.Link, question: str) -> None:
+async def _run(msg: Inbound, link: db.Link, question: str, *, basics: bool = False) -> None:
+    """basics: the Free plan's shop basics only (FREE_TOOLS, no apps)."""
     from harness.api.concurrency import run_slot
     from harness.api.routes.ask import AskRequest, _build_and_run
     uid = link.user_id
-    req = AskRequest(question=question[:4000], conversation_id=link.conversation_id, model="auto", connectors_auto=True)
+    req = AskRequest(question=question[:4000], conversation_id=link.conversation_id, model="auto",
+                     connectors_auto=not basics)
+    only = FREE_TOOLS if basics else None
     try:
         try:
             async with run_slot(uid):
-                outcome = await _build_and_run(req, uid)
+                outcome = await _build_and_run(req, uid, only_tools=only)
         except HTTPException as e:
             if e.status_code == 404 and req.conversation_id:          # the chat was deleted: start a new one
                 req = req.model_copy(update={"conversation_id": None})
                 async with run_slot(uid):
-                    outcome = await _build_and_run(req, uid)
+                    outcome = await _build_and_run(req, uid, only_tools=only)
             else:
                 raise
     except HTTPException as e:
@@ -191,11 +202,20 @@ async def _choice(msg: Inbound, link: db.Link) -> None:
     """A tapped Approve / Reject / option button: resume the paused run, as /approve does."""
     from harness.api.routes.approve import ApproveRequest, _store, approve
     kind, _, rest = (msg.reply_id or "").partition(":")
+    if kind == "mis":                                     # a mission's go-ahead (harness.missions)
+        from harness.missions import slow_day
+        reply, buttons = await slow_day.on_button(link.user_id, rest)
+        if buttons:
+            await client.send_buttons(msg.phone, reply, buttons)
+            await _charge(link.user_id, 1)
+        else:
+            await say(msg.phone, reply, link.user_id, markdown=False)
+        return
     run_id, _, index = rest.partition(":")
     if kind not in ("ok", "no", "pick") or not run_id:
         # a template's quick reply or an unknown button: treat its text as a message
-        if msg.text and await asyncio.to_thread(_chat_allowed, link.user_id):
-            await _run(msg, link, msg.text)
+        if msg.text:
+            await _run(msg, link, msg.text, basics=not await asyncio.to_thread(_chat_allowed, link.user_id))
         return
     choice = None
     if kind == "pick":
@@ -246,20 +266,21 @@ async def handle(msg: Inbound) -> None:
             await asyncio.to_thread(db.update, uid, pending_text=None)
             await say(msg.phone, waiting, uid, markdown=False)
             await send_waiting_tasks(msg.phone, uid)       # and the buttons for any task waiting on them
+            try:
+                from harness.missions.tell import send_waiting
+                await send_waiting(msg.phone, uid)         # and any mission waiting for a go-ahead
+            except Exception as e:  # noqa: BLE001 - the brief and the message itself still go through
+                log.warning("whatsapp: waiting missions skipped", error=str(e)[:200])
             if msg.kind == "text" and msg.text.strip().lower() in SHOW_PENDING:
                 return
 
         if msg.kind == "choice":
             await _choice(msg, link)
             return
-        if not await asyncio.to_thread(_chat_allowed, uid):
-            await say(msg.phone, "Hangul on WhatsApp is part of *Plus*: chat, reminders and your brief, right here. "
-                                 "On Free they come as notifications from the Hangul app and by email. "
-                                 f"Upgrade: {_app('/billing?upgrade=plus')}", uid, markdown=False)
-            return
+        basics = not await asyncio.to_thread(_chat_allowed, uid)     # Free: the shop basics only
         question = await _question(msg, uid)
         if question:
-            await _run(msg, link, question)
+            await _run(msg, link, question, basics=basics)
     except Exception as e:  # noqa: BLE001 - the webhook already answered 200; tell the user, keep going
         log.error("whatsapp message failed", wamid=msg.wamid, error=f"{type(e).__name__}: {e}"[:300])
         try:
@@ -286,8 +307,9 @@ async def notify(user_id: str, kind: str, text: str, *, title: str = "",
                  pending: dict | None = None, run_id: str | None = None) -> bool:
     """A reminder (kind="reminder") or a task result such as the brief (kind="task")
     to the user's linked number. Plain text inside the 24-hour window, otherwise
-    the approved template. False when WhatsApp is off, the number isn't linked,
-    or the user is on Free (they get app notifications and email instead).
+    the approved template. False when WhatsApp is off or the number isn't linked;
+    on Free, True only for a reminder inside the window (free to send) -- otherwise
+    they get app notifications and email instead.
     ``pending`` (a task run waiting for the user) adds Approve/Reject buttons: at once
     inside the window, else when they reply to the template (``send_waiting_tasks``)."""
     if not enabled():
@@ -296,7 +318,7 @@ async def notify(user_id: str, kind: str, text: str, *, title: str = "",
     if link is None or not link.linked or not link.phone:
         return False
     try:
-        if not await asyncio.to_thread(_chat_allowed, str(user_id)):
+        if not await asyncio.to_thread(_chat_allowed, str(user_id)) and not (kind == "reminder" and link.window_open()):
             return False
     except Exception as e:  # noqa: BLE001 - a DB blip: skip WhatsApp, the other channels still deliver
         log.warning("whatsapp plan check failed", user_id=user_id, error=str(e)[:200])

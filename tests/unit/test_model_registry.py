@@ -78,10 +78,6 @@ def ask_app(monkeypatch):
         return AgentResult(answer="done", steps=1, stopped_reason="answered",
                            input_tokens=1, output_tokens=1)
 
-    class FakeCache:
-        async def get(self, key): return None
-        async def set(self, key, value): pass
-
     class FakeProvider:
         def __init__(self, model, effort):
             self.model, self.reasoning_effort = model, effort
@@ -91,7 +87,6 @@ def ask_app(monkeypatch):
         version = "v1"
 
     monkeypatch.setattr(ask_route, "run_agent", fake_run_agent)
-    monkeypatch.setattr(ask_route, "_cache", FakeCache())
     monkeypatch.setattr(ask_route, "provider_for", lambda spec, effort: FakeProvider(spec.id, effort))
     monkeypatch.setattr(ask_route, "get_prompt", lambda name: FakePrompt())
     monkeypatch.setattr(ask_route, "profile_text", lambda uid: "")

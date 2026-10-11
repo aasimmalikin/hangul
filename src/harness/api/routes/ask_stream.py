@@ -6,7 +6,7 @@ from sse_starlette.sse import EventSourceResponse
 
 from harness.api.auth import get_current_user
 from harness.api.concurrency import run_slot
-from harness.api.routes.ask import AskRequest, _build_and_run
+from harness.api.routes.ask import AskRequest, _build_and_run, check_brand_request
 from harness.billing import entitlements
 
 router = APIRouter()
@@ -25,6 +25,7 @@ async def ask_stream(req: AskRequest, request: Request,
     # not an `error` event on a 200 stream. The conversation's stored model is
     # not known here; _build_and_run re-checks with it.
     await entitlements.aresolve_for_user(user_id, req.model, req.effort, mode=req.mode, question=req.question)
+    await check_brand_request(req, user_id)
 
     # Bridge between the agent (producing events) and the SSE generator
     # (sending them). The agent runs as a background task and pushes events
@@ -118,6 +119,8 @@ async def ask_stream(req: AskRequest, request: Request,
                         "tools_used": r.tools_used,
                         "model": outcome.model,
                         "effort": outcome.effort,
+                        "brand_id": outcome.brand_id,
+                        "brand_name": outcome.brand_name,
                     })}
                     return
         finally:

@@ -12,15 +12,19 @@ TONES = ("concise", "balanced", "detailed")
 # Who the user is, picked in onboarding or /settings. The text goes into the
 # system prompt so answers fit them; the web uses the key for starter prompts
 # and billing.plans.RECOMMENDED for the plan it suggests. "" = not chosen.
+# Hangul is for small-business owners, so only "founder" (shown as "Business owner") is
+# offered now (OFFERED_PERSONAS); the others stay valid so the people who chose them
+# keep their prompt line.
 PERSONAS: dict[str, str] = {
-    "founder": "Founder or business owner: their inbox, calendar and decisions matter most. Be brief and action-first; "
-               "flag what needs a decision or a reply.",
+    "founder": "Runs a small business (a shop, café, kitchen, salon or online store): sales, customers, suppliers "
+               "and marketing matter most. Be brief and action-first, use rupees, and flag what needs a decision or a reply.",
     "developer": "Software developer: comfortable with technical detail, code and exact commands. Be precise; skip "
                  "basics they already know.",
     "student": "Student: deadlines, studying and research. Explain clearly, cite sources, and help them plan their time.",
     "professional": "Working professional: meetings, email and getting work done. Keep answers practical and ready to use.",
     "personal": "Using Hangul for everyday life: reminders, plans, errands and family. Keep it friendly and simple.",
 }
+OFFERED_PERSONAS = ("founder",)
 
 
 @dataclass

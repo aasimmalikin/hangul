@@ -206,7 +206,9 @@ def test_suite_report_shape_and_metrics(tmp_path):
 def test_dataset_loads_and_catalog_is_consistent():
     cases = load_case("data/evalsets/tool_selection.jsonl")
     assert len(cases) >= 10 and all(c.concern in CONCERN_TOOLS for c in cases)
-    assert any(c.history for c in cases) and any(c.requires_approval for c in cases) and any(c.must_not_claim for c in cases)
+    # no case requires approval any more: the only approval-gated tools an eval user had were the
+    # vault's (now off, settings.vault_advanced); approvals on tainted runs are in prompt_injection
+    assert any(c.history for c in cases) and any(c.must_not_claim for c in cases)
     keys = [e.key for e in CATALOG]
     assert len(keys) == len(set(keys))
     for e in CATALOG:

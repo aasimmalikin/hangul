@@ -20,7 +20,7 @@ import { useConnectivity } from "@/components/hangul/useConnectivity"
  * passed. Every fetch is `no-store`, bounded by a timeout, and errors are
  * shown with the code the BFF returned so the person knows what to do.
  * Three parts once authorised:
- *   1. the latest report per suite (headline metrics + the CI gate for qa)
+ *   1. the latest report per suite (headline metrics + the CI gate for business, qa and tool_selection)
  *   2. the eval catalog: what is measured now and what is planned
  *   3. one report in detail, per case, with the tools the agent actually called
  */
@@ -72,6 +72,12 @@ async function api<T>(path: string, init?: RequestInit): Promise<T> {
 const fmt = (v: unknown) => typeof v === "number" ? (Number.isInteger(v) ? String(v) : v.toFixed(v < 0.01 ? 5 : 2)) : String(v ?? "—")
 const pct = (v?: number) => v === undefined ? "—" : `${Math.round(v * 100)}%`
 const scoreColor = (v: number) => v >= 0.8 ? "var(--fg)" : v >= 0.5 ? "var(--muted)" : "var(--err)"
+
+type Waitlist = {
+  total: number; last_7_days: number
+  by_trade?: Record<string, number>; by_city?: Record<string, number>
+  by_persona: Record<string, number>; by_interest: Record<string, number>; by_source: Record<string, number>
+}
 
 type Churn = {
   days: number; total: number; saved_rate: number | null
@@ -147,6 +153,7 @@ export default function AdminPage() {
   const [overview, setOverview] = useState<Overview | null>(null)
   const [security, setSecurity] = useState<SecuritySummary | null>(null)
   const [churn, setChurn] = useState<Churn | null>(null)
+  const [waitlist, setWaitlist] = useState<Waitlist | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [busy, setBusy] = useState(false)
   const [limit, setLimit] = useState<number | "">("")
@@ -160,6 +167,7 @@ export default function AdminPage() {
       setCatalog(c); setSummary(s); setRuns(r); setOverview(o); setSecurity(sec); setError(null)
       // churn is optional (no billing yet = nothing to show); never fail the page over it
       setChurn(await api<Churn>("churn").catch(() => null))
+      setWaitlist(await api<Waitlist>("waitlist").catch(() => null))
     } catch (e) {
       const err = e as Error & { status?: number; code?: string }
       // the gate can close mid-session (sign-in aged out, allowlist changed): re-run it
@@ -370,6 +378,21 @@ export default function AdminPage() {
                 </div>
               </Section>
             )}
+
+            <Section title="Pre-registrations" hint="Sign-ups from /join before launch. Export the list with `python -m harness.db.waitlist export`.">
+              {!waitlist || waitlist.total === 0 ? (
+                <p className="h-muted" style={{ fontSize: 13, margin: 0 }} data-testid="waitlist-empty">Nobody has pre-registered yet.</p>
+              ) : (
+                <div style={{ display: "flex", flexDirection: "column", gap: 8, fontSize: 13 }} data-testid="waitlist">
+                  <div><b>{waitlist.total}</b> pre-registered · <b>{waitlist.last_7_days}</b> in the last 7 days</div>
+                  {([["Business", waitlist.by_trade ?? {}], ["City", waitlist.by_city ?? {}], ["Plan", waitlist.by_interest], ["From", waitlist.by_source]] as const).map(([label, counts]) => (
+                    <div key={label} className="h-muted">
+                      {label}: {Object.entries(counts).sort((a, b) => b[1] - a[1]).map(([k, n]) => `${k} ${n}`).join(" · ")}
+                    </div>
+                  ))}
+                </div>
+              )}
+            </Section>
 
             <Section title="Why people cancel" hint="From the “Before you go” screen, last 90 days: the reason they gave and whether they stayed.">
               {!churn || churn.total === 0 ? (

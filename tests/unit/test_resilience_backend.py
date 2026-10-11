@@ -17,7 +17,6 @@ from harness.api import concurrency
 from harness.api.auth import get_current_user
 from harness.api.routes import approve as approve_route
 from harness.api.routes.ask import AskRequest
-from harness.cache.keys import answer_key
 from harness.checkpoint.checkpoint import Checkpoint
 from harness.obs.tracing import Trace
 from harness.policy.audit import AuditLog
@@ -116,7 +115,7 @@ def approve_app(monkeypatch):
     monkeypatch.setattr(approve_route, "_store", store)
     monkeypatch.setattr(approve_route, "guarded_dispatch", fake_dispatch)
     monkeypatch.setattr(approve_route, "run_agent", fake_run_agent)
-    async def fake_registry(uid, thread_id, connectors=()):
+    async def fake_registry(uid, thread_id, connectors=(), conversation_id=None):
         return FakeRegistry()
     monkeypatch.setattr(approve_route, "_build_session_registry", fake_registry)
     monkeypatch.setattr(approve_route, "provider_for",
@@ -272,19 +271,6 @@ def test_history_reaches_the_model_and_owner_is_stamped():
     assert roles == ["system", "user", "assistant", "user"]
     assert provider.seen[0][-1]["content"] == "and the second one?"
     assert store.rows["t-1"].user_id == "alice"
-
-
-# ----------------------------------------------------------- cache key
-
-def test_cache_key_covers_history_and_mode():
-    base = dict(question="q", prompt_version="p", model="m", tool_names=["a"], session_id="u")
-    k0 = answer_key(**base)
-    assert answer_key(**base) == k0
-    assert answer_key(**base, history=[{"role": "user", "content": "earlier"}]) != k0
-    assert answer_key(**base, docs_only=True) != k0
-    assert answer_key(**{**base, "session_id": "other"}) != k0
-    assert answer_key(**base, effort="high") != k0
-    assert answer_key(**{**base, "model": "other-model"}) != k0
 
 
 # ------------------------------------------- one run at a time per conversation

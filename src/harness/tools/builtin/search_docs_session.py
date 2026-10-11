@@ -1,7 +1,8 @@
 """Factory for a per-user search_docs tool, backed by pgvector.
 
-Searches the caller's uploaded documents first, falling back to the shared
-corpus. Both live in ``document_chunks``; the user's rows carry their subject
+Searches the caller's uploaded documents; only with ``search_shared_corpus``
+on (dev demos) does it fall back to the shared corpus, which holds demo and
+eval documents a real user must never get as their own. Both live in ``document_chunks``; the user's rows carry their subject
 id and the corpus rows carry NULL, so the isolation is the WHERE clause of a
 single ANN query rather than a process-local index -- it survives a restart
 and holds across replicas.
@@ -9,6 +10,7 @@ and holds across replicas.
 
 import logging
 
+from harness.config import get_settings
 from harness.retrieval import pg_store
 from harness.retrieval.embeddings import get_embedder
 from harness.tools.base import Tool
@@ -49,7 +51,9 @@ def make_search_docs_tool(user_id: str) -> Tool:
             if hits:
                 return format_hits(hits)
 
-            # 2. fall back to the shared corpus
+            # 2. the shared corpus, only where it's switched on (it's demo material)
+            if not get_settings().search_shared_corpus:
+                return "They haven't uploaded any documents that match. Say so; don't guess."
             hits = await pg_store.search(emb, user_id=None, k=k, embed_model=embedder.model)
         except Exception:
             log.exception("search_docs: vector store query failed")

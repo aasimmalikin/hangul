@@ -221,6 +221,14 @@ def bind_settings(conversation_id: str, *, model: str | None, effort: str | None
         session.commit()
 
 
+def set_brand(conversation_id: str, brand_id: int | None) -> None:
+    """The brand a chat makes things for. Unlike bind_settings this follows
+    every turn: switching the brand chip (or turning it off) is remembered."""
+    with SessionLocal() as session:
+        session.execute(update(Conversation).where(Conversation.id == conversation_id).values(brand_id=brand_id or None))
+        session.commit()
+
+
 def deactivate_conversation(conversation_id: str, user_id: str) -> bool:
     """Hide a conversation. False when it does not exist, is already hidden, or
     belongs to someone else -- indistinguishable on purpose. Hide rather than

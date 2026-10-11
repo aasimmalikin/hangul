@@ -20,6 +20,8 @@ export type ConnectorInfo = {
   product?: string | null
   /** Connectors sharing a group are listed together under that heading ("Google Workspace"). */
   group?: string | null
+  /** Needs Google's restricted scopes (Gmail, Drive); hidden when `Integrations.google.restricted` is false. */
+  restricted?: boolean
 }
 
 /** The old all-in-one Google key, replaced by one connector per product. */
@@ -32,21 +34,34 @@ export function normalizeConnectors(keys: string[]): string[] {
   return out
 }
 
-/** Scopes the Google Workspace connectors ask for when the user connects it. */
+/** Every offered Google Workspace scope (no Docs or Meet: google_oauth.UNOFFERED_PRODUCTS); the fallback
+ *  when the backend didn't say which this account may ask for. */
 export const GOOGLE_WORKSPACE_SCOPES = [
   "openid", "email", "profile",
   "https://www.googleapis.com/auth/gmail.readonly", "https://www.googleapis.com/auth/gmail.compose",
   "https://www.googleapis.com/auth/calendar",
   "https://www.googleapis.com/auth/drive.readonly", "https://www.googleapis.com/auth/drive.file",
-  "https://www.googleapis.com/auth/documents",
   "https://www.googleapis.com/auth/spreadsheets", "https://www.googleapis.com/auth/drive.metadata.readonly",
   "https://www.googleapis.com/auth/contacts.readonly", "https://www.googleapis.com/auth/contacts.other.readonly",
 ].join(" ")
 
 export type Integrations = {
-  google: { connected: boolean; products: string[]; scopes: string[] }
+  /** `scopes`: what Connect Google should ask for. `restricted`: may this account use Gmail and Drive
+   *  (false until Google's yearly security assessment is done, except for invited testers). */
+  google: { connected: boolean; products: string[]; scopes: string[]; restricted?: boolean }
   /** GitHub / Notion / Slack tokens saved in the vault */
   apps?: Partial<Record<"github" | "notion" | "slack", boolean>>
+}
+
+/** The `scope` string for Connect Google: only what this account may use (no Gmail or Drive unless invited). */
+export function googleScopes(i: Integrations | null): string {
+  const scopes = i?.google.scopes ?? []
+  return scopes.length ? ["openid", "email", "profile", ...scopes].join(" ") : GOOGLE_WORKSPACE_SCOPES
+}
+
+/** False for Gmail and Drive when this account isn't on the restricted list. */
+export function offeredTo(c: ConnectorInfo, i: Integrations | null): boolean {
+  return !c.restricted || i?.google.restricted !== false
 }
 
 /** What the signed-in user has connected; null when signed out or unreachable. */

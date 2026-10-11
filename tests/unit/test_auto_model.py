@@ -21,6 +21,9 @@ from harness.providers import router
     ("rewrite this so it sounds friendlier", "write"),
     ("compare the iPhone 17 and Pixel 11 for photography", "deep"),
     ("analyse my bank statement csv", "deep"), ("why does my python script fail", "deep"),
+    ("draw a stag under chinar trees", "deep"), ("make me a poster for the bake sale", "deep"),
+    ("design a logo for my cafe", "deep"), ("generate an image of a sunset over Dal Lake", "deep"),
+    ("what's in this image?", "everyday"), ("draw up a list of chores", "quick"),
 ])
 def test_levels(q, level):
     assert router.level_for(q) == level

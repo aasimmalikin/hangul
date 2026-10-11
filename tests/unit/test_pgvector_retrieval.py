@@ -64,7 +64,14 @@ def test_user_sees_only_their_own_rows(store):
     assert store.calls == [("7", 3)]
 
 
-def test_falls_back_to_shared_corpus_when_user_has_no_uploads(store):
+def test_a_user_with_no_uploads_never_gets_the_demo_corpus(store):
+    answer = _run(make_search_docs_tool("99").handler(query="anything"))
+    assert "the shared corpus" not in answer and "haven't uploaded" in answer
+    assert store.calls == [("99", 3)]
+
+
+def test_falls_back_to_shared_corpus_only_when_switched_on(store, monkeypatch):
+    monkeypatch.setenv("SEARCH_SHARED_CORPUS", "true")
     answer = _run(make_search_docs_tool("99").handler(query="anything"))
     assert "the shared corpus" in answer
     assert store.calls == [("99", 3), (None, 3)]

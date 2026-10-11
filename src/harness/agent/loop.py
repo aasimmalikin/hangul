@@ -294,6 +294,9 @@ async def run_agent(
                     budget_used=_budget_snapshot(), resumed_from_step=resumed_from,
                 )
 
+            # the registry can grow mid-run (more_tools loads a group), so re-read it each turn
+            if len(tools) != len(registry.list()):
+                tools = [to_openai_tool(t) for t in registry.list()]
             with trace.span("gen_ai.chat",
                             **{"gen_ai.request.model": provider.model,
                                "gen_ai.request.reasoning_effort":

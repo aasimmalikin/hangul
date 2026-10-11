@@ -1,7 +1,8 @@
 import { test, expect } from "@playwright/test"
 import { freshUser, resetBackend, seedChat, signInAs } from "./helpers"
 
-/** Four places — Today, Chats, Kept, You — as header tabs on desktop and a bottom bar on phones. */
+/** The places (direction A): Today, Chats, Business, Customers, Kept and You as header tabs on desktop;
+ *  five of them (no Kept, which is under You) in the bottom bar on phones. */
 test.describe("navigation", () => {
   const me = freshUser("nav")
   test.beforeEach(async ({ context, baseURL }) => {

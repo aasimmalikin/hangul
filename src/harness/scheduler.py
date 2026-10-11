@@ -2,7 +2,7 @@
 next_run_at has passed and run each through the same path as /ask (per-user
 tools, connectors, security, cost ledger, episode in the Chats rail), then
 deliver due reminders (in-app via status "sent", a push notification, an email,
-and WhatsApp on Plus and Pro)."""
+and WhatsApp on Plus and Pro), then missions and promises (harness.promises)."""
 
 import asyncio
 import contextlib
@@ -130,7 +130,7 @@ async def fire_reminders() -> int:
         fired += 1                         # now "sent": the app's bell shows it
         await push.reminder(str(user_id), r.id, r.text)              # no-op without devices
         from harness.whatsapp.service import notify as whatsapp_notify
-        await whatsapp_notify(str(user_id), "reminder", r.text)      # no-op unless linked and on Plus/Pro
+        await whatsapp_notify(str(user_id), "reminder", r.text)      # no-op unless linked; on Free only inside the 24-hour window
         if not notify.email_enabled():
             continue
         try:
@@ -190,6 +190,23 @@ async def loop() -> None:
             await fire_reminders()
         except Exception as e:  # noqa: BLE001
             log.warning("reminder tick failed", error=str(e))
+        try:
+            from harness.sales.service import evening_alerts
+            await evening_alerts()
+        except Exception as e:  # noqa: BLE001
+            log.warning("sales alert tick failed", error=str(e))
+        try:
+            from harness.missions import engine as missions
+            from harness.missions import report
+            await missions.tick()
+            await report.due()
+        except Exception as e:  # noqa: BLE001
+            log.warning("missions tick failed", error=str(e))
+        try:
+            from harness.promises import service as promises
+            await promises.tick()
+        except Exception as e:  # noqa: BLE001
+            log.warning("promises tick failed", error=str(e))
         await asyncio.sleep(POLL_S)
 
 

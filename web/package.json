@@ -15,6 +15,7 @@
     "@auth/drizzle-adapter": "^1.11.3",
     "@auth/pg-adapter": "^1.11.3",
     "@base-ui/react": "^1.8.0",
+    "@fontsource/mukta": "^5.3.0",
     "@streamdown/cjk": "^1.0.3",
     "@streamdown/code": "^1.1.1",
     "@streamdown/math": "^1.0.2",

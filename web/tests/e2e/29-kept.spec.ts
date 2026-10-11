@@ -87,10 +87,11 @@ test.describe("Kept", () => {
   test.describe("on a phone", () => {
     test.use({ viewport: { width: 390, height: 844 } })
 
-    test("Kept is in the bottom bar, the lanes stack and the search sits by the thumb", async ({ page }) => {
+    test("Kept is under You on a phone, the lanes stack and the search sits by the thumb", async ({ page }) => {
       await backend("/__reminder", { user: me.id, text: "Call mum", status: "pending", due_at: inHours(3), said: "Remind me to call mum at 6" })
       await page.goto("/")
-      await page.locator(".h-bottom-nav").getByRole("link", { name: "Kept" }).click()
+      await page.locator(".h-bottom-nav").getByRole("link", { name: "You" }).click()
+      await page.getByTestId("you-kept").click()
       await expect(page).toHaveURL(/\/kept$/)
       await expect(page.getByTestId("kept-reminder:1")).toBeVisible()
       const search = await page.getByTestId("kept-search").boundingBox()

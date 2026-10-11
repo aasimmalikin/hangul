@@ -11,12 +11,16 @@ import { useState } from "react"
  */
 
 export type GmailMessage = { id: string; thread_id?: string; from: string; to?: string; subject: string; date: string; snippet?: string; labels?: string[]; unread?: boolean; body?: string }
+export type MeetCall = { id: string; code?: string | null; start?: string | null; end?: string | null; minutes?: number | null; participants: string[]; transcript?: boolean }
 export type GoogleUi =
   | { kind: "gmail_messages"; query?: string; messages: GmailMessage[] }
   | { kind: "gmail_thread"; thread_id?: string; subject?: string; messages: GmailMessage[] }
   | { kind: "gmail_draft"; draft_id?: string; to: string; cc?: string | null; subject: string; body: string }
   | { kind: "gmail_sent"; message_id?: string; draft_id?: string; to?: string; cc?: string | null; subject?: string; body?: string }
-  | { kind: "calendar_events"; created?: boolean; time_min?: string; time_max?: string; events: Array<{ id?: string; summary: string; start: string; end: string; all_day?: boolean; location?: string | null; attendees?: string[]; link?: string | null; description?: string }> }
+  | { kind: "calendar_events"; created?: boolean; time_min?: string; time_max?: string; events: Array<{ id?: string; summary: string; start: string; end: string; all_day?: boolean; location?: string | null; attendees?: string[]; link?: string | null; meet?: string | null; description?: string }> }
+  | { kind: "meet_link"; uri: string; code?: string | null }
+  | { kind: "meet_meetings"; meetings: MeetCall[] }
+  | { kind: "meet_transcript"; id: string; start?: string | null; minutes?: number | null; participants: string[]; doc?: string | null; lines: Array<{ who: string; text: string; at?: string | null }>; more?: number }
   | { kind: "drive_files"; files: Array<{ id: string; name: string; mime?: string | null; modified?: string | null; size?: string | null; link?: string | null }> }
   | { kind: "docs_document"; id: string; title?: string; text: string }
 
@@ -46,9 +50,9 @@ function dayLabel(s: string): string {
   return Number.isNaN(d.getTime()) ? s : d.toLocaleDateString(undefined, { weekday: "short", month: "short", day: "numeric" })
 }
 
-function Frame({ app, title, children, testId }: { app: "gmail" | "calendar" | "drive" | "docs"; title: string; children: React.ReactNode; testId: string }) {
-  const icon = { gmail: "ti-mail", calendar: "ti-calendar-event", drive: "ti-brand-google-drive", docs: "ti-file-text" }[app]
-  const name = { gmail: "Gmail", calendar: "Google Calendar", drive: "Google Drive", docs: "Google Docs" }[app]
+function Frame({ app, title, children, testId }: { app: "gmail" | "calendar" | "drive" | "docs" | "meet"; title: string; children: React.ReactNode; testId: string }) {
+  const icon = { gmail: "ti-mail", calendar: "ti-calendar-event", drive: "ti-brand-google-drive", docs: "ti-file-text", meet: "ti-video" }[app]
+  const name = { gmail: "Gmail", calendar: "Google Calendar", drive: "Google Drive", docs: "Google Docs", meet: "Google Meet" }[app]
   return (
     <div className="g-card" data-testid={testId} data-app={app}>
       <div className="g-head">
@@ -143,18 +147,93 @@ function CalendarAgenda({ ui }: { ui: Extract<GoogleUi, { kind: "calendar_events
           <div key={day} className="g-day">
             <div className="g-day-label">{day}</div>
             {events.map((e, i) => (
-              <a key={e.id ?? i} className="g-event" href={e.link ?? undefined} target={e.link ? "_blank" : undefined} rel="noreferrer">
-                <span className="g-event-bar" />
-                <span className="g-event-time">{timeRange(e.start, e.end, e.all_day)}</span>
-                <span className="g-event-main">
-                  <span className="g-event-title">{e.summary}</span>
-                  {e.location ? <span className="g-event-sub"><i className="ti ti-map-pin" /> {e.location}</span> : null}
-                  {e.attendees?.length ? <span className="g-event-sub"><i className="ti ti-users" /> {e.attendees.join(", ")}</span> : null}
-                </span>
-              </a>
+              <div key={e.id ?? i} className="g-event-row">
+                <a className="g-event" href={e.link ?? undefined} target={e.link ? "_blank" : undefined} rel="noreferrer">
+                  <span className="g-event-bar" />
+                  <span className="g-event-time">{timeRange(e.start, e.end, e.all_day)}</span>
+                  <span className="g-event-main">
+                    <span className="g-event-title">{e.summary}</span>
+                    {e.location ? <span className="g-event-sub"><i className="ti ti-map-pin" /> {e.location}</span> : null}
+                    {e.attendees?.length ? <span className="g-event-sub"><i className="ti ti-users" /> {e.attendees.join(", ")}</span> : null}
+                  </span>
+                </a>
+                {e.meet ? <MeetJoin href={e.meet} /> : null}
+              </div>
             ))}
           </div>
         ))}
+      </div>
+    </Frame>
+  )
+}
+
+/** "Join" for a Google Meet link; only meet.google.com links are drawn as one. */
+export function MeetJoin({ href, label = "Join" }: { href: string; label?: string }) {
+  if (!/^https:\/\/meet\.google\.com\//.test(href)) return null
+  return (
+    <a className="g-meet-join" href={href} target="_blank" rel="noreferrer" data-testid="meet-join">
+      <i className="ti ti-video" /> {label}
+    </a>
+  )
+}
+
+function MeetLink({ ui }: { ui: Extract<GoogleUi, { kind: "meet_link" }> }) {
+  const [copied, setCopied] = useState(false)
+  return (
+    <Frame app="meet" title="New meeting" testId="meet-link">
+      <div className="g-meet-new">
+        <div className="g-meet-uri">{ui.uri.replace(/^https:\/\//, "")}</div>
+        <div style={{ display: "flex", gap: 8 }}>
+          <MeetJoin href={ui.uri} label="Join now" />
+          <button type="button" className="g-meet-copy" data-testid="meet-copy"
+            onClick={() => { void navigator.clipboard?.writeText(ui.uri).then(() => setCopied(true), () => {}) }}>
+            <i className={`ti ${copied ? "ti-check" : "ti-copy"}`} /> {copied ? "Copied" : "Copy link"}
+          </button>
+        </div>
+      </div>
+    </Frame>
+  )
+}
+
+function MeetMeetings({ ui }: { ui: Extract<GoogleUi, { kind: "meet_meetings" }> }) {
+  return (
+    <Frame app="meet" title={`${ui.meetings.length} recent call${ui.meetings.length === 1 ? "" : "s"}`} testId="meet-meetings">
+      <ul className="g-list">
+        {ui.meetings.map((m) => (
+          <li key={m.id} className="g-row g-meet-call">
+            <span className="g-event-time">{m.start ? `${dayLabel(m.start)} · ${timeRange(m.start, m.end ?? m.start).split(" – ")[0]}` : ""}</span>
+            <span className="g-event-main">
+              <span className="g-event-title">{m.participants.length ? m.participants.join(", ") : "Just you"}</span>
+              <span className="g-event-sub">
+                {m.minutes != null ? `${m.minutes} min` : "Still going"}{m.transcript ? " · transcript" : ""}
+              </span>
+            </span>
+          </li>
+        ))}
+      </ul>
+    </Frame>
+  )
+}
+
+function MeetTranscript({ ui }: { ui: Extract<GoogleUi, { kind: "meet_transcript" }> }) {
+  const [open, setOpen] = useState(false)
+  const shown = open ? ui.lines : ui.lines.slice(0, 8)
+  return (
+    <Frame app="meet" title={`Transcript${ui.start ? ` · ${dayLabel(ui.start)}` : ""}${ui.minutes ? ` · ${ui.minutes} min` : ""}`} testId="meet-transcript">
+      {ui.participants.length ? <div className="g-meet-people"><i className="ti ti-users" /> {ui.participants.join(", ")}</div> : null}
+      <div className="g-meet-lines">
+        {shown.map((l, i) => (
+          <div key={i} className="g-meet-line"><span className="g-meet-who">{l.who}:</span> {l.text}</div>
+        ))}
+      </div>
+      <div className="g-meet-foot">
+        {ui.lines.length > 8 && (
+          <button type="button" className="g-meet-copy" onClick={() => setOpen((v) => !v)} data-testid="meet-transcript-toggle">
+            {open ? "Show less" : `Show all ${ui.lines.length} lines`}
+          </button>
+        )}
+        {ui.more ? <span className="g-event-sub">+{ui.more} more lines</span> : null}
+        {ui.doc ? <a className="g-meet-copy" href={ui.doc} target="_blank" rel="noreferrer"><i className="ti ti-file-text" /> Open in Docs</a> : null}
       </div>
     </Frame>
   )
@@ -205,6 +284,9 @@ export function GoogleCard({ ui }: { ui: GoogleUi }) {
     case "calendar_events": return <CalendarAgenda ui={ui} />
     case "drive_files": return <DriveList ui={ui} />
     case "docs_document": return <DocView ui={ui} />
+    case "meet_link": return <MeetLink ui={ui} />
+    case "meet_meetings": return <MeetMeetings ui={ui} />
+    case "meet_transcript": return <MeetTranscript ui={ui} />
     default: return null
   }
 }

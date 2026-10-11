@@ -52,9 +52,11 @@ def test_the_prompt_says_who_they_are():
 
 
 def test_billing_recommends_a_plan_for_the_persona(billing, monkeypatch):
-    for persona, plan in (("founder", "pro"), ("developer", "pro"), ("student", "plus"), ("", None)):
+    for persona, plan in (("founder", "plus"), ("developer", "pro"), ("student", "plus"), ("", None)):
         monkeypatch.setattr("harness.db.settings.get_settings", lambda uid, p=persona: Settings(timezone="UTC", persona=p))
         body = _app(billing_route.router).get("/billing").json()
         assert body["recommended_plan"] == plan
     pro = next(p for p in body["plans"] if p["id"] == "pro")
-    assert pro["best_for"].startswith("Founders and developers")
+    assert pro["best_for"].startswith("Busy owners and several outlets")
+    plus = next(p for p in body["plans"] if p["id"] == "plus")
+    assert plus["best_for"].startswith("A shop or small business")

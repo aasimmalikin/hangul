@@ -133,7 +133,11 @@ def make_vault_tools(user_id: str, thread_id: str | None, consented: dict[str, b
 async def build_vault_tools(user_id: str, thread_id: str | None) -> list[Tool]:
     """The per-request pair, with descriptions naming the providers this user
     may use now. Vault disabled -> the tools still exist (and say so when
-    called), so the model's tool list is stable."""
+    called), so the model's tool list is stable. None at all unless
+    ``vault_advanced`` is on (raw API access isn't offered to users)."""
+    from harness.config import get_settings
+    if not get_settings().vault_advanced:
+        return []
     vault = current_vault()
     consented: dict[str, bool] = {}
     if vault is not None:

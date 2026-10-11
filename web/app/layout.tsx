@@ -1,6 +1,7 @@
 import type { Metadata, Viewport } from "next";
 import { ServiceWorker } from "@/components/ServiceWorker";
 import { Geist, Geist_Mono, Fraunces } from "next/font/google";
+import localFont from "next/font/local";
 import "./globals.css";
 import { Providers } from "@/components/Providers";
 import { auth } from "@/auth";
@@ -15,6 +16,19 @@ const geistMono = Geist_Mono({
   subsets: ["latin"],
 });
 
+// Body text (design direction A): Mukta, self-hosted from @fontsource (OFL), so no
+// Google request at build or run time.
+const mukta = localFont({
+  variable: "--font-mukta",
+  display: "swap",
+  src: [
+    { path: "../node_modules/@fontsource/mukta/files/mukta-latin-400-normal.woff2", weight: "400", style: "normal" },
+    { path: "../node_modules/@fontsource/mukta/files/mukta-latin-600-normal.woff2", weight: "600", style: "normal" },
+    { path: "../node_modules/@fontsource/mukta/files/mukta-latin-700-normal.woff2", weight: "700", style: "normal" },
+    { path: "../node_modules/@fontsource/mukta/files/mukta-latin-800-normal.woff2", weight: "800", style: "normal" },
+  ],
+});
+
 const fraunces = Fraunces({
   variable: "--font-fraunces",
   subsets: ["latin"],
@@ -23,7 +37,7 @@ const fraunces = Fraunces({
 
 export const metadata: Metadata = {
   title: "Hangul",
-  description: "Your personal AI assistant: reminders, email, calendar, documents and more — just ask, or talk.",
+  description: "Your shop's own assistant: sales, tomorrow's forecast, slow-day offers and customers. It always asks before it acts.",
   // installed on a phone home screen: opens full-screen with its own icon
   appleWebApp: { capable: true, title: "Hangul", statusBarStyle: "default" },
   icons: { apple: "/icons/apple-touch-icon.png" },
@@ -48,7 +62,7 @@ export default async function RootLayout({ children }: LayoutProps<"/">) {
       lang="en"
       data-theme="light"
       suppressHydrationWarning
-      className={`${geistSans.variable} ${geistMono.variable} ${fraunces.variable} h-full antialiased`}
+      className={`${geistSans.variable} ${geistMono.variable} ${mukta.variable} ${fraunces.variable} h-full antialiased`}
     >
       <head>
         <script dangerouslySetInnerHTML={{ __html: themeScript }} />

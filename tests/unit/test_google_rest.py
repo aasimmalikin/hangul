@@ -210,9 +210,12 @@ def test_registry_exposes_google_as_per_user_builtin():
 def test_google_products_are_separate_connectors():
     cons = creg.all_connectors()
     offered = {c["key"] for c in creg.available()}
-    assert {"gmail", "calendar", "drive", "docs"} <= offered
+    assert {"gmail", "calendar", "drive", "sheets", "contacts"} <= offered
     assert "google" not in offered and cons["google"].hidden            # legacy key: accepted, not offered
     assert creg.validate_keys(["google"]) == ["google"]
+    for product in ("docs", "meet"):                                    # no longer offered, still accepted
+        assert product not in offered and cons[product].hidden
+        assert creg.validate_keys([product]) == [product]
     for product in ("gmail", "calendar", "drive", "docs"):
         c = cons[product]
         assert c.per_user and c.auth == "google" and c.product == product and c.group == "Google Workspace"

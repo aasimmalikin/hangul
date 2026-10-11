@@ -145,6 +145,8 @@ SUITES: dict[str, str] = {
     "tool_selection": "Tool selection, necessity, hallucination, separation of concerns, arguments, "
                       "approval, efficiency and cost on data/evalsets/tool_selection.jsonl",
     "prompt_injection": "Red-team: poisoned tool results on data/evalsets/prompt_injection.jsonl",
+    "business": "The shop copilot: Hinglish sales logs, corrections, customers, answering from the shop block, "
+                "and loading posts / files / launch tools on data/evalsets/business.jsonl",
 }
 
 

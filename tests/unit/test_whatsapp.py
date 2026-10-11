@@ -190,8 +190,8 @@ def text(body, wamid="w1"):
 def fake_agent(monkeypatch, answer="Done.", pending=None, conversation_id="conv-1", raise_status=None):
     calls = []
 
-    async def build_and_run(req, user_id):
-        calls.append(req)
+    async def build_and_run(req, user_id, only_tools=None):
+        calls.append(SimpleNamespace(**req.model_dump(), only_tools=only_tools))   # + what the run was limited to
         if raise_status:
             raise HTTPException(status_code=raise_status, detail={"detail": "Nope."})
         return SimpleNamespace(result=SimpleNamespace(answer=answer, pending_tool=pending),
@@ -233,11 +233,18 @@ def test_a_question_runs_the_agent_in_the_whatsapp_conversation(monkeypatch):
     assert wa.charged == 1
 
 
-def test_free_users_get_reminders_but_chatting_is_plus(monkeypatch):
+def test_free_users_get_the_shop_basics_and_plus_gets_everything(monkeypatch):
     wa = FakeWA(monkeypatch, link=linked(), plan="free")
+    calls = fake_agent(monkeypatch, answer="Logged ₹16,400 for today.")
+    asyncio.run(service.handle(text("today 52 bills, 16400")))
+    assert calls[0].only_tools == service.FREE_TOOLS and calls[0].connectors_auto is False
+    assert {"business", "reminders", "customers"} <= service.FREE_TOOLS and "ask_user" not in service.FREE_TOOLS
+    assert "Logged ₹16,400" in wa.texts()[0]
+
+    wa = FakeWA(monkeypatch, link=linked(), plan="plus")
     calls = fake_agent(monkeypatch)
-    asyncio.run(service.handle(text("hi")))
-    assert calls == [] and "part of *Plus*" in wa.texts()[0]
+    asyncio.run(service.handle(text("email priya")))
+    assert calls[0].only_tools is None and calls[0].connectors_auto is True
 
 
 def test_an_action_needing_approval_comes_with_buttons(monkeypatch):
@@ -354,10 +361,15 @@ def test_notify_inside_and_outside_the_24_hour_window(on, monkeypatch):
     assert wa.links["919876543210"].pending_text == "*Morning brief*\n\nSunny, 2 meetings."
 
 
-def test_notify_is_plus_and_pro_only(on, monkeypatch):
-    wa = FakeWA(monkeypatch, link=linked(), plan="free")       # Free: app notifications and email instead
-    assert asyncio.run(service.notify("7", "reminder", "Call mom")) is False
+def test_notify_on_free_is_only_a_reminder_inside_the_window(on, monkeypatch):
+    # inside Meta's 24-hour window a reminder is free to send; a brief or task result is Plus
+    wa = FakeWA(monkeypatch, link=linked(), plan="free")
     assert asyncio.run(service.notify("7", "task", "Sunny.", title="Morning brief")) is False
+    assert asyncio.run(service.notify("7", "reminder", "Call mom")) is True
+    assert "Call mom" in wa.texts()[0]
+    # outside it a template would cost money: app notifications and email instead
+    wa = FakeWA(monkeypatch, link=linked(last=datetime.now(UTC) - timedelta(hours=30)), plan="free")
+    assert asyncio.run(service.notify("7", "reminder", "Call mom")) is False
     assert wa.sent == [] and wa.charged == 0
 
 

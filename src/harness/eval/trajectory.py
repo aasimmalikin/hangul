@@ -31,6 +31,9 @@ class Trajectory(BaseModel):
     cost_usd: float = 0.0
     answer: str = ""
     security_events: list[dict] = Field(default_factory=list)
+    # facts the agent was given in its prompt rather than by a tool (the business suite's shop block);
+    # the hallucination judge counts them as backed
+    context: str = ""
 
     @property
     def tool_names(self) -> list[str]:

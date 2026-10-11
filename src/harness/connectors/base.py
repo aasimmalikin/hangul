@@ -34,9 +34,11 @@ class Connector:
     group: str | None = None
     # accepted on requests (old conversations/tasks) but not offered in the catalogue
     hidden: bool = False
+    # needs Google's restricted scopes (Gmail, Drive): hidden for accounts not on the restricted list
+    restricted: bool = False
 
     def public(self) -> dict:
         return {"key": self.key, "label": self.label, "description": self.description,
                 "kind": self.kind, "icon": self.icon, "per_user": self.per_user, "auth": self.auth,
-                "product": self.product, "group": self.group,
+                "product": self.product, "group": self.group, "restricted": self.restricted,
                 "servers": list(self.servers) or ([self.server] if self.server else [])}

@@ -17,12 +17,14 @@ KEYWORDS: dict[str, tuple[str, ...]] = {
               "draft", "message from", "newsletter", "my day", "brief", "briefing"),
     "calendar": ("calendar", "meeting", "meetings", "schedule", "scheduled", "free", "busy", "appointment",
                  "event", "events", "reschedule", "move my", "cancel my", "tomorrow at", "today at", "my day",
-                 "agenda", "brief", "briefing", "standup", "call with"),
+                 "agenda", "brief", "briefing", "standup", "call with", "video call", "google meet", "meet link"),
     "contacts": ("contact", "contacts", "phone number", "email address", "number of", "email priya",
                  "send to", "email to", "mail to"),
     "drive": ("drive", "google drive", "my files in drive", "shared folder"),
     "docs": ("google doc", "google docs", "gdoc"),
     "sheets": ("sheet", "sheets", "spreadsheet", "budget sheet", "google sheet", "tracker"),
+    "meet": ("google meet", "meet link", "meeting link", "video call", "video meeting", "instant meeting",
+             "transcript", "transcripts", "the call", "last call", "on the call", "who joined", "meeting notes"),
     # not plain "issue", "review" or "commit": "an issue with my laptop" isn't GitHub (see _GITHUB below)
     "github": ("github", "pull request", "pull requests", "pr", "prs", "repo", "repos", "repository",
                "repositories", "code review", "review request", "review requests", "open issues", "commits"),
@@ -77,7 +79,8 @@ async def connected_apps(user_id: str) -> list[str]:
     except Exception:  # noqa: BLE001 - no Google, no Google apps
         pass
     try:
-        keys += [a for a, ok in (await apps_status(user_id)).items() if ok]
+        from harness.connectors.registry import BUILTIN
+        keys += [a for a, ok in (await apps_status(user_id)).items() if ok and not BUILTIN[a].hidden]
     except Exception:  # noqa: BLE001
         pass
     return keys

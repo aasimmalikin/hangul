@@ -10,31 +10,42 @@ import { useEffect, useState } from "react"
  */
 export type Persona = "founder" | "developer" | "student" | "professional" | "personal"
 
+/** What /settings offers: Hangul is for small-business owners, so only "founder" (Business owner). The others are
+ * no longer offered; people who chose one keep it, and /settings still shows it to them. Onboarding and /join ask
+ * for the kind of business instead (BUSINESS_KINDS). */
 export const PERSONAS: Array<{ key: Persona; label: string; icon: string }> = [
-  { key: "founder", label: "Founder", icon: "rocket" },
-  { key: "developer", label: "Developer", icon: "code" },
+  { key: "founder", label: "Business owner", icon: "building-store" },
+]
+export const RETIRED_PERSONAS: Array<{ key: Persona; label: string; icon: string }> = [
   { key: "student", label: "Student", icon: "school" },
   { key: "professional", label: "Professional", icon: "briefcase" },
   { key: "personal", label: "Personal use", icon: "home" },
+  { key: "developer", label: "Developer", icon: "code" },
+]
+
+/** The kinds of business (launch/kinds.py + "other"), asked in onboarding and on /join. */
+export const BUSINESS_KINDS: Array<{ key: string; label: string; icon: string }> = [
+  { key: "retail_shop", label: "Shop", icon: "building-store" },
+  { key: "cafe", label: "Café or restaurant", icon: "coffee" },
+  { key: "cloud_kitchen", label: "Cloud kitchen", icon: "chef-hat" },
+  { key: "salon", label: "Salon", icon: "scissors" },
+  { key: "d2c_brand", label: "Online store", icon: "shopping-bag" },
+  { key: "other", label: "Something else", icon: "dots" },
 ]
 
 /** A one-tap prompt: `send` asks right away, otherwise it fills the box to finish. */
 export type Prompt = { label: string; text: string; send: boolean; icon: string }
 
+// Hangul is for small businesses, so the default prompts are the shop's
 const DEFAULT_HOME: Prompt[] = [
-  { label: "Plan my day", text: "Plan my day: what's on my calendar, what's due, and what should I focus on?", send: true, icon: "sun" },
+  { label: "How's business?", text: "How's business this week, and what does tomorrow look like?", send: true, icon: "trending-up" },
+  { label: "Plan my day", text: "Plan my day: what's due today, my reminders and to-dos, anyone waiting on me, and what should I focus on?", send: true, icon: "sun" },
+  { label: "Log today's sales", text: "Today's sales: ", send: false, icon: "cash" },
   { label: "Remind me…", text: "Remind me to ", send: false, icon: "alarm" },
-  { label: "Search my documents", text: "Search my documents", send: true, icon: "file-search" },
-  { label: "Make a document", text: "Make a PDF of ", send: false, icon: "file-type-pdf" },
 ]
 
 const HOME: Record<Persona, Prompt[]> = {
-  founder: [
-    DEFAULT_HOME[0],
-    { label: "Who needs a reply?", text: "Which emails need a reply from me? Draft short replies for the top three.", send: true, icon: "mail-forward" },
-    { label: "Prep my next meeting", text: "Prep me for my next meeting: who's in it, what we last discussed by email, and what I need to decide.", send: true, icon: "users" },
-    DEFAULT_HOME[1],
-  ],
+  founder: DEFAULT_HOME,
   developer: [
     DEFAULT_HOME[0],
     { label: "My GitHub work", text: "What's on my plate on GitHub: pull requests to review and issues assigned to me?", send: true, icon: "brand-github" },
@@ -58,7 +69,8 @@ const HOME: Record<Persona, Prompt[]> = {
 
 /** Chips at the top of an empty chat, ahead of the everyday ones. */
 const CHAT: Record<Persona, Array<Omit<Prompt, "send">>> = {
-  founder: [{ icon: "mail-forward", label: "Who needs a reply?", text: "Which emails need a reply from me today?" }],
+  founder: [{ icon: "cash", label: "Log today's sales", text: "Today's sales: " },
+            { icon: "users", label: "Add a customer", text: "Add a customer: " }],
   developer: [{ icon: "bug", label: "Explain an error", text: "Explain this error and how to fix it: " }],
   student: [{ icon: "books", label: "Find papers", text: "Find recent papers on " }],
   professional: [{ icon: "pencil", label: "Draft an email", text: "Draft an email to " }],

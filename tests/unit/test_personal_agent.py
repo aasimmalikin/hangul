@@ -136,7 +136,7 @@ def test_google_token_source_refreshes_and_caches(monkeypatch):
     go.set_google_tokens(src)          # what user-token: refs resolve through
 
     async def scenario():
-        assert (await src.status("7")) == {"connected": True, "products": ["gmail", "calendar"]}
+        assert (await src.status("7")) == {"connected": True, "products": ["gmail", "calendar"], "restricted": True}
         assert (await src.status("8"))["connected"] is False
         tok = await src.access_token("7", product="gmail")
         assert tok == "ya29.fresh-token-value-000" and calls[0]["grant_type"] == "refresh_token"

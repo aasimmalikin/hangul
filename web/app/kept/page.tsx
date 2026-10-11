@@ -3,6 +3,7 @@
 import Link from "next/link"
 import { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import { useSession } from "next-auth/react"
+import { useRouter } from "next/navigation"
 import { AppHeader } from "@/components/hangul/AppHeader"
 import { SignInModal, type AuthMode } from "@/components/hangul/SignInModal"
 import { KeptHolding, type HoldingSection } from "@/components/hangul/KeptHolding"
@@ -78,6 +79,7 @@ async function call(path: string, init?: RequestInit) {
 
 function Row({ it, now, onDone, highlight }: { it: KeptItem; now: Date; onDone: (msg?: string) => void; highlight?: string[] }) {
   const [busy, setBusy] = useState(false)
+  const router = useRouter()
   const act = async (fn: () => Promise<unknown>, msg: string) => {
     setBusy(true)
     try { await fn(); onDone(msg) } catch (e) { onDone((e as Error).message) } finally { setBusy(false) }
@@ -131,6 +133,23 @@ function Row({ it, now, onDone, highlight }: { it: KeptItem; now: Date; onDone: 
         {it.kind === "memory" && id != null && (
           <button className="h-btn-ghost h-kept-btn" disabled={busy} type="button"
             onClick={() => void act(() => call(`memory/${id}`, { method: "DELETE" }), "Forgotten.")}>Forget</button>
+        )}
+        {it.kind === "promise" && it.ref.status === "open" && id != null && (
+          <>
+            {it.ref.wrote_back ? <span className="h-kept-when">They wrote back</span> : null}
+            {it.ref.direction === "theirs" && (
+              <button className="h-btn-ghost h-kept-btn" disabled={busy} type="button" data-testid={`kept-chase-${id}`}
+                onClick={() => void act(async () => {
+                  // the draft (and any send) happens in chat, where it waits for the user's OK
+                  const { prompt } = await call(`promises/${id}/chase`, { method: "POST" })
+                  router.push(`/chat?q=${encodeURIComponent(prompt)}`)
+                }, "Opening the chat…")}>{it.ref.chased ? "Chase again" : "Chase"}</button>
+            )}
+            <button className="h-btn-ghost h-kept-btn" disabled={busy} type="button" data-testid={`kept-promise-kept-${id}`}
+              onClick={() => void act(() => call(`promises/${id}`, { method: "PATCH", body: JSON.stringify({ status: "done" }) }), "Marked kept.")}>Mark kept</button>
+            <button className="h-btn-ghost h-kept-btn" disabled={busy} type="button"
+              onClick={() => void act(() => call(`promises/${id}`, { method: "PATCH", body: JSON.stringify({ status: "dropped" }) }), "Dropped.")}>Drop</button>
+          </>
         )}
         {chat && it.kind !== "approval" && <Link className="h-kept-link" href={chat}>Open the chat</Link>}
       </div>
